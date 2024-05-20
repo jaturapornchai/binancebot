@@ -1,0 +1,687 @@
+import time
+import requests
+import numpy as np
+import pandas as pd
+from datetime import datetime
+import numpy as np
+import requests
+from scipy.stats import linregress
+from binance.client import Client
+import time
+from scipy.stats import linregress
+from bs4 import BeautifulSoup
+import traceback
+import concurrent.futures
+import datetime
+import random
+import time
+import ccxt
+from binance.client import Client
+from binance.enums import *
+import requests
+import pandas as pd
+import requests
+import talib
+import ta
+import numpy as np
+import pandas_datareader as pdr
+import datetime
+
+api_key = 'FpwthNz84887fuWpz9lEIsLm1zwZB9YV8ZO2FjVQ6v2k6lmR8nv1oKZZOoJSY0il'
+api_secret = 'nszlVyvoFAZPVIXdWnJyhaxgiujMTTUmFN4Ncix3rKBtLhF2kO8hhCZhnwIeu3gt'
+client = Client(api_key, api_secret)
+# LINE Notify token
+line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+dollar_amount = 75  # Order amount in USD
+leverage = 10
+time_frame = '15m'
+exchange = ccxt.binance()
+future_symbols = []
+spot_symbols = []
+exchange_rate_thai = 0.0
+ignore_symbols = ['DONUSDT','USDCUSDT','SRMUSDT']
+
+def calculate_rsi(symbol, period=14):
+    # Get historical hourly prices
+    klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, f"{period*2} hours ago UTC")
+
+    prices = [float(kline[4]) for kline in klines]  # Using closing prices
+
+    if len(prices) < period:
+        return 0
+
+    # Calculate price changes
+    delta = np.diff(prices)
+
+    # Separate positive and negative changes
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+
+    # Average gains and losses
+    avg_gain = np.mean(gain[:period])
+    avg_loss = np.mean(loss[:period])
+
+    for i in range(period, len(prices) - 1):
+        avg_gain = ((avg_gain * (period - 1)) + gain[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + loss[i]) / period
+
+    # Avoid division by zero and calculate RSI
+    if avg_loss == 0:
+        return 0  # RSI is 100 if average loss is zero
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+def get_exchange_rate_thai():
+    url = 'https://www.x-rates.com/calculator/?from=USD&to=THB&amount=1'
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    rate = soup.find('span', class_='ccOutputTrail').previous_sibling
+    # return double
+    return float(rate)
+
+def send_line_notify(message):
+    """headers = {
+        'Authorization': f'Bearer {line_token}',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    payload = {'message': message}
+    requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)"""
+
+# Function to fetch real-time price data
+def fetch_price_data(symbol):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={time_frame}"
+    data = requests.get(url).json()
+    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    df['close'] = df['close'].astype(float)
+    return df
+
+# Function to calculate Linear Regression Channel
+def linear_regression_channel(df, length=100, deviation=2):
+    df = df[-length:]
+    y = df['close'].values.reshape(-1, 1)
+    x = np.array(range(len(y))).reshape(-1, 1)
+
+    model = LinearRegression()
+    model.fit(x, y)
+    trend = model.predict(x)
+
+    # Calculate upper and lower bounds
+    deviation_value = deviation * np.std(y - trend)
+    upper_bound = trend + deviation_value
+    lower_bound = trend - deviation_value
+
+    return trend, upper_bound, lower_bound, model.coef_[0][0]
+
+def trade_signal(symbol):   
+    # Fetch historical data
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=time_frame, limit=100)
+
+    # Convert to DataFrame
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    
+    # Calculate MACD
+    # Short term EMA
+    df['ema12'] = df['close'].ewm(span=12, adjust=False).mean()
+    # Long term EMA
+    df['ema26'] = df['close'].ewm(span=26, adjust=False).mean()
+    # MACD
+    df['macd'] = df['ema12'] - df['ema26']
+    # Signal line
+    df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+    # Determine the trading signal based on Signal line
+    latest_signal = df['signal'].iloc[-1]    
+    previous_signal = df['signal'].iloc[-2] 
+
+    if latest_signal > previous_signal:
+        return 'long'
+    elif latest_signal < previous_signal:
+        return 'short'
+    else:
+        return 'normal'
+    
+def check_trade_signal(symbol):
+    df = fetch_price_data(symbol)
+    trend, upper_bound, lower_bound, slope = linear_regression_channel(df)
+    current_price = df['close'].iloc[-3]
+    if current_price > upper_bound[-3]:
+        return 'long'
+    elif current_price < lower_bound[-3]:
+        return 'short'
+    else:
+        return 'normal'
+
+    
+def fetch_future_symbols():
+    info = client.futures_exchange_info()
+    symbols = [item['symbol'] for item in info['symbols'] if 'USDT' in item['symbol']]
+    # remove ignore_symbols
+    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
+    return symbols
+
+def fetch_spot_symbols():
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    response = requests.get(url)
+    data = response.json()
+
+    symbols = []
+    for symbol in data["symbols"]:
+        if symbol["status"] == "TRADING" and symbol["isSpotTradingAllowed"] and symbol["symbol"].endswith("USDT"):
+            symbols.append(symbol["symbol"])
+
+    # remove ignore_symbols
+    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
+    ## remove ถ้ามีคำว่า UPUSDT หรือ DOWNUSDT อยู่ในชื่อ symbol
+    symbols = [symbol for symbol in symbols if 'UPUSDT' not in symbol]
+    symbols = [symbol for symbol in symbols if 'DOWNUSDT' not in symbol]
+    return symbols
+
+def adjust_to_precision(value, precision):
+    format_str = "{:0.0" + str(precision) + "f}"
+    return float(format_str.format(value))
+
+def get_precision_from_step_size(step_size):
+    # Count the number of decimals in the step size
+    str_step_size = str(step_size).rstrip('0')
+    decimal_index = str_step_size.find('.')
+    return len(str_step_size) - decimal_index - 1 if decimal_index != -1 else 0
+
+def get_symbol_info(client, symbol):
+    info = client.futures_exchange_info()
+    for s in info['symbols']:
+        if s['symbol'] == symbol:
+            filters = {f['filterType']: f for f in s['filters']}
+            return {
+                'quantityPrecision': get_precision_from_step_size(filters['LOT_SIZE']['stepSize']),
+                'pricePrecision': get_precision_from_step_size(filters['PRICE_FILTER']['tickSize'])
+            }
+    raise ValueError(f"Symbol info for {symbol} not found")
+
+def adjust_to_lot_size(quantity, lot_size_info):
+    step_size = float(lot_size_info['stepSize'])
+    return round(quantity - (quantity % step_size), len(str(step_size).split('.')[1].rstrip('0')))
+
+def place_order_spot(client, symbol, direction, dollar_amount):
+    print(f"Spot Placing order for {symbol}...")
+    try:
+        symbol_info = client.get_symbol_info(symbol)
+        lot_size_info = next(filter(lambda f: f['filterType'] == 'LOT_SIZE', symbol_info['filters']))
+
+        if direction == 'long':
+            price = float(client.get_symbol_ticker(symbol=symbol)['price'])
+            quantity = dollar_amount / price
+            quantity = adjust_to_lot_size(quantity, lot_size_info)
+            print(f"quantity: {quantity}")
+            client.create_order(symbol=symbol, side="BUY", type="MARKET", quantity=quantity)
+        elif direction == 'short':
+            balance = float(client.get_asset_balance(asset=symbol.replace('USDT', ''))['free'])
+            balance = adjust_to_lot_size(balance, lot_size_info)
+            client.create_order(symbol=symbol, side="SELL", type="MARKET", quantity=balance)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+def place_order_future(client, symbol, direction, dollar_amount):  
+    print(f"Future Placing order for {symbol}...")
+    # ถ้ามี position เดิม และ สถานะไม่เหมือนกัน ให้ปิด position เดิมก่อน
+    positions = client.futures_position_information()
+    for position in positions:
+        position_amount = float(position['positionAmt'])
+        if position_amount != 0 and position['symbol'] == symbol:
+            current_signal =  (position_amount < 0 and 'short') or (position_amount > 0 and 'long')
+            if current_signal == direction:
+                return 
+            else:
+                message = f"{symbol}: Signal changed from {current_signal} to {direction}. Closing position."
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL" if position_amount > 0 else "BUY",
+                    type="MARKET",
+                    quantity=abs(position_amount)
+                )
+                # ลบ order ที่เหลือออก
+                orders = client.futures_get_open_orders(symbol=symbol)
+                for order in orders:
+                    print(f"ลบ {symbol} order ค้าง {order['orderId']} สำเร็จ : 1")
+                    client.futures_cancel_order(
+                        symbol=order['symbol'],
+                        orderId=order['orderId']
+                    )
+          
+    symbol_info = get_symbol_info(client, symbol)
+    quantity_precision = symbol_info['quantityPrecision']
+    price_precision = symbol_info['pricePrecision']
+
+    # Fetch current market price
+    current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
+    quantity = dollar_amount / current_price
+    quantity = adjust_to_precision(quantity, quantity_precision)
+
+    try:
+        client.futures_change_margin_type(symbol=symbol, marginType='CROSSED')
+    except Exception as e:
+        pass
+
+    if (direction == 'long'):
+        # Place order
+        order = client.futures_create_order(
+            symbol=symbol,
+            side="BUY",
+            type="MARKET",
+            quantity=quantity
+        )
+        
+        # ดึง order ที่เพิ่งสร้าง มาใช้งานต่อ
+        order = client.futures_get_order(
+            symbol=symbol,
+            orderId=order['orderId']
+        )
+        # get enter price
+        enter_price = float(order['avgPrice'])
+        order_id = order['orderId']
+
+        # ค้นหาราคาต่ำสุดย้อนหลัง 24 bars
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=time_frame, limit=24)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        low_price = df['low'].min()
+        # กำหนด stop loss ต่ำกว่า low ที่เจอได้ 1%
+        stop_loss_price = low_price - ((low_price * (1 / 100)) / leverage)
+        stop_loss_price = adjust_to_precision(stop_loss_price, price_precision)
+        # take profit เป็น 1.5 เท่าของ enter_price , stop loss
+        take_profit_price = enter_price + ((enter_price - stop_loss_price) * 1.25)
+        take_profit_price = adjust_to_precision(take_profit_price, price_precision)
+       
+        # สร้าง stop loss order
+        client.futures_create_order(
+            symbol=symbol,
+            side="SELL",
+            type="STOP_MARKET",
+            quantity=quantity,
+            stopPrice=stop_loss_price,
+            closePosition=True,
+            timeInForce='GTE_GTC',
+            order_id=order_id
+        )
+        # สร้าง tailing stop
+        client.futures_create_order(
+            symbol=symbol,
+            side='SELL',
+            type='TRAILING_STOP_MARKET',
+            quantity=quantity,
+            activationPrice=take_profit_price,
+            callbackRate=0.5,
+        )
+
+        """# สร้าง take profit order
+        client.futures_create_order(
+            symbol=symbol,
+            side="SELL",
+            type="TAKE_PROFIT_MARKET",
+            quantity=quantity,
+            stopPrice=take_profit_price,
+            closePosition=True,
+            timeInForce='GTE_GTC',
+            order_id=order_id
+        )"""
+    elif (direction == 'short'):
+        # Place order
+        order = client.futures_create_order(
+            symbol=symbol,
+            side="SELL",
+            type="MARKET",
+            quantity=quantity
+        )
+        
+        # ดึง order ที่เพิ่งสร้าง มาใช้งานต่อ
+        order = client.futures_get_order(
+            symbol=symbol,
+            orderId=order['orderId']
+        )
+        # get enter price
+        enter_price = float(order['avgPrice'])
+        order_id = order['orderId']
+        # ค้นหาราคาสูงสุดย้อนหลัง 24 bars
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=time_frame, limit=24)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        high_price = df['high'].max()
+        # กำหนด stop loss สูงกว่า high ที่เจอได้ 1%
+        stop_loss_price = high_price + ((high_price * (1 / 100)) / leverage)
+        stop_loss_price = adjust_to_precision(stop_loss_price, price_precision)
+        # take profit เป็น 1.5 เท่าของช่องว่างระหว่าง enter_price , stop loss
+        take_profit_price = enter_price - ((stop_loss_price - enter_price) * 1.25)
+        take_profit_price = adjust_to_precision(take_profit_price, price_precision)
+        
+        # สร้าง stop loss order
+        client.futures_create_order(
+            symbol=symbol,
+            side="BUY",
+            type="STOP_MARKET",
+            quantity=quantity,
+            stopPrice=stop_loss_price,
+            closePosition=True,
+            timeInForce='GTE_GTC',
+            order_id=order_id
+        )
+        # สร้าง tailing stop
+        client.futures_create_order(
+            symbol=symbol,
+            side='BUY',
+            type='TRAILING_STOP_MARKET',
+            quantity=quantity,
+            activationPrice=take_profit_price,
+            callbackRate=0.5,
+        )
+        """
+        # สร้าง take profit order
+        client.futures_create_order(
+            symbol=symbol,
+            side="BUY",
+            type="TAKE_PROFIT_MARKET",
+            quantity=quantity,
+            stopPrice=take_profit_price,
+            closePosition=True,
+            timeInForce='GTE_GTC',
+            order_id=order_id
+        )"""
+
+    return order
+
+def process_symbol(symbol, dollar_amount):
+    try:
+        signal = check_trade_signal(symbol)
+        if signal == 'long':
+            direction = 'long'
+            message = f"{symbol}: Bullish signal detected! Opening long position."
+            place_order_future(client, symbol, direction, dollar_amount)
+        elif signal == 'short':                
+            direction = 'short'
+            message = f"{symbol}: Bearish signal detected! Opening short position."
+            place_order_future(client, symbol, direction, dollar_amount)
+    except Exception as e:
+        traceback.print_exc()
+        print(f"1:Error encountered while processing {symbol}: {e}")
+        if "insufficient" in str(e):
+            return 'stop'
+        if "Invalid symbol" in str(e) or "pass an index" in str(e):
+            return 'remove', symbol
+    return 'continue'
+
+def findShortLong():
+    print("Start findShortLong")
+    balance = client.futures_account_balance()
+    balance = [item for item in balance if item['asset'] == 'USDT']
+    balance = float(balance[0]['balance'])
+    dollar_amount = round((balance / 75) * leverage)
+    print(f"balance: {dollar_amount}")    
+    
+    random.shuffle(future_symbols)
+    
+    for symbol in future_symbols:
+        result = process_symbol(symbol, dollar_amount)
+        if result == 'stop':
+            break
+        elif result[0] == 'remove':
+            future_symbols.remove(result[1])
+            print(f"Removed {result[1]} from symbols list.")
+
+    print("End findShortLong")
+
+def recheckPositionReverseSignal():
+    positions = client.futures_position_information()
+    for position in positions:
+        position_amount = float(position['positionAmt'])
+        if position_amount != 0:
+            current_signal =  (position_amount < 0 and 'short') or (position_amount > 0 and 'long')
+            symbol = position['symbol']
+            signal = trade_signal(symbol)
+            if signal != current_signal:
+                message = f"{symbol}: Signal changed from {current_signal} to {signal}. Closing position."
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL" if position_amount > 0 else "BUY",
+                    type="MARKET",
+                    quantity=abs(position_amount)
+                )
+
+def removeOrderLostPosition():
+    # ค้นหา position ที่ไม่มี stop loss หรือ trailing stop
+    positions = client.futures_position_information()
+    for position in positions:
+        position_amount = float(position['positionAmt'])
+        if position_amount != 0:
+            symbol = position['symbol']
+            orders = client.futures_get_open_orders(symbol=symbol)
+            have_stop_loss = False
+            have_trailing_stop = False
+            for order in orders:
+                if order['type'] == 'STOP_MARKET':
+                    have_stop_loss = True
+                if order['type'] == 'TRAILING_STOP_MARKET':
+                    have_trailing_stop = True
+            if not have_stop_loss:
+                print(f"ไม่มี stop loss สำหรับ {symbol} จะทำการปิด position")
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL" if position_amount > 0 else "BUY",
+                    type="MARKET",
+                    quantity=abs(position_amount)
+                )
+            if not have_trailing_stop:
+                print(f"ไม่มี trailing stop สำหรับ {symbol} จะทำการปิด position")
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL" if position_amount > 0 else "BUY",
+                    type="MARKET",
+                    quantity=abs(position_amount)
+                )
+
+    positions = client.futures_position_information()
+    orders = client.futures_get_open_orders()
+    for order in orders:
+        have_position = False
+        for position in positions:
+            if float(position['positionAmt']) != 0 and position['symbol'] == order['symbol']:
+                have_position = True
+                break
+        if not have_position:
+            xsymbol = order['symbol']
+            print(f"ลบ order {xsymbol} ค้าง {order['orderId']} สำเร็จ : 2")
+            client.futures_cancel_order(
+                symbol=order['symbol'],
+                orderId=order['orderId']
+            )
+    
+    # ค้นหา position ที่ไม่มี order != 2 อัน ลบ position นั้นออก
+    positions = client.futures_position_information()
+    for position in positions:
+        position_amount = float(position['positionAmt'])
+        if position_amount != 0:
+            symbol = position['symbol']
+            orders = client.futures_get_open_orders(symbol=symbol)
+            if len(orders) != 2:
+                print(f"ลบ position ที่ไม่มี order ไม่เท่ากับ 2 อัน {symbol} สำเร็จ : 3")
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL" if position_amount > 0 else "BUY",
+                    type="MARKET",
+                    quantity=abs(position_amount)
+                )
+                # ลบ order ที่เหลือออก
+                orders = client.futures_get_open_orders(symbol=symbol)
+                for order in orders:
+                    print(f"ลบ {symbol} order ค้าง {order['orderId']} สำเร็จ : 4")
+                    client.futures_cancel_order(
+                        symbol=order['symbol'],
+                        orderId=order['orderId']
+                    )
+                 
+def tread_spot():
+    # ตลาด spot
+    spot_order_size = 20
+    # place_order_spot(client, "AERGOUSDT", "long", spot_order_size)
+    # place_order_spot(client, "AERGOUSDT", "short", spot_order_size)
+    # spot_symbols สลับ random
+    random.shuffle(spot_symbols)
+    for symbol in spot_symbols:
+        if symbol in ignore_symbols:
+            continue
+        rsi = calculate_rsi(symbol)
+        try:
+            signal = (rsi < 25 and 'long') or (rsi > 75 and 'short') or 'normal'
+            if signal == 'long':
+                direction = 'long'
+                message = f"{symbol}: Bullish signal detected! Opening long position."
+                print(message)
+                place_order_spot(client, symbol, direction, spot_order_size)
+            elif signal == 'short':                
+                # ตรวจสอบว่ามี position ใน spot market อยู่แล้วหรือไม่
+                try:
+                    account_info = client.get_account()
+                except Exception as e:
+                    print(f"Failed to get account information: {e}")
+                for asset in account_info['balances']:
+                    if float(asset['free']) + float(asset['locked']) > 0:
+                        spot_symbol = asset['asset'] + "USDT"
+                        if spot_symbol == symbol:
+                            print(f"มี position ใน spot market อยู่แล้ว {symbol}")
+                            direction = 'short'
+                            message = f"{symbol}: Bearish signal detected! Opening short position."
+                            print(message)
+                            place_order_spot(client, symbol, direction, spot_order_size)
+        except Exception as e:
+            if "insufficient" in str(e):
+                pass
+            if "Market is closed" in str(e) or "pass an index" in str(e):
+                ignore_symbols.append(symbol)
+                pass
+
+if __name__ == "__main__":
+    spot_symbols = [symbol for symbol in fetch_spot_symbols() if '_' not in symbol and not any(char.isdigit() for char in symbol)]
+    future_symbols = [symbol for symbol in fetch_future_symbols() if '_' not in symbol and not any(char.isdigit() for char in symbol)]
+    time_interval = 5
+    if time_frame == '1m':
+        time_interval = 1
+    elif time_frame == '5m':
+        time_interval = 5
+    elif time_frame == '15m':
+        time_interval = 15
+    elif time_frame == '30m':
+        time_interval = 30
+    elif time_frame == '1h':
+        time_interval = 60
+    elif time_frame == '2h':
+        time_interval = 120
+    elif time_frame == '4h':
+        time_interval = 240
+    first_run = True
+    exchange_rate_thai = get_exchange_rate_thai()
+    #tread_spot()
+    while True:
+        try:
+            tm_min = time.localtime(time.time()).tm_min
+            if tm_min % time_interval == 0 or first_run == True:
+                first_run = False                
+                exchange = ccxt.binance()
+                time.sleep(10)
+                # ตลาด future ที
+                #recheckPositionReverseSignal()
+                removeOrderLostPosition()
+                findShortLong()
+                try:
+                    futures_account_info = client.futures_account()
+                    margin_balance = futures_account_info['totalMarginBalance']
+                    withdrawable_amount = futures_account_info['maxWithdrawAmount']
+                    # convert to double
+                    margin_balance = float(margin_balance)
+                    withdrawable_amount = float(withdrawable_amount)
+                    if (margin_balance > 5000 and withdrawable_amount > 200):
+                        transfer_result = client.futures_account_transfer(asset='USDT', amount=100, type=2)
+                except Exception as e:
+                    print(f"Error encountered: {e}")
+                #
+                #tread_spot()
+                #
+                exchange_rate_thai = get_exchange_rate_thai()
+                time.sleep(60)
+            if tm_min % 10 == 0 and time.localtime(time.time()).tm_sec == 0:
+                # ดึง asset ในตลาด future ทั้งหมด
+                futures_account = client.futures_account()       
+                futures_balance = float(futures_account['totalWalletBalance'])
+                for asset in futures_account['assets']:
+                    if float(asset['marginBalance']) > 0:
+                        asset_symbol = asset['asset']
+                        try:
+                            # get price
+                            ticker = client.get_symbol_ticker(symbol=asset_symbol + "USDT")
+                            asset_price = float(ticker['price'])
+                            # convert to usdt
+                            asset_usdt = float(asset['marginBalance']) * asset_price
+                            futures_balance += asset_usdt
+                        except Exception as e:
+                            pass
+                futures_balance_str = f"{futures_balance:,.2f}"
+                # แสดง กำไรขาดทุน format ###,###.## จำนวน position ที่เปิดอยู่
+                positions = client.futures_position_information()
+                profit = 0
+                count_position_loss = 0
+                count_position_profit = 0
+                for position in positions:
+                    if float(position['positionAmt']) != 0:
+                        profit_or_loss = float(position['unRealizedProfit'])
+                        if profit_or_loss < 0:
+                            count_position_loss += 1
+                        else:
+                            count_position_profit += 1
+                        profit += profit_or_loss
+                profit_str = f"{profit:,.2f}"
+                count_position = 0
+                for position in positions:
+                    if float(position['positionAmt']) != 0:
+                        count_position += 1
+                # กำไรสีเขียน ขาดทุนสีแดง
+                if float(profit) > 0:
+                    profit_str = f"\033[92m{profit_str}\033[0m"
+                else:
+                    profit_str = f"\033[91m{profit_str}\033[0m"         
+                # ดึงมูลค่ารวม spot ทั้งหมด แปลงเป็น usdt
+                spot_balance = 0
+                try:
+                    account_info = client.get_account()
+                except Exception as e:
+                    print(f"Failed to get account information: {e}")
+                for asset in account_info['balances']:
+                    spot_symbol = asset['asset'] + "USDT"
+                    # ยกเว้นใน list ignore_symbols
+                    if spot_symbol in ignore_symbols:
+                        continue
+                    if float(asset['free']) + float(asset['locked']) > 0:
+                        spot_symbol_free = float(asset['free'])
+                        spot_symbol_locked = float(asset['locked'])
+                        try:
+                            if spot_symbol == 'USDTUSDT':
+                                spot_balance += spot_symbol_free
+                            else:
+                                ticker = client.get_symbol_ticker(symbol=spot_symbol)
+                                spot_balance += (float(asset['free']) + float(asset['locked'])) * float(ticker['price'])
+                        except Exception as e:
+                            print(f"Error fetching price for {spot_symbol}: {e}")
+                            ignore_symbols.remove(spot_symbol)
+                # แสดงผล
+                total_asset = profit + futures_balance + spot_balance
+                total_asset_str = f"{total_asset:,.2f}"
+                # convert เป็นเงินบาท
+                total_asset_thb = total_asset * exchange_rate_thai
+                total_asset_thb_str = f"{total_asset_thb:,.2f}"
+                print(f"กำไรขาดทุน: {profit_str} จำนวน position: {count_position} ขาดทุน: {count_position_loss} กำไร: {count_position_profit} มูลค่าคงเหลือ: {futures_balance_str} spot: {spot_balance:,.2f} รวม: \033[92m${total_asset_str}\033[0m  รวม : \033[92m{total_asset_thb_str}\033[0m บาท")                
+
+                # แจ้งเตือนผ่าน line
+                message = f"กำไรขาดทุน: {profit:,.2f} position: {count_position} ขาดทุน: {count_position_loss} กำไร: {count_position_profit} คงเหลือ: {futures_balance_str} spot: {spot_balance:,.2f} รวม: ${total_asset_str} รวม: {total_asset_thb_str} บาท"
+                send_line_notify(message)
+            time.sleep(1)
+        except Exception as e:
+            print(f"Error encountered: {e}")
+            time.sleep(60)
+            pass
+        
