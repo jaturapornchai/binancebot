@@ -12,7 +12,7 @@ api_key = "c64a07643c277d2dbd07892bd9804425"
 api_secret = "4ef7ba483b69ffcb9735e1e28ec41799ef85950e5b48783ccc47f2e21336f9a5"
 configuration = gate_api.Configuration(
     key=api_key,
-    secret=api_secret
+    secret=api_secret,
 )
 api_client = gate_api.ApiClient(configuration)
 spot_api = gate_api.SpotApi(api_client)
@@ -20,7 +20,7 @@ line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 # สร้าง client ของ Gate.io
 exchange = ccxt.gateio({
     'apiKey': api_key,
-    'secret': api_secret
+    'secret': api_secret,
 })
 
 def send_line_notify(message):
@@ -33,7 +33,7 @@ def send_line_notify(message):
     response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
     return response.status_code
 
-def place_market_order_buy(trading_pair, amount_usd=20):
+def place_market_order_buy(trading_pair, amount_usd=50):
     print(f"Place market order for {trading_pair} with {amount_usd} USDT")
     order_now = True
     trades = spot_api.list_my_trades(currency_pair=trading_pair)
@@ -85,14 +85,19 @@ def get_usdt_markets_with_info():
         print(f"API Exception when calling SpotApi->list_tickers: {e}")
         return []
 
-def order_buy_use_volume(exchange, timeframe='1h', limit=145):
+def order_buy_use_volume(exchange, timeframe='1h', limit=44):
+    print("Order buy")
     markets = exchange.load_markets()
     usdt_symbols = [symbol for symbol in markets if symbol.endswith('/USDT')]
+    # remove 3S and 3L , 5S and 5L
+    usdt_symbols = [symbol for symbol in usdt_symbols if '3S' not in symbol and '3L' not in symbol and '5S' not in symbol and '5L' not in symbol]
 
-    for symbol in usdt_symbols:
+    for symbol in usdt_symbols:        
         try:
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            if len(ohlcv) < 45:
+            print(ohlcv)
+            if len(ohlcv) < limit:
+                print(f"Skip {symbol} due to insufficient data")
                 continue
 
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -105,7 +110,6 @@ def order_buy_use_volume(exchange, timeframe='1h', limit=145):
                 place_market_order_buy(symbol_remove_usdt)
         except Exception as e:
             print(f"Error fetching data for {symbol}: {e}")
-
 
 def order_remove_all():
     print("Order remove all")
@@ -147,6 +151,7 @@ def take_profit(isorder=False):
                 position_available = float(position.available)
                 if position_available > 0.01:
                     currency_pair = f"{position.currency}_USDT"
+                    #currency_pair = 'WOO3S_USDT'
                     current_price = float(spot_api.list_tickers(currency_pair=currency_pair)[0].last)
                     sum_usdt += position_available * current_price
                     if  position_available * current_price > 3:
@@ -161,12 +166,11 @@ def take_profit(isorder=False):
                             else:
                                 total_amount = 0
                                 total_quantity = 0
-                        average_cost = 0
                         if total_quantity != 0:
                             average_cost = total_amount / total_quantity
 
                         if average_cost == 0:
-                            send_line_notify(f"Average cost is 0 {position.currency}")
+                            send_line_notify(f"Error: {position.currency} average cost is 0")
                         else:
                             if position_available * current_price > 3:
                                 profit_loss = (current_price - average_cost) * position_available
@@ -177,7 +181,7 @@ def take_profit(isorder=False):
                                 print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT")
                                 total_lost += profit_loss if profit_loss < 0 else 0
                                 total_profit += profit_loss if profit_loss > 0 else 0
-                                if profit_loss_percent > 15:
+                                if profit_loss_percent > 10:
                                     current_price = current_price * 1.005
                                     print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
                                     order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
@@ -200,6 +204,10 @@ def order_buy_use_rsi():
     for market_info in usdt_markets_info:
         if market_info['pair'].endswith('3S_USDT') or market_info['pair'].endswith('3L_USDT'):
             order_symbols.append(market_info)
+    # sort by symbol
+    order_symbols = sorted(order_symbols, key=lambda x: x['pair'])
+    last_symbol_rsi = ""
+    last_rsi = 0
     for market_info in order_symbols:
         try:
             symbol = market_info['pair']
@@ -211,8 +219,13 @@ def order_buy_use_rsi():
                 symbol_rsi = symbol_rsi.replace("5S", "")
                 symbol_rsi = symbol_rsi.replace("3L", "")
                 symbol_rsi = symbol_rsi.replace("5L", "")
-                rsi = get_rsi_from_gateio(symbol_rsi)
-                
+                rsi = 0
+                if last_symbol_rsi != symbol_rsi:
+                    last_symbol_rsi = symbol_rsi
+                    rsi = get_rsi_from_gateio(symbol_rsi)
+                    last_rsi = rsi
+                else:
+                    rsi = last_rsi
                 if rsi > 75 and "3S" in symbol:
                     if place_market_order_buy(symbol):
                         print(f"\033[1;31;40mOrder Short {symbol}, RSI: {rsi}\033[1;30;40m")
@@ -273,21 +286,20 @@ def get_rsi_from_gateio(symbol):
 
     except Exception as e:
         return None
+    
 
 if __name__ == "__main__":
     print("\033[1;37;40m")
     order_remove_all()
-    order_buy_use_volume(exchange)
     take_profit(True)
-
+    order_buy_use_rsi()
     while True:
         try:
             if datetime.datetime.now().minute == 1:
                 time.sleep(10)
                 order_remove_all()
                 take_profit(True)
-                order_buy_use_volume(exchange)
-                #order_buy_use_rsi()
+                order_buy_use_rsi()
                 print("*******************************************")
                 time.sleep(60)
         except Exception as e:
