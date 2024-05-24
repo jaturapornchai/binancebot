@@ -17,7 +17,7 @@ sudo docker pull jaturapornchai/getspot:latest
 
 sudo docker-compose up -d
 
-sudo docker logs -f jeadjeadspotbot
+sudo docker logs -f jeadspotbot
 
 ```
 

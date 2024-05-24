@@ -177,7 +177,7 @@ def take_profit(isorder=False):
                                 print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT")
                                 total_lost += profit_loss if profit_loss < 0 else 0
                                 total_profit += profit_loss if profit_loss > 0 else 0
-                                if profit_loss_percent > 10:
+                                if profit_loss_percent > 15:
                                     current_price = current_price * 1.005
                                     print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
                                     order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
