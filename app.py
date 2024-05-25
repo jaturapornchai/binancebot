@@ -6,6 +6,7 @@ import gate_api
 from gate_api.exceptions import ApiException, GateApiException
 from typing import List
 import pandas as pd
+import os
 
 # Configure API key authorization: (Replace 'your_api_key' and 'your_api_secret' with your actual Gate.io API key and secret)
 api_key = "c64a07643c277d2dbd07892bd9804425"
@@ -22,6 +23,7 @@ exchange = ccxt.gateio({
     'apiKey': api_key,
     'secret': api_secret,
 })
+file_name_symbol = "symbol.txt"
 
 def send_line_notify(message):
     """Send notifications through LINE Notify."""
@@ -48,8 +50,8 @@ def place_market_order_buy(trading_pair, amount_usd=50):
             ticker = spot_api.list_tickers(currency_pair=trading_pair)[0]
             current_price = float(ticker.last)  # Get the latest price
             quantity = amount_usd / current_price  # Calculate the quantity to buy
-            # current_price ลดลง 0.25%
-            current_price = current_price * 0.9975
+            # current_price ลดลง 0.1%
+            current_price = current_price * 0.999
 
             # Create a market order, attempting to set time_in_force to None
             order = gate_api.Order(amount=str(quantity), currency_pair=trading_pair, side="buy", type="limit", time_in_force="gtc", price=str(current_price))
@@ -287,19 +289,139 @@ def get_rsi_from_gateio(symbol):
     except Exception as e:
         return None
     
+def get_spot_symbol():
+    exchange = ccxt.binance()  # ตัวอย่างการใช้ Binance exchange
+    markets = exchange.load_markets()
+    usdt_symbols = [symbol for symbol in markets if symbol.endswith('/USDT')]
+    # ลบ 3S และ 3L , 5S และ 5L
+    usdt_symbols = [symbol for symbol in usdt_symbols if '3S' not in symbol and '3L' not in symbol and '5S' not in symbol and '5L' not in symbol and 'UP' not in symbol and 'DOWN' not in symbol and 'USDC' not in symbol]
+    
+    valid_symbols = []
+    count = 0
+    for symbol in usdt_symbols:
+        try:
+            # ดึงข้อมูลราคาล่าสุด
+            ticker = exchange.fetch_ticker(symbol)
+            last_price = ticker['last']
+            
+            # ดึงข้อมูลปริมาณการซื้อขายย้อนหลัง 1 วัน
+            since = exchange.parse8601(exchange.iso8601(datetime.datetime.utcnow() - datetime.timedelta(days=1)))
+            ohlcv = exchange.fetch_ohlcv(symbol, '1d', since)
+            
+            if ohlcv and len(ohlcv) > 0:
+                volume = ohlcv[-1][5]  # ปริมาณการซื้อขายของวันที่ผ่านมา
+                volume_usd = volume * last_price
+                
+                if volume_usd >= 100000:
+                    valid_symbols.append(symbol)
+                    count += 1
+                    print(f"{count} : Symbol: {symbol}, Last Price: {last_price}, Volume (USD): {volume_usd}")
+        
+        except Exception as e:
+            print(f"Error fetching data for {symbol}: {e}")
+    # ลบไฟล์เดิม (ถ้ามี)
+    try:
+        os.remove(file_name_symbol)
+    except FileNotFoundError:
+        pass
+    # บันทึกลงไฟล์
+    with open(file_name_symbol, "w") as f:
+        for symbol in valid_symbols:
+            f.write(f"{symbol}\n")
+    print(f"Found {len(valid_symbols)} valid symbols.")
+
+def check_ema_cross(symbol):
+    try:
+        # ดึงข้อมูลในกรอบเวลา 1 ชั่วโมง
+        timeframe = '1h'
+        limit = 500
+
+        # ดึงข้อมูลแท่งเทียน (ohlcv)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+
+        # สร้าง DataFrame จากข้อมูลแท่งเทียน
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+        # แปลง timestamp เป็นวันที่และเวลาในเวลาโลก (UTC)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+        # คำนวณ EMA 200
+        df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
+
+        # หาจุดตัดของราคาและ EMA 200
+        cross_up = df[(df['close'].shift(1) < df['EMA200'].shift(1)) & (df['close'] > df['EMA200'])]
+        cross_down = df[(df['close'].shift(1) > df['EMA200'].shift(1)) & (df['close'] < df['EMA200'])]
+
+        # ตรวจหาจุดตัดล่าสุด
+        if not cross_up.empty and cross_up['timestamp'].iloc[-1] == df['timestamp'].iloc[-1]:
+            return "Up"
+        elif not cross_down.empty and cross_down['timestamp'].iloc[-1] == df['timestamp'].iloc[-1]:
+            return "Down"
+        else:
+            return None
+    except Exception as e:
+        return f"Error: {e}"
+
+def order_buy_use_ema200():
+    print("Order buy")
+    usdt_markets_info = get_usdt_markets_with_info()
+    usdt_markets_info = sorted(usdt_markets_info, key=lambda x: x['percentage_change'], reverse=True)
+    order_symbols = []
+    for market_info in usdt_markets_info:
+        if market_info['pair'].endswith('3S_USDT') or market_info['pair'].endswith('3L_USDT'):
+            order_symbols.append(market_info)
+    # sort by symbol
+    order_symbols = sorted(order_symbols, key=lambda x: x['pair'])
+    last_symbol_ema = ""
+    last_ema = 0
+    for market_info in order_symbols:
+        try:
+            symbol = market_info['pair']
+            if symbol.endswith('USD_USDT'):
+                continue
+            try:
+                symbol_rsi = symbol.replace("_USDT", "")
+                symbol_rsi = symbol_rsi.replace("3S", "")
+                symbol_rsi = symbol_rsi.replace("5S", "")
+                symbol_rsi = symbol_rsi.replace("3L", "")
+                symbol_rsi = symbol_rsi.replace("5L", "")
+                symbol_ema = symbol_rsi + "/USDT"
+                ema = 0
+                if last_symbol_ema != symbol_ema:
+                    last_symbol_ema = symbol_ema
+                    ema = check_ema_cross(symbol_ema)
+                    last_ema = ema
+                else:
+                    ema = last_ema
+                if ema is not None:
+                    if ema == "Up" and "3L" in symbol:
+                        if place_market_order_buy(symbol):
+                            print(f"\033[1;31;40mOrder Short {symbol}, EMA: {ema}\033[1;30;40m")
+                    
+                    if ema == "Down" and "3S" in symbol:
+                        if place_market_order_buy(symbol):
+                            print(f"\033[1;32;40mOrder Long {symbol}, EMA: {ema}\033[1;30;40m")
+            except Exception as e:
+                print(f"order_buy 1 : Exception: {e} {symbol}")
+        except Exception as e:
+            print(f"order_buy 2 : Exception: {e} {symbol}")
+
+    print("Order buy end")
 
 if __name__ == "__main__":
     print("\033[1;37;40m")
     order_remove_all()
     take_profit(True)
-    order_buy_use_rsi()
+    order_buy_use_ema200()
+    #order_buy_use_rsi()
     while True:
         try:
             if datetime.datetime.now().minute == 1:
                 time.sleep(10)
                 order_remove_all()
                 take_profit(True)
-                order_buy_use_rsi()
+                order_buy_use_ema200()
+                #order_buy_use_rsi()
                 print("*******************************************")
                 time.sleep(60)
         except Exception as e:
