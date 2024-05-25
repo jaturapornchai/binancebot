@@ -362,7 +362,7 @@ def check_ema_cross(symbol):
     except Exception as e:
         return f"Error: {e}"
 
-def order_buy_use_ema200():
+def order_buy_use_ema200_shot_long():
     print("Order buy")
     usdt_markets_info = get_usdt_markets_with_info()
     usdt_markets_info = sorted(usdt_markets_info, key=lambda x: x['percentage_change'], reverse=True)
@@ -396,13 +396,32 @@ def order_buy_use_ema200():
                 if ema is not None:
                     if ema == "Up" and "3L" in symbol:
                         if place_market_order_buy(symbol):
-                            print(f"\033[1;31;40mOrder Short {symbol}, EMA: {ema}\033[1;30;40m")
+                            print(f"\033[1;31;40mOrder Long {symbol}, EMA: {ema}\033[1;30;40m")
                     
                     if ema == "Down" and "3S" in symbol:
                         if place_market_order_buy(symbol):
-                            print(f"\033[1;32;40mOrder Long {symbol}, EMA: {ema}\033[1;30;40m")
+                            print(f"\033[1;32;40mOrder Short {symbol}, EMA: {ema}\033[1;30;40m")
             except Exception as e:
                 print(f"order_buy 1 : Exception: {e} {symbol}")
+        except Exception as e:
+            print(f"order_buy 2 : Exception: {e} {symbol}")
+
+    print("Order buy end")
+
+def order_buy_use_ema200():
+    print("Order buy")
+    # read from file
+    with open(file_name_symbol, "r") as f:
+        order_symbols = f.read().splitlines()
+    for market_info in order_symbols:
+        try:
+            symbol = market_info            
+            ema = check_ema_cross(symbol)
+            if ema is not None:
+                print(f"Symbol: {symbol}, EMA: {ema}")
+                if ema == "Up":
+                    if place_market_order_buy(symbol):
+                        print(f"\033[1;31;40mOrder Long {symbol}, EMA: {ema}\033[1;30;40m")
         except Exception as e:
             print(f"order_buy 2 : Exception: {e} {symbol}")
 
