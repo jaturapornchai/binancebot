@@ -364,6 +364,32 @@ def check_ema_cross(symbol):
     except Exception as e:
         return f"Error: {e}"
 
+def check_ema_cross_day(symbol):
+    try:
+        # ดึงข้อมูลในกรอบเวลา 1 วัน
+        timeframe = '1d'
+        limit = 500
+
+        # ดึงข้อมูลแท่งเทียน (ohlcv)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+
+        # สร้าง DataFrame จากข้อมูลแท่งเทียน
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+        # แปลง timestamp เป็นวันที่และเวลาในเวลาโลก (UTC)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+        # คำนวณ EMA 200
+        df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
+
+        # ตรวจสอบว่าราคาปิดปัจจุบันอยู่เหนือ EMA 200 หรือไม่
+        if df['close'].iloc[-1] > df['EMA200'].iloc[-1]:
+            return True
+        else:
+            return False
+    except Exception as e:
+        return f"Error: {e}"
+    
 def order_buy_use_ema200_shot_long():
     print("Order buy")
     usdt_markets_info = get_usdt_markets_with_info()
@@ -484,9 +510,10 @@ def order_buy_low():
             volume_usd = volume * current_price
             if volume_usd > 10000 and volume_usd < 100000:            
                 if is_price_near_lowest(symbol):
-                    print(f"{symbol} : {volume_usd}")                    
-                    if place_market_order_buy(symbol):
-                        print(f"\033[1;31;40mOrder Long {symbol}\033[1;30;40m")
+                    if check_ema_cross_day(symbol):
+                        print(f"Order : {symbol} : {volume_usd}")                    
+                        if place_market_order_buy(symbol):
+                            print(f"\033[1;31;40mOrder Long {symbol}\033[1;30;40m")
         except Exception as e:
             print(f"order_buy low : Exception: {e} {symbol}")
 
