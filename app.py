@@ -36,7 +36,7 @@ def send_line_notify(message):
     response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
     return response.status_code
 
-def place_market_order_buy(trading_pair, amount_usd=50):
+def place_market_order_buy(trading_pair, amount_usd=20):
     trading_pair = trading_pair.replace("/", "_")
     print(f"Place market order for {trading_pair} with {amount_usd} USDT")
     order_now = True
@@ -454,16 +454,15 @@ def is_price_near_lowest(symbol):
     
     return False
 
-def get_volume_symbols(symbol, timeframe='1h', limit=44):
+def get_volume_symbols(symbol, timeframe='1h', limit=24):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     if len(ohlcv) < limit:
         return 0
 
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    avg_volume = df['volume'].iloc[:-1].tail(limit).mean()
+    total_volume = df['volume'].sum()
 
-    return avg_volume
-
+    return total_volume
 
 
 def order_buy_low():
@@ -483,7 +482,7 @@ def order_buy_low():
             # ค้นหาราคาล่าสุด
             current_price = exchange.fetch_ticker(symbol)['last']
             volume_usd = volume * current_price
-            if volume_usd >= 10000:            
+            if volume_usd > 10000 and volume_usd < 100000:            
                 if is_price_near_lowest(symbol):
                     print(f"{symbol} : {volume_usd}")                    
                     if place_market_order_buy(symbol):
@@ -493,10 +492,28 @@ def order_buy_low():
 
     print("Order buy low end")
 
+def close_all_position():
+    # ขายทิ้ง
+    positions =  spot_api.list_spot_accounts()
+    total_lost = 0
+    total_profit = 0
+    sum_usdt = 0
+    for position in positions:
+        try:
+            position_available = float(position.available)
+            if position_available > 0.01:
+                order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="market", time_in_force="ioc")
+                spot_api.create_order(order)
+        except Exception as e:
+            print(f"{position.currency} Exception: {e}")
+
+
+
 if __name__ == "__main__":
     print("\033[1;37;40m")
     order_remove_all()
-    take_profit(True)
+    #close_all_position()
+    #take_profit(True)
     order_buy_low()
     #order_buy_use_ema200()
     #order_buy_use_rsi()
@@ -505,7 +522,7 @@ if __name__ == "__main__":
             if datetime.datetime.now().minute == 1:
                 time.sleep(10)
                 order_remove_all()
-                take_profit(True)
+                #take_profit(True)
                 order_buy_low()
                 #order_buy_use_ema200()
                 #order_buy_use_rsi()
