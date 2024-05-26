@@ -36,7 +36,7 @@ def send_line_notify(message):
     response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
     return response.status_code
 
-def place_market_order_buy(trading_pair, amount_usd=20):
+def place_market_order_buy(trading_pair, amount_usd=50):
     trading_pair = trading_pair.replace("/", "_")
     print(f"Place market order for {trading_pair} with {amount_usd} USDT")
     order_now = True
