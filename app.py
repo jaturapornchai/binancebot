@@ -7,6 +7,7 @@ from gate_api.exceptions import ApiException, GateApiException
 from typing import List
 import pandas as pd
 import os
+import numpy as np
 
 # Configure API key authorization: (Replace 'your_api_key' and 'your_api_secret' with your actual Gate.io API key and secret)
 api_key = "c64a07643c277d2dbd07892bd9804425"
@@ -36,6 +37,7 @@ def send_line_notify(message):
     return response.status_code
 
 def place_market_order_buy(trading_pair, amount_usd=50):
+    trading_pair = trading_pair.replace("/", "_")
     print(f"Place market order for {trading_pair} with {amount_usd} USDT")
     order_now = True
     trades = spot_api.list_my_trades(currency_pair=trading_pair)
@@ -427,11 +429,76 @@ def order_buy_use_ema200():
 
     print("Order buy end")
 
+def is_price_near_lowest(symbol):
+    # ดึงข้อมูล OHLCV จาก Gate.io
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=44)
+    
+    # สร้าง DataFrame จากข้อมูล OHLCV
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    
+    # คำนวณราคาต่ำสุดย้อนหลัง 44 time frame
+    min_low_price = df['low'].min()
+    
+    # ราคาปัจจุบัน (ราคาปิดล่าสุด)
+    current_price = df['close'].iloc[-1]
+    
+    # ตรวจสอบว่าราคาปัจจุบันใกล้ราคาต่ำสุดภายใน 1% หรือไม่
+    if current_price <= min_low_price * 1.01:
+        # หาตำแหน่งของราคาต่ำสุด
+        min_low_index = df['low'].idxmin()
+        
+        # ตรวจสอบว่าตำแหน่งของราคาต่ำสุดห่างจากตำแหน่งปัจจุบัน 44 time frame หรือไม่
+        if len(df) - min_low_index > 14:
+            print(f"Symbol: {symbol}, Current Price: {current_price}, Min Low Price: {min_low_price}")
+            return True
+    
+    return False
+
+def get_volume_symbols(symbol, timeframe='1h', limit=44):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    if len(ohlcv) < limit:
+        return 0
+
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    avg_volume = df['volume'].iloc[:-1].tail(limit).mean()
+
+    return avg_volume
+
+
+
+def order_buy_low():
+    markets = exchange.load_markets()
+    order_symbols = []
+    for symbol in markets:
+        if symbol.endswith('/USDT'):
+            order_symbols.append(symbol)
+    # ลบ 3S และ 3L , 5S และ 5L
+    order_symbols = [symbol for symbol in order_symbols if '3S' not in symbol and '3L' not in symbol and '5S' not in symbol and '5L' not in symbol]
+    # remove USDC
+    order_symbols = [symbol for symbol in order_symbols if 'USDC' not in symbol]
+    print("Order buy low")
+    for symbol in order_symbols:
+        try:
+            volume = get_volume_symbols(symbol)
+            # ค้นหาราคาล่าสุด
+            current_price = exchange.fetch_ticker(symbol)['last']
+            volume_usd = volume * current_price
+            if volume_usd >= 10000:            
+                if is_price_near_lowest(symbol):
+                    print(f"{symbol} : {volume_usd}")                    
+                    if place_market_order_buy(symbol):
+                        print(f"\033[1;31;40mOrder Long {symbol}\033[1;30;40m")
+        except Exception as e:
+            print(f"order_buy low : Exception: {e} {symbol}")
+
+    print("Order buy low end")
+
 if __name__ == "__main__":
     print("\033[1;37;40m")
     order_remove_all()
     take_profit(True)
-    order_buy_use_ema200()
+    order_buy_low()
+    #order_buy_use_ema200()
     #order_buy_use_rsi()
     while True:
         try:
@@ -439,7 +506,8 @@ if __name__ == "__main__":
                 time.sleep(10)
                 order_remove_all()
                 take_profit(True)
-                order_buy_use_ema200()
+                order_buy_low()
+                #order_buy_use_ema200()
                 #order_buy_use_rsi()
                 print("*******************************************")
                 time.sleep(60)
