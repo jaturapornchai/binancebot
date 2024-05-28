@@ -133,6 +133,7 @@ def place_market_order_buy(trading_pair, amount_usd=20):
 
 
 def order_buy():
+    print("Order buy")
     markets = exchange.load_markets()
     order_symbols = []
     for symbol in markets:
@@ -153,12 +154,13 @@ def order_buy():
                 # ค้นหาราคาล่าสุด
                 current_price = exchange.fetch_ticker(symbol)['last']
                 volume_usd = volume * current_price
-                if volume_usd > 50000:            
+                if volume_usd > 10000:            
                     print(symbol, result)
                     place_market_order_buy(symbol)
 
         except Exception as e:
             print(e)
+    print("Order buy end")
 
 def order_remove_all():
     print("Order remove all")
