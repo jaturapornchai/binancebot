@@ -181,10 +181,10 @@ def order_remove_all():
 
 if __name__ == "__main__":
     print("\033[1;37;40m")
-    #order_remove_all()
+    order_remove_all()
     #close_all_position()
     #take_profit(True)
-    #order_buy()
+    order_buy()
     #order_buy_use_ema200()
     #order_buy_use_rsi()
     while True:
