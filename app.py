@@ -71,7 +71,7 @@ def linear_regression_channel(df):
 
 def check_price_breakout(symbol):
     """
-    ตรวจสอบสถานะราคาว่าตัดขึ้นจาก Linear Regression Channel ใน time frame ปัจจุบัน
+    ตรวจสอบสถานะราคาว่าตัดกับเส้น upper channel พอดีและเป็นการตัดขึ้น
     """
     df = fetch_ohlcv(symbol)
     df = linear_regression_channel(df)
@@ -79,9 +79,10 @@ def check_price_breakout(symbol):
     current_close = df['close'].iloc[-1]
     current_upper = df['upper_channel'].iloc[-1]
     current_slope = df['slope'].iloc[-1]
+    previous_close = df['close'].iloc[-2]
 
-    # ตรวจสอบว่าราคาได้ตัดขึ้นเหนือเส้น upper channel หรือไม่
-    breakout_up = current_close > current_upper
+    # ตรวจสอบว่าราคาได้ตัดพอดีกับเส้น upper channel และเป็นการตัดขึ้น
+    breakout_up = previous_close < current_upper and current_close >= current_upper
     # ตรวจสอบว่าเส้น Linear Regression Channel เป็นขาลงหรือไม่
     downtrend = current_slope < 0
     
