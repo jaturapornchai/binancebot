@@ -4,3 +4,5 @@ pandas
 ccxt
 binance
 gate-api
+termcolor
+typing
