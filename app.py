@@ -1,3 +1,4 @@
+import datetime
 import ccxt
 import pandas as pd
 import numpy as np
@@ -178,15 +179,16 @@ def order_remove_all():
 
 if __name__ == "__main__":
     print("\033[1;37;40m")
-    order_remove_all()
+    #order_remove_all()
     #close_all_position()
     #take_profit(True)
-    order_buy()
+    #order_buy()
     #order_buy_use_ema200()
     #order_buy_use_rsi()
     while True:
         try:
-            if datetime.datetime.now().minute == 1:
+            now = datetime.now()
+            if now.minute == 1:
                 time.sleep(10)
                 order_remove_all()
                 #take_profit(True)
