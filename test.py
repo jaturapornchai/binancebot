@@ -1,83 +1,61 @@
 import ccxt
 import pandas as pd
-from datetime import datetime, timedelta
-import time
-from termcolor import colored
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
-# Set up Gate.io API
-exchange = ccxt.gateio()
+# ตั้งค่า API key และ secret
+api_key = 'c64a07643c277d2dbd07892bd9804425'
+api_secret = '4ef7ba483b69ffcb9735e1e28ec41799ef85950e5b48783ccc47f2e21336f9a5'
 
-# Fetch OHLCV data from Gate.io
-def fetch_recent_ohlcv(symbol, timeframe='1h', limit=900):
-    try:
-        data = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        return data
-    except Exception as e:
-        print(f"Error fetching data for {symbol}: {e}")
-        return []
+# สร้าง client ของ Gate.io
+exchange = ccxt.gateio({
+    'apiKey': api_key,
+    'secret': api_secret
+})
 
-# Calculate RSI
-def calculate_rsi(df, window=14):
-    delta = df['close'].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=window, min_periods=1).mean()
-    avg_loss = loss.rolling(window=window, min_periods=1).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+def fetch_ohlcv(symbol, timeframe='1h', limit=100):
+    """
+    ดึงข้อมูล OHLCV จาก Gate.io
+    """
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
 
-# Detect RSI Divergences
-def detect_divergence(df, rsi_col='rsi', price_col='close', lbL=5, lbR=5, rangeUpper=60, rangeLower=5):
-    bull_divergences = []
-    bear_divergences = []
+def linear_regression_channel(df):
+    """
+    สร้าง Linear Regression Channel จากข้อมูลราคา
+    """
+    X = np.arange(len(df)).reshape(-1, 1)
+    y = df['close'].values
 
-    for i in range(lbR, len(df) - lbR):
-        rsi_window = df[rsi_col].iloc[i - lbR:i + lbR + 1]
-        price_window = df[price_col].iloc[i - lbR:i + lbR + 1]
+    model = LinearRegression().fit(X, y)
+    trend = model.predict(X)
 
-        # Bullish Divergence: ราคาลดลง แต่ RSI เพิ่มขึ้น
-        if rsi_window.iloc[-1] > rsi_window.iloc[0] and price_window.iloc[-1] < price_window.iloc[0]:
-            bull_divergences.append((df.index[i], df[price_col].iloc[i]))
+    residuals = y - trend
+    std_dev = np.std(residuals)
 
-        # Bearish Divergence: ราคาเพิ่มขึ้น แต่ RSI ลดลง
-        if rsi_window.iloc[-1] < rsi_window.iloc[0] and price_window.iloc[-1] > price_window.iloc[0]:
-            bear_divergences.append((df.index[i], df[price_col].iloc[i]))
+    upper_channel = trend + 2 * std_dev
+    lower_channel = trend - 2 * std_dev
 
-    return bull_divergences, bear_divergences
+    df['upper_channel'] = upper_channel
+    df['lower_channel'] = lower_channel
+    df['trend'] = trend
+    
+    return df
 
-# Main function to fetch data, calculate RSI, detect divergence, and display results
-def analyze_symbols(symbols, timeframe='1h', lookback_hours=6):
-    for symbol in symbols:
-        data = fetch_recent_ohlcv(symbol, timeframe)
-        if not data:
-            continue
+def check_price_breakout(symbol):
+    """
+    ตรวจสอบสถานะราคาว่าตัดขึ้นหรือลงจาก Linear Regression Channel หรือไม่
+    """
+    df = fetch_ohlcv(symbol)
+    df = linear_regression_channel(df)
+    
+    if df['close'].iloc[-1] > df['upper_channel'].iloc[-1]:
+        return True
+    return False
 
-        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df['rsi'] = calculate_rsi(df)
-
-        bull_divs, bear_divs = detect_divergence(df, lbL=5, lbR=5)
-
-        # Check for Divergences in the specified lookback hours
-        current_time = df.index[-1]
-        lookback_period = timedelta(hours=lookback_hours)
-        recent_bull_divs = [d for d in bull_divs if d[0] >= current_time - lookback_period]
-        recent_bear_divs = [d for d in bear_divs if d[0] >= current_time - lookback_period]
-
-        # Print the latest Divergence if any
-        if recent_bull_divs:
-            latest_bull_div = recent_bull_divs[-1]
-            print(colored(f"RSI Divergences for {symbol}: Latest Bullish Divergence detected at {latest_bull_div[0]}.", 'green'))
-        if recent_bear_divs:
-            latest_bear_div = recent_bear_divs[-1]
-            print(colored(f"RSI Divergences for {symbol}: Latest Bearish Divergence detected at {latest_bear_div[0]}.", 'red'))
-        if not recent_bull_divs and not recent_bear_divs:
-            print(colored(f"RSI Divergences for {symbol}: No divergence in the last {lookback_hours} hours", 'white'))
-
-# Function to run every first minute of the hour
-def run_analysis():
+if __name__ == '__main__':
     markets = exchange.load_markets()
     order_symbols = []
     for symbol in markets:
@@ -88,16 +66,10 @@ def run_analysis():
     # remove USDC
     order_symbols = [symbol for symbol in order_symbols if 'USDC' not in symbol]
     print("Order buy low")
-    analyze_symbols(order_symbols, timeframe='1h', lookback_hours=6)
-    while True:
-        current_time = datetime.now()
-        if current_time.minute == 0:
-            analyze_symbols(order_symbols, timeframe='1h', lookback_hours=6)
-            # Wait for the next hour
-            time.sleep(3600)
-        else:
-            # Sleep for a minute and check again
-            time.sleep(60)
-
-# Start the analysis process
-run_analysis()
+    for symbol in order_symbols:
+        try:
+            result = check_price_breakout(symbol)
+            if result != "ปรกติ":
+                print(symbol, result)
+        except Exception as e:
+            print(e)
