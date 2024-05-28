@@ -133,7 +133,7 @@ def place_market_order_buy(trading_pair, amount_usd=20):
 
 
 def order_buy():
-    print("Order buy")
+    print("Order buy start")
     markets = exchange.load_markets()
     order_symbols = []
     for symbol in markets:
@@ -145,7 +145,6 @@ def order_buy():
     order_symbols = [symbol for symbol in order_symbols if 'USDC' not in symbol]
     # random
     np.random.shuffle(order_symbols)
-    print("Order buy low")
     for symbol in order_symbols:
         try:
             result = check_price_breakout(symbol)
