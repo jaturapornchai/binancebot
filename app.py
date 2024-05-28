@@ -100,6 +100,7 @@ def get_volume_symbols(symbol, timeframe='1h', limit=24):
     return total_volume
 
 def place_market_order_buy(trading_pair, amount_usd=20):
+    trading_pair = trading_pair.replace("/", "_").upper()
     print(f"Place market order for {trading_pair} with {amount_usd} USDT")
     order_now = True
     trades = spot_api.list_my_trades(currency_pair=trading_pair)
