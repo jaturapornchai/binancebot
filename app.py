@@ -135,8 +135,8 @@ def place_market_order_buy(trading_pair, amount_usd=20):
             ticker = spot_api.list_tickers(currency_pair=trading_pair)[0]
             current_price = float(ticker.last)  # Get the latest price
             quantity = amount_usd / current_price  # Calculate the quantity to buy
-            # current_price เพิ่มขึ้น 0.1%
-            current_price = current_price * 1.001
+            # current_price เพิ่มขึ้น 0.5%
+            current_price = current_price * 1.005
 
             # Create a market order, attempting to set time_in_force to None
             order = gate_api.Order(amount=str(quantity), currency_pair=trading_pair, side="buy", type="limit", time_in_force="gtc", price=str(current_price))
