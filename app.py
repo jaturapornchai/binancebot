@@ -196,6 +196,21 @@ def order_remove_all():
     except ApiException as e:
         print("Error fetching open orders:", e)        
 
+def close_all_position():
+    # ขายทิ้ง
+    positions =  spot_api.list_spot_accounts()
+    total_lost = 0
+    total_profit = 0
+    sum_usdt = 0
+    for position in positions:
+        try:
+            position_available = float(position.available)
+            if position_available > 0.01:
+                order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="market", time_in_force="ioc")
+                spot_api.create_order(order)
+        except Exception as e:
+            print(f"{position.currency} Exception: {e}")
+
 if __name__ == "__main__":
     print("\033[1;37;40m")
     order_remove_all()
