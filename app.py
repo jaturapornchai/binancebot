@@ -149,7 +149,6 @@ def place_market_order_buy(trading_pair, amount_usd=20):
     else:
         print(f"Skip order for {trading_pair}")
 
-
 def order_buy():
     print("Order buy start")
     markets = exchange.load_markets()
