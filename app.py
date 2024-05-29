@@ -70,7 +70,7 @@ def linear_regression_channel(df):
     
     return df
 
-def check_price_breakout(symbol):
+def xcheck_price_breakout(symbol):
     """
     ตรวจสอบสถานะราคาว่าตัดกับเส้น upper channel พอดีและเป็นการตัดขึ้น
     """
@@ -88,6 +88,24 @@ def check_price_breakout(symbol):
     downtrend = current_slope < 0
     
     if breakout_up and downtrend:
+        return True
+    return False
+
+def check_price_breakout(symbol):
+    """
+    ตรวจสอบสถานะราคาว่าตัดกับเส้นล่างของ channel พอดี
+    """
+    df = fetch_ohlcv(symbol)
+    df = linear_regression_channel(df)
+    
+    current_close = df['close'].iloc[-1]
+    current_lower = df['lower_channel'].iloc[-1]
+    previous_close = df['close'].iloc[-2]
+
+    # ตรวจสอบว่าราคาได้ตัดพอดีกับเส้นล่างของ channel
+    breakout_down = previous_close > current_lower and current_close <= current_lower
+
+    if breakout_down:
         return True
     return False
 
@@ -153,7 +171,7 @@ def order_buy():
                 # ค้นหาราคาล่าสุด
                 current_price = exchange.fetch_ticker(symbol)['last']
                 volume_usd = volume * current_price
-                if volume_usd > 10000:            
+                if volume_usd > 50000:            
                     print(symbol, result)
                     place_market_order_buy(symbol)
 
