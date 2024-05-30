@@ -70,30 +70,31 @@ def linear_regression_channel(df):
     
     return df
 
-def xcheck_price_breakout(symbol):
+def check_price_breakout(symbol):
     """
-    ตรวจสอบสถานะราคาว่าตัดกับเส้น upper channel พอดีและเป็นการตัดขึ้น
+    ตรวจสอบสถานะว่าราคาได้ตัดขึ้นกับเส้นบนของ channel ขาลงพอดี
     """
     df = fetch_ohlcv(symbol)
     df = linear_regression_channel(df)
     
     current_close = df['close'].iloc[-1]
     current_upper = df['upper_channel'].iloc[-1]
-    current_slope = df['slope'].iloc[-1]
     previous_close = df['close'].iloc[-2]
+    current_slope = df['slope'].iloc[-1]
 
-    # ตรวจสอบว่าราคาได้ตัดพอดีกับเส้น upper channel และเป็นการตัดขึ้น
+    # ตรวจสอบว่า channel เป็นขาลง (slope เป็นลบ)
+    is_downtrend = current_slope < 0
+
+    # ตรวจสอบว่าราคาได้ตัดขึ้นกับเส้นบนของ channel
     breakout_up = previous_close < current_upper and current_close >= current_upper
-    # ตรวจสอบว่าเส้น Linear Regression Channel เป็นขาลงหรือไม่
-    downtrend = current_slope < 0
-    
-    if breakout_up and downtrend:
+
+    if is_downtrend and breakout_up:
         return True
     return False
 
-def check_price_breakout(symbol):
+def check_price_breakout_down(symbol):
     """
-    ตรวจสอบสถานะราคาว่าตัดกับเส้นล่างของ channel พอดี
+    ตรวจสอบสถานะว่าราคาได้ตัดลงกับเส้นล่างของ channel ขาขึ้นพอดี
     """
     df = fetch_ohlcv(symbol)
     df = linear_regression_channel(df)
@@ -101,11 +102,15 @@ def check_price_breakout(symbol):
     current_close = df['close'].iloc[-1]
     current_lower = df['lower_channel'].iloc[-1]
     previous_close = df['close'].iloc[-2]
+    current_slope = df['slope'].iloc[-1]
 
-    # ตรวจสอบว่าราคาได้ตัดพอดีกับเส้นล่างของ channel
+    # ตรวจสอบว่า channel เป็นขาขึ้น (slope เป็นบวก)
+    is_uptrend = current_slope > 0
+
+    # ตรวจสอบว่าราคาได้ตัดลงกับเส้นล่างของ channel
     breakout_down = previous_close > current_lower and current_close <= current_lower
 
-    if breakout_down:
+    if is_uptrend and breakout_down:
         return True
     return False
 
@@ -178,6 +183,20 @@ def order_buy():
             print(e)
     print("Order buy end")
 
+def order_stop():
+    print("Order stop start")
+    positions =  spot_api.list_spot_accounts()
+    for position in positions:
+        symbol = f"{position.currency}_USDT"        
+        try:
+            if check_price_breakout_down(symbol):
+                order = gate_api.Order(amount=str(position.available), currency_pair=f"{position.currency}_USDT", side="sell", type="market", time_in_force="ioc")
+                spot_api.create_order(order)
+        except Exception as e:
+            print(f"{position.currency} Exception: {e}")
+    print("Order stop end")
+
+
 def order_remove_all():
     print("Order remove all")
     try:
@@ -216,6 +235,7 @@ if __name__ == "__main__":
     #close_all_position()
     #take_profit(True)
     order_buy()
+    order_stop()
     #order_buy_use_ema200()
     #order_buy_use_rsi()
     while True:
@@ -226,6 +246,7 @@ if __name__ == "__main__":
                 order_remove_all()
                 #take_profit(True)
                 order_buy()
+                order_stop()
                 #order_buy_use_ema200()
                 #order_buy_use_rsi()
                 print("*******************************************")
