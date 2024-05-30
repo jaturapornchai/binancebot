@@ -235,7 +235,6 @@ if __name__ == "__main__":
     #close_all_position()
     #take_profit(True)
     order_buy()
-    order_stop()
     #order_buy_use_ema200()
     #order_buy_use_rsi()
     while True:
@@ -246,7 +245,6 @@ if __name__ == "__main__":
                 order_remove_all()
                 #take_profit(True)
                 order_buy()
-                order_stop()
                 #order_buy_use_ema200()
                 #order_buy_use_rsi()
                 print("*******************************************")
