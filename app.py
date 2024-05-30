@@ -403,7 +403,7 @@ def take_profit():
                                         print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
                                         order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
                                         spot_api.create_order(order)
-                                    if profit_loss_percent < -50 and isorder == True:
+                                    if profit_loss_percent < -50:
                                         # loss 50% ซื้อเพิ่ม
                                         # พิมพ์สีเหลือง
                                         print(f"\033[1;33;40m{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
