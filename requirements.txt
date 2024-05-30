@@ -6,3 +6,4 @@ binance
 gate-api
 termcolor
 typing
+scikit-learn
