@@ -38,7 +38,7 @@ def send_line_notify(message):
     response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
     return response.status_code
 
-def fetch_ohlcv(symbol, timeframe='1h', limit=100):
+def fetch_ohlcv(symbol, timeframe='15m', limit=100):
     """
     ดึงข้อมูล OHLCV จาก Gate.io
     """
@@ -114,7 +114,7 @@ def check_price_breakout_down(symbol):
         return True
     return False
 
-def get_volume_symbols(symbol, timeframe='1h', limit=24):
+def get_volume_symbols(symbol, timeframe='15m', limit=24):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     if len(ohlcv) < limit:
         return 0
@@ -226,7 +226,7 @@ def find_divergence(data, swing_highs, swing_lows):
     return divergences
 
 def check_buy_div_signal(symbol):
-    timeframe = '1h'
+    timeframe = '15m'
     limit = 1000  # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
     since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 30  # ดึงข้อมูลย้อนหลัง 30 วัน
 
@@ -397,7 +397,7 @@ def take_profit():
                                     print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT")
                                     total_lost += profit_loss if profit_loss < 0 else 0
                                     total_profit += profit_loss if profit_loss > 0 else 0
-                                    if profit_loss_percent > 15:
+                                    if profit_loss_percent > 5:
                                         # ลดลง 0.5%
                                         current_price = current_price * 0.995
                                         print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
@@ -430,7 +430,7 @@ if __name__ == "__main__":
     while True:
         try:
             now = datetime.now()
-            if now.minute == 4:
+            if now.minute % 15 == 0:
                 time.sleep(10)
                 order_remove_all()
                 #take_profit()
