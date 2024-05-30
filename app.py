@@ -441,7 +441,7 @@ if __name__ == "__main__":
                 print("*******************************************")
                 time.sleep(60)
             else:
-                if now.minute % 5 == 0:
+                if now.minute % 10 == 0:
                     take_profit()
                     time.sleep(60)
         except Exception as e:
