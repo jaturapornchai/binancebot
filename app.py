@@ -430,7 +430,7 @@ if __name__ == "__main__":
     while True:
         try:
             now = datetime.now()
-            if now.minute == 1:
+            if now.minute == 3:
                 time.sleep(10)
                 order_remove_all()
                 #take_profit()
