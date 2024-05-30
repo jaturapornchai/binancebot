@@ -403,6 +403,7 @@ def take_profit():
                                         print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
                                         order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
                                         spot_api.create_order(order)
+                                        send_line_notify(f"{position.currency}: take profit {profit_loss_str}$")
                                     if profit_loss_percent < -50:
                                         # loss 50% ซื้อเพิ่ม
                                         # พิมพ์สีเหลือง
@@ -416,7 +417,6 @@ def take_profit():
     print(f"Total Profit: {total_profit}, Total Lost: {total_lost} profit balance {total_profit + total_lost} USDT: {sum_usdt}")
     # print black color
     print("\033[1;30;40m")
-    send_line_notify(f"Total Profit: {total_profit:.2f}, Total Lost: {total_lost:.2f} profit balance {total_profit + total_lost:.2f} USDT: {sum_usdt:.2f}")
 
 if __name__ == "__main__":
     print("\033[1;37;40m")
