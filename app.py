@@ -430,7 +430,7 @@ if __name__ == "__main__":
     while True:
         try:
             now = datetime.now()
-            if now.minute == 3:
+            if now.minute == 4:
                 time.sleep(10)
                 order_remove_all()
                 #take_profit()
@@ -443,6 +443,7 @@ if __name__ == "__main__":
             else:
                 if now.minute % 5 == 0:
                     take_profit()
+                    time.sleep(60)
         except Exception as e:
             print(f"Exception: {e}")
         time.sleep(10)
