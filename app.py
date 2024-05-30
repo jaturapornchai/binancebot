@@ -326,13 +326,105 @@ def close_all_position():
         except Exception as e:
             print(f"{position.currency} Exception: {e}")
 
+def take_profit():
+    print("Take profit")
+    # get position and show profit and loss
+    positions =  spot_api.list_spot_accounts()
+    total_lost = 0
+    total_profit = 0
+    sum_usdt = 0
+    for position in positions:
+            try:
+                if position.currency == 'USDT' or position.currency == 'GT':
+                    if position.currency == 'USDT':
+                        print(f"{position.currency}: {position.available}")
+                        sum_usdt += float(position.available)
+                    else:
+                        currency_pair = f"{position.currency}_USDT"
+                        current_price = float(spot_api.list_tickers(currency_pair=currency_pair)[0].last)
+                        print(f"{position.currency}: {position.available}, Current Price: {current_price} {float(position.available) * current_price} USDT")
+                        sum_usdt += float(position.available) * current_price
+                else:
+                    if position.currency == 'POINT':
+                        continue 
+                    """if position.currency != 'BNB':
+                        continue """
+                    position_available = float(position.available)
+                    if position_available > 0.01:
+                        currency_pair = f"{position.currency}_USDT"
+                        current_price = float(spot_api.list_tickers(currency_pair=currency_pair)[0].last)
+                        sum_usdt += position_available * current_price
+                        if  position_available * current_price > 3:
+                            # get ราคาต้นทุนเฉลี่ย
+                            trades = spot_api.list_my_trades(currency_pair=currency_pair,limit=1000)
+                            # sort trades by timestamp
+                            #trades = sorted(trades, key=lambda x: float(x.create_time), reverse=False)
+                            total_amount = 0
+                            total_quantity = 0
+                            for i in range(len(trades) - 1, -1, -1):
+                                trade = trades[i]
+                                if trade.side == "buy":
+                                    total_amount += float(trade.price) * float(trade.amount)
+                                    total_quantity += float(trade.amount) - float(trade.fee)
+                                else:
+                                    total_amount = 0
+                                    total_quantity = 0
+                            average_cost = 0
+                            if total_quantity != 0:
+                                average_cost = total_amount / total_quantity
+                            
+                            """
+                            # ขายทิ้ง
+                            order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="market", time_in_force="ioc")
+                            spot_api.create_order(order)
+                            """
+
+                            if average_cost == 0:
+                                # ไม่มีข้อมูล ยอมแพ้ ขายทิ้ง
+                                #print(f"Average cost is 0 {position.currency}")
+                                #order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
+                                #spot_api.create_order(order)
+                                send_line_notify(f"Average cost is 0 {position.currency}")
+                            else:
+                                if position_available * current_price > 3:
+                                    # คำนวณกำไรขาดทุน=
+                                    profit_loss = (current_price - average_cost) * position_available
+                                    profit_loss_percent = (current_price - average_cost) / average_cost * 100
+                                    # profit_loss_percent format ###.##
+                                    profit_loss_percent_str = float("{:.2f}".format(profit_loss_percent))
+                                    profit_loss_str = float("{:.2f}".format(profit_loss))
+                                    color = "red" if profit_loss_percent < 0 else "green"
+                                    print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT")
+                                    total_lost += profit_loss if profit_loss < 0 else 0
+                                    total_profit += profit_loss if profit_loss > 0 else 0
+                                    if profit_loss_percent > 50:
+                                        # ลดลง 0.5%
+                                        current_price = current_price * 0.995
+                                        print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
+                                        order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
+                                        spot_api.create_order(order)
+                                    if profit_loss_percent < -50 and isorder == True:
+                                        # loss 50% ซื้อเพิ่ม
+                                        # พิมพ์สีเหลือง
+                                        print(f"\033[1;33;40m{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
+                                        place_market_order_buy(f"{position.currency}_USDT")
+
+            except Exception as e:
+                print(f"{position.currency} Exception: {e}")
+    # print blue color
+    print("\033[1;34;40m")
+    print(f"Total Profit: {total_profit}, Total Lost: {total_lost} profit balance {total_profit + total_lost} USDT: {sum_usdt}")
+    # print black color
+    print("\033[1;30;40m")
+    send_line_notify(f"Total Profit: {total_profit:.2f}, Total Lost: {total_lost:.2f} profit balance {total_profit + total_lost:.2f} USDT: {sum_usdt:.2f}")
+
 if __name__ == "__main__":
     print("\033[1;37;40m")
     order_remove_all()
     #close_all_position()
-    #take_profit(True)
+    #take_profit()
     #order_buy()
-    order_by_divergence()
+    #order_by_divergence()
     #order_buy_use_ema200()
     #order_buy_use_rsi()
     while True:
@@ -341,13 +433,16 @@ if __name__ == "__main__":
             if now.minute == 1:
                 time.sleep(10)
                 order_remove_all()
-                #take_profit(True)
+                #take_profit()
                 #order_buy()
                 order_by_divergence()
                 #order_buy_use_ema200()
                 #order_buy_use_rsi()
                 print("*******************************************")
                 time.sleep(60)
+            else:
+                if now.minute % 5 == 0:
+                    take_profit()
         except Exception as e:
             print(f"Exception: {e}")
         time.sleep(10)
