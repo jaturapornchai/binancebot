@@ -397,7 +397,7 @@ def take_profit():
                                     print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT")
                                     total_lost += profit_loss if profit_loss < 0 else 0
                                     total_profit += profit_loss if profit_loss > 0 else 0
-                                    if profit_loss_percent > 50:
+                                    if profit_loss_percent > 15:
                                         # ลดลง 0.5%
                                         current_price = current_price * 0.995
                                         print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
