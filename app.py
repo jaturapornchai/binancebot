@@ -38,7 +38,7 @@ def send_line_notify(message):
     response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
     return response.status_code
 
-def fetch_ohlcv(symbol, timeframe='15m', limit=100):
+def fetch_ohlcv(symbol, timeframe='1h', limit=100):
     """
     ดึงข้อมูล OHLCV จาก Gate.io
     """
@@ -114,7 +114,7 @@ def check_price_breakout_down(symbol):
         return True
     return False
 
-def get_volume_symbols(symbol, timeframe='15m', limit=24):
+def get_volume_symbols(symbol, timeframe='1h', limit=24):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     if len(ohlcv) < limit:
         return 0
@@ -226,7 +226,7 @@ def find_divergence(data, swing_highs, swing_lows):
     return divergences
 
 def check_buy_div_signal(symbol):
-    timeframe = '15m'
+    timeframe = '1h'
     limit = 1000  # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
     since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 30  # ดึงข้อมูลย้อนหลัง 30 วัน
 
@@ -397,15 +397,15 @@ def take_profit():
                                     print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT",flush=True)
                                     total_lost += profit_loss if profit_loss < 0 else 0
                                     total_profit += profit_loss if profit_loss > 0 else 0
-                                    if profit_loss_percent > 5:
+                                    if profit_loss_percent > 15:
                                         # ลดลง 0.5%
                                         current_price = current_price * 0.995
                                         print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}",flush=True)
                                         order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
                                         spot_api.create_order(order)
                                         send_line_notify(f"{position.currency}: take profit {profit_loss_str}$")
-                                    if profit_loss_percent < -50:
-                                        # loss 50% ซื้อเพิ่ม
+                                    if profit_loss_percent < -75:
+                                        # loss 75% ซื้อเพิ่ม
                                         # พิมพ์สีเหลือง
                                         print(f"\033[1;33;40m{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}",flush=True)
                                         place_market_order_buy(f"{position.currency}_USDT")
@@ -430,10 +430,10 @@ if __name__ == "__main__":
     while True:
         try:
             now = datetime.now()
-            if now.minute % 15 == 0:
-                time.sleep(10)
+            if now.minute == 0:
+                time.sleep(60)
                 order_remove_all()
-                #take_profit()
+                take_profit()
                 #order_buy()
                 order_by_divergence()
                 #order_buy_use_ema200()
@@ -446,4 +446,4 @@ if __name__ == "__main__":
                     time.sleep(60)
         except Exception as e:
             print(f"Exception: {e}",flush=True)
-        time.sleep(10)
+        time.sleep(30)
