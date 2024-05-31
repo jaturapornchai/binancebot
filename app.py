@@ -126,7 +126,7 @@ def get_volume_symbols(symbol, timeframe='15m', limit=24):
 
 def place_market_order_buy(trading_pair, amount_usd=20):
     trading_pair = trading_pair.replace("/", "_").upper()
-    print(f"Place market order for {trading_pair} with {amount_usd} USDT")
+    print(f"Place market order for {trading_pair} with {amount_usd} USDT",flush=True)
     order_now = True
     trades = spot_api.list_my_trades(currency_pair=trading_pair)
     for trade in trades:
@@ -148,14 +148,14 @@ def place_market_order_buy(trading_pair, amount_usd=20):
             
             spot_api.create_order(order)
         except GateApiException as ex:
-            print(f"Gate API Exception, label: {ex.label} message: {ex.message}")
+            print(f"Gate API Exception, label: {ex.label} message: {ex.message}",flush=True)
         except ApiException as e:
-            print(f"API Exception when calling SpotApi->create_order: {e}")    
+            print(f"API Exception when calling SpotApi->create_order: {e}",flush=True)    
     else:
-        print(f"Skip order for {trading_pair}")
+        print(f"Skip order for {trading_pair}",flush=True)
 
 def order_buy():
-    print("Order buy start")
+    print("Order buy start",flush=True)
     markets = exchange.load_markets()
     order_symbols = []
     for symbol in markets:
@@ -176,12 +176,12 @@ def order_buy():
                 current_price = exchange.fetch_ticker(symbol)['last']
                 volume_usd = volume * current_price
                 if volume_usd > 50000:            
-                    print(symbol, result)
+                    print(symbol, result,flush=True)
                     place_market_order_buy(symbol)
 
         except Exception as e:
-            print(e)
-    print("Order buy end")
+            print(e,flush=True)
+    print("Order buy end",flush=True)
 
 def rsi(df, periods=14, ema=True):
     close_delta = df['close'].diff()
@@ -253,7 +253,7 @@ def check_buy_div_signal(symbol):
         latest_divergence = divergences['bullish'][-1][0]
         time_since_divergence = (data.index[-1] - latest_divergence) // pd.Timedelta(minutes=60)
         if time_since_divergence <= 6:
-            print(f"Symbol: {symbol} - Latest bullish divergence detected at {latest_divergence}, {time_since_divergence} time frames ago.")
+            print(f"Symbol: {symbol} - Latest bullish divergence detected at {latest_divergence}, {time_since_divergence} time frames ago.",flush=True)
             return True
     return False
 
@@ -277,11 +277,11 @@ def order_by_divergence():
             current_price = exchange.fetch_ticker(symbol)['last']
             volume_usd = volume * current_price
             if volume_usd > 50000:            
-                print(f"Symbol: {symbol} - Buy signal detected.")
+                print(f"Symbol: {symbol} - Buy signal detected.",flush=True)
                 place_market_order_buy(symbol)
 
 def order_stop():
-    print("Order stop start")
+    print("Order stop start",flush=True)
     positions =  spot_api.list_spot_accounts()
     for position in positions:
         symbol = f"{position.currency}_USDT"        
@@ -290,16 +290,16 @@ def order_stop():
                 order = gate_api.Order(amount=str(position.available), currency_pair=f"{position.currency}_USDT", side="sell", type="market", time_in_force="ioc")
                 spot_api.create_order(order)
         except Exception as e:
-            print(f"{position.currency} Exception: {e}")
-    print("Order stop end")
+            print(f"{position.currency} Exception: {e}",flush=True)
+    print("Order stop end",flush=True)
 
 
 def order_remove_all():
-    print("Order remove all")
+    print("Order remove all",flush=True)
     try:
         # Get all open orders
         open_orders = spot_api.list_all_open_orders()
-        print(f"Found {len(open_orders)} open orders.")
+        print(f"Found {len(open_orders)} open orders.",flush=True)
 
         # Cancel each open order
         for pair_order in open_orders:
@@ -307,9 +307,9 @@ def order_remove_all():
                 try:
                     spot_api.cancel_order (order.id, order.currency_pair)
                 except ApiException as e:
-                    print("Error cancelling order:", e)
+                    print("Error cancelling order:", e,flush=True)
     except ApiException as e:
-        print("Error fetching open orders:", e)        
+        print("Error fetching open orders:", e,flush=True)        
 
 def close_all_position():
     # ขายทิ้ง
@@ -324,10 +324,10 @@ def close_all_position():
                 order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="market", time_in_force="ioc")
                 spot_api.create_order(order)
         except Exception as e:
-            print(f"{position.currency} Exception: {e}")
+            print(f"{position.currency} Exception: {e}",flush=True)
 
 def take_profit():
-    print("Take profit")
+    print("Take profit",flush=True)
     # get position and show profit and loss
     positions =  spot_api.list_spot_accounts()
     total_lost = 0
@@ -337,12 +337,12 @@ def take_profit():
             try:
                 if position.currency == 'USDT' or position.currency == 'GT':
                     if position.currency == 'USDT':
-                        print(f"{position.currency}: {position.available}")
+                        print(f"{position.currency}: {position.available}",flush=True)
                         sum_usdt += float(position.available)
                     else:
                         currency_pair = f"{position.currency}_USDT"
                         current_price = float(spot_api.list_tickers(currency_pair=currency_pair)[0].last)
-                        print(f"{position.currency}: {position.available}, Current Price: {current_price} {float(position.available) * current_price} USDT")
+                        print(f"{position.currency}: {position.available}, Current Price: {current_price} {float(position.available) * current_price} USDT",flush=True)
                         sum_usdt += float(position.available) * current_price
                 else:
                     if position.currency == 'POINT':
@@ -381,7 +381,7 @@ def take_profit():
 
                             if average_cost == 0:
                                 # ไม่มีข้อมูล ยอมแพ้ ขายทิ้ง
-                                #print(f"Average cost is 0 {position.currency}")
+                                #print(f"Average cost is 0 {position.currency}",flush=True)
                                 #order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
                                 #spot_api.create_order(order)
                                 send_line_notify(f"Average cost is 0 {position.currency}")
@@ -394,36 +394,36 @@ def take_profit():
                                     profit_loss_percent_str = float("{:.2f}".format(profit_loss_percent))
                                     profit_loss_str = float("{:.2f}".format(profit_loss))
                                     color = "red" if profit_loss_percent < 0 else "green"
-                                    print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT")
+                                    print(f"\033[1;{31 if color == 'red' else 32};40m{profit_loss_percent_str}% : {profit_loss_str}$  : {position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price} {position_available * current_price} USDT",flush=True)
                                     total_lost += profit_loss if profit_loss < 0 else 0
                                     total_profit += profit_loss if profit_loss > 0 else 0
                                     if profit_loss_percent > 5:
                                         # ลดลง 0.5%
                                         current_price = current_price * 0.995
-                                        print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
+                                        print(f"{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}",flush=True)
                                         order = gate_api.Order(amount=str(position_available), currency_pair=f"{position.currency}_USDT", side="sell", type="limit", time_in_force="gtc", price=str(current_price))
                                         spot_api.create_order(order)
                                         send_line_notify(f"{position.currency}: take profit {profit_loss_str}$")
                                     if profit_loss_percent < -50:
                                         # loss 50% ซื้อเพิ่ม
                                         # พิมพ์สีเหลือง
-                                        print(f"\033[1;33;40m{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}")
+                                        print(f"\033[1;33;40m{position.currency}: {position_available}, Average Cost: {average_cost}, Current Price: {current_price}, Profit: {profit_loss}, Profit %: {profit_loss_percent}",flush=True)
                                         place_market_order_buy(f"{position.currency}_USDT")
 
             except Exception as e:
-                print(f"{position.currency} Exception: {e}")
+                print(f"{position.currency} Exception: {e}",flush=True)
     # print blue color
-    print("\033[1;34;40m")
-    print(f"Total Profit: {total_profit}, Total Lost: {total_lost} profit balance {total_profit + total_lost} USDT: {sum_usdt}")
+    print("\033[1;34;40m",flush=True)
+    print(f"Total Profit: {total_profit}, Total Lost: {total_lost} profit balance {total_profit + total_lost} USDT: {sum_usdt}",flush=True)
     # print black color
-    print("\033[1;30;40m")
+    print("\033[1;30;40m",flush=True)
 
 if __name__ == "__main__":
-    print("\033[1;37;40m")
+    print("\033[1;37;40m",flush=True)
     order_remove_all()
     #close_all_position()
-    #take_profit()
-    #order_buy()
+    take_profit()
+    order_buy()
     #order_by_divergence()
     #order_buy_use_ema200()
     #order_buy_use_rsi()
@@ -438,12 +438,12 @@ if __name__ == "__main__":
                 order_by_divergence()
                 #order_buy_use_ema200()
                 #order_buy_use_rsi()
-                print("*******************************************")
+                print("*******************************************",flush=True)
                 time.sleep(60)
             else:
                 if now.minute % 10 == 0:
                     take_profit()
                     time.sleep(60)
         except Exception as e:
-            print(f"Exception: {e}")
+            print(f"Exception: {e}",flush=True)
         time.sleep(10)
