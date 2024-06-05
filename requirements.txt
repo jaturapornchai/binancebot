@@ -1,9 +1,5 @@
-requests
-python-binance
-pandas
 ccxt
-binance
-gate-api
-termcolor
-typing
-scikit-learn
+pandas
+numpy
+requests
+gate_api

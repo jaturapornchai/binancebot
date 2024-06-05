@@ -28,8 +28,8 @@ import numpy as np
 import pandas_datareader as pdr
 import datetime
 
-api_key = 'FpwthNz84887fuWpz9lEIsLm1zwZB9YV8ZO2FjVQ6v2k6lmR8nv1oKZZOoJSY0il'
-api_secret = 'nszlVyvoFAZPVIXdWnJyhaxgiujMTTUmFN4Ncix3rKBtLhF2kO8hhCZhnwIeu3gt'
+api_key = 'KWMryBr2zeiDLIMHAwmqx5ohgDAaphC343LeGTnQlUGXYMoT6ptSq1qq1iEkfPgP'
+api_secret = 'mcBTf5n829LJq09htb4Z9uzkr89aYZ6Gl2TzCCG3JEIUCiHzfjAhbLH3hQem4v5m'
 client = Client(api_key, api_secret)
 # LINE Notify token
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
