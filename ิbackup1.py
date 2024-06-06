@@ -4,15 +4,17 @@ import pandas as pd
 from datetime import datetime
 import requests
 from binance.client import Client
+from binance.enums import *
 import time
 
 # Configure API key authorization
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
 api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
+tread_leverage = 2
 tread_time_frame = '1h'
 exchange = ccxt.binance()
-ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
+ignore_symbols = ['DONUSDT','USDCUSDT','SRMUSDT']
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 
 def send_line_notify(message):
@@ -143,24 +145,23 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
-    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
+    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 14 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
         return True
     last_trade = trades[-1]
     trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
     time_diff = datetime.now() - trade_time
-    if time_diff.total_seconds() < 60 * 60 * 4:
+    if time_diff.total_seconds() < 60 * 60 * 14:
         return False
     return True
-
 
 def set_leverage(symbol, leverage):
     try:
         response = client.futures_change_leverage(symbol=symbol, leverage=leverage)
         return response
     except Exception as e:
-        print(f"Error: {e}", flush=True)
+        print(f"Error: {e}")
         return None
 
 def get_step_size(symbol):
@@ -172,42 +173,25 @@ def get_step_size(symbol):
                     return float(filt['stepSize'])
     return None
 
-def get_tick_size(symbol):
-    info = client.futures_exchange_info()
-    for item in info['symbols']:
-        if item['symbol'] == symbol:
-            for filt in item['filters']:
-                if filt['filterType'] == 'PRICE_FILTER':
-                    return float(filt['tickSize'])
-    return None
-
-def round_quantity(quantity, step_size):
-    return (quantity // step_size) * step_size
-
-def round_price(price, tick_size):
-    return round(price / tick_size) * tick_size
-
-def future_open_position(symbol, side, usdt_amount, leverage=5):
+def future_open_position(symbol, side, usdt_amount, leverage=5, stop_loss_pct=0.10, take_profit_pct=0.15):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     try:
-        positions = client.futures_position_information(symbol=symbol)
-        current_leverage = positions[0]['leverage']
+        current_leverage = client.futures_position_information(symbol=symbol)[0]['leverage']
         if int(current_leverage) != leverage:
             set_leverage(symbol, leverage)
             time.sleep(1)  # รอให้ leverage เปลี่ยนแปลงเสร็จสิ้น
     except Exception as e:
-        print(f"Error checking or setting leverage: {e}", flush=True)
+        print(f"Error checking or setting leverage: {e}")
         return None
     
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
     try:
         current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
-        step_size = get_step_size(symbol)
-        tick_size = get_tick_size(symbol)
         quantity = usdt_amount / current_price * leverage
-        quantity = round_quantity(quantity, step_size)
+        step_size = get_step_size(symbol)
+        quantity = round(quantity / step_size) * step_size
     except Exception as e:
-        print(f"Error calculating quantity: {e}", flush=True)
+        print(f"Error calculating quantity: {e}")
         return None
     
     # ฟังก์ชันเปิด Position ใน Binance Futures
@@ -216,70 +200,82 @@ def future_open_position(symbol, side, usdt_amount, leverage=5):
         order = client.futures_create_order(
             symbol=symbol,
             side=side,
-            type='MARKET',
+            type="MARKET",
             quantity=quantity,
             reduceOnly=False,
             recvWindow=5000
         )
+        
+        # คำนวณราคา stop loss และ take profit
+        if side == SIDE_BUY:
+            stop_loss_price = current_price * (1 - stop_loss_pct)
+            take_profit_price = current_price * (1 + take_profit_pct)
+        else:  # side == SIDE_SELL
+            stop_loss_price = current_price * (1 + stop_loss_pct)
+            take_profit_price = current_price * (1 - take_profit_pct)
+        
+        # ตั้งค่า stop loss
+        stop_loss_order = client.futures_create_order(
+            symbol=symbol,
+            side=SIDE_SELL if side == SIDE_BUY else SIDE_BUY,
+            type="STOP_MARKET",
+            quantity=quantity,
+            stopPrice=stop_loss_price,
+            reduceOnly=True,
+            recvWindow=5000
+        )
+        
+        # ตั้งค่า take profit
+        take_profit_order = client.futures_create_order(
+            symbol=symbol,
+            side=SIDE_SELL if side == SIDE_BUY else SIDE_BUY,
+            type="TAKE_PROFIT_MARKET",
+            quantity=quantity,
+            stopPrice=take_profit_price,
+            reduceOnly=True,
+            recvWindow=5000
+        )
+        
+        return {
+            "order": order,
+            "stop_loss_order": stop_loss_order,
+            "take_profit_order": take_profit_order
+        }
     except Exception as e:
-        print(f"Error: {e}", flush=True)
+        print(f"Error: {e}")
         return None
-
-def future_check_pofit_or_loss():
-    positions = future_get_position()
-    for position in positions:
-        try:
-            position_info = client.futures_position_information(symbol=position)
-            position_profit_or_loss = float(position_info[0]['unRealizedProfit'])
-            position_leverage = float(position_info[0]['leverage'])
-            position_enter_amount = float(position_info[0]['positionAmt']) * -1
-            position_enter_price = float(position_info[0]['markPrice'])
-            position_enter_total_amount = position_enter_amount * position_enter_price
-            position_profit_or_loss_persent = ((position_profit_or_loss * 100) / position_enter_total_amount) * position_leverage
-            print(f"Symbol: {position}, Profit/Loss: {position_profit_or_loss} {position_enter_amount} {position_enter_price} {position_profit_or_loss_persent}", flush=True)            
-            if position_profit_or_loss_persent > 15:
-                # ปิด Position ที่มีกำไรมากกว่า 15%
-                quantity = float(position_info[0]['positionAmt']) * -1
-                order = client.futures_create_order(
-                    symbol=position,
-                    side='BUY',
-                    type='MARKET',
-                    quantity=quantity,
-                    reduceOnly=True,
-                    recvWindow=5000
-                )            
-                
-        except Exception as e:
-            print(f"Error: {e}", flush=True)
-            continue
-
-
+            
 def future_find_short_signal():
+    list_positions = future_get_position()
+    print("Start check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     symbols = fetch_future_symbols()
     for symbol in symbols:
+        if symbol in list_positions:
+            continue
         try:
             signal = check_div_signal(symbol)
-            if signal == 'short':
+            if signal == 'short' or signal == 'long' or 1==1:
                 if not future_get_last_trade(symbol):
-                    print(f"Skip symbol {symbol} because last trade within 4 hours", flush=True)
                     continue
                 message = f"Symbol: {symbol}, Signal: {signal}"
-                print(message, flush=True)
+                print(message)
                 send_line_notify(message)
                 future_open_position(symbol, "SELL", 50)
+                break
+            """volume_usdt = get_usdt_volume_symbols(symbol)
+            if volume_usdt > 1000000:
+                message = f"Symbol: {symbol}, Volume: {volume_usdt}"
+                print(message)
+                """
         except Exception as e:
-            print(f"Error: {e}", flush=True)    
+            print(f"Error: {e}")    
             continue    
-    print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+    print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-#future_check_pofit_or_loss()
-#future_find_short_signal()
+future_find_short_signal()
 while True:    
     date_time_now = datetime.now()
     if date_time_now.minute == 1:
-        future_check_pofit_or_loss()
         future_find_short_signal()
-        time.sleep(120)
-    if date_time_now.minute % 15 == 0:
-        future_check_pofit_or_loss()
+        time.sleep(60)
     time.sleep(10)

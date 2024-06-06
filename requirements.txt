@@ -2,4 +2,4 @@ ccxt
 pandas
 numpy
 requests
-gate_api
+python-binance
