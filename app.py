@@ -10,7 +10,7 @@ import time
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
 api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
-tread_time_frame = '15m'
+tread_time_frame = '1h'
 exchange = ccxt.binance()
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
@@ -276,7 +276,6 @@ def future_check_profit_or_loss():
             print(f"Error: {e}", flush=True)
             continue
 
-
 def future_find_signal():
     symbols = fetch_future_symbols()
     for symbol in symbols:
@@ -355,11 +354,7 @@ def future_find_signal():
 future_find_signal()
 while True:    
     date_time_now = datetime.now()
-    """if date_time_now.minute == 1:
-        future_check_profit_or_loss()
-        future_find_short_signal()
-        time.sleep(120)"""
-    if date_time_now.minute % 15 == 0:
+    if date_time_now.minute == 1:
         #future_check_profit_or_loss()
         future_find_signal()
         time.sleep(120)
