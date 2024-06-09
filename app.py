@@ -10,7 +10,7 @@ import time
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
 api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
-tread_time_frame = '1h'
+tread_time_frame = '15m'
 exchange = ccxt.binance()
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
@@ -120,13 +120,13 @@ def check_div_signal(symbol):
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
         time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 6:
+        if time_since_bullish < 4:
             latest_divergence = 'long'
 
     if divergences['bearish']:
         latest_bearish_divergence = divergences['bearish'][-1][0]
         time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 6:
+        if time_since_bearish < 4:
             latest_divergence = 'short'
 
     if not latest_divergence:
@@ -145,14 +145,14 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
-    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
+    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 2 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
         return True
     last_trade = trades[-1]
     trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
     time_diff = datetime.now() - trade_time
-    if time_diff.total_seconds() < 60 * 60 * 4:
+    if time_diff.total_seconds() < 60 * 60 * 2:
         return False
     return True
 
@@ -189,7 +189,7 @@ def round_quantity(quantity, step_size):
 def round_price(price, tick_size):
     return round(price / tick_size) * tick_size
 
-def future_open_position(symbol, side, usdt_amount=20, leverage=5):
+def future_open_position(symbol, side, usdt_amount=10, leverage=5):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     try:
         positions = client.futures_position_information(symbol=symbol)
@@ -289,6 +289,7 @@ def future_find_signal():
                     position_amount = float(position['positionAmt'])
                     if position_amount != 0 and position['positionSide'] == "BUY":
                         is_close = True
+                        print(f"Close position {symbol} {position_amount}", flush=True)
                         break
                 if is_close:
                     # ปิด Position ที่เปิดอยู่
@@ -306,7 +307,7 @@ def future_find_signal():
                 else:                
                     # ดึง position ที่เปิดอยู่
                     if not future_get_last_trade(symbol):
-                        print(f"Skip symbol {symbol} because last trade within 4 hours", flush=True)
+                        print(f"Skip symbol {symbol} because last trade within 2 hours", flush=True)
                         is_order = False
                 if is_order:
                     message = f"Symbol: {symbol}, Signal: {signal}"
@@ -314,7 +315,7 @@ def future_find_signal():
                     send_line_notify(message)
                     future_open_position(symbol, "SELL")
 
-            if signal == 'long':
+            if signal == 'xxlong':
                 is_close = False
                 is_order = True
                 positions = client.futures_position_information(symbol=symbol)
@@ -350,12 +351,12 @@ def future_find_signal():
             continue    
     print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
 
-#future_check_profit_or_loss()
+future_check_profit_or_loss()
 future_find_signal()
 while True:    
     date_time_now = datetime.now()
-    if date_time_now.minute == 1:
-        #future_check_profit_or_loss()
+    if date_time_now.minute % 15 == 0:
+        future_check_profit_or_loss()
         future_find_signal()
         time.sleep(120)
     time.sleep(10)
