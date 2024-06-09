@@ -189,7 +189,7 @@ def round_quantity(quantity, step_size):
 def round_price(price, tick_size):
     return round(price / tick_size) * tick_size
 
-def future_open_position(symbol, side, usdt_amount, leverage=5):
+def future_open_position(symbol, side, usdt_amount=20, leverage=5):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     try:
         positions = client.futures_position_information(symbol=symbol)
@@ -312,7 +312,7 @@ def future_find_signal():
                     message = f"Symbol: {symbol}, Signal: {signal}"
                     print(message, flush=True)
                     send_line_notify(message)
-                    future_open_position(symbol, "SELL", 10)
+                    future_open_position(symbol, "SELL")
 
             if signal == 'long':
                 is_close = False
@@ -344,7 +344,7 @@ def future_find_signal():
                     message = f"Symbol: {symbol}, Signal: {signal}"
                     print(message, flush=True)
                     send_line_notify(message)
-                    future_open_position(symbol, "BUY", 10)
+                    future_open_position(symbol, "BUY")
         except Exception as e:
             print(f"Error: {e}", flush=True)    
             continue    
