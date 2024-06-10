@@ -361,14 +361,17 @@ def future_get_balance():
             return float(item['balance'])
     return 0
 
-#future_balance = future_get_balance()
-#future_check_profit_or_loss()
-#future_find_signal()
+future_balance = future_get_balance()
+future_check_profit_or_loss()
+future_find_signal()
 while True:    
-    date_time_now = datetime.now()
-    if date_time_now.minute % 15 == 0:
-        future_balance = future_get_balance()
-        future_check_profit_or_loss()
-        future_find_signal()
-        time.sleep(120)
+    try:
+        date_time_now = datetime.now()
+        if date_time_now.minute % 15 == 0:
+            future_balance = future_get_balance()
+            future_check_profit_or_loss()
+            future_find_signal()
+            time.sleep(120)
+    except Exception as e:
+        print(f"Error: {e}", flush=True)
     time.sleep(10)
