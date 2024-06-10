@@ -214,25 +214,6 @@ def future_open_position(symbol, side, leverage=5):
         print(f"Error calculating quantity: {e}", flush=True)
         return None
     
-    # ปิด Position ที่เปิดอยู่ก่อนหน้านี้
-    try:
-        positions = client.futures_position_information(symbol=symbol)
-        for position in positions:
-            position_amount = float(position['positionAmt'])
-            if position_amount != 0 and position['positionSide'] != side:
-                order = client.futures_create_order(
-                    symbol=symbol,
-                    side='BUY' if position_amount < 0 else 'SELL',
-                    type='MARKET',
-                    quantity=abs(position_amount),
-                    reduceOnly=True,
-                    recvWindow=5000
-                )
-                # รอให้ Position ปิดเสร็จสิ้น
-                time.sleep(1)
-    except Exception as e:
-        print(f"Error closing position: {e}", flush=True)
-        return None
     # ฟังก์ชันเปิด Position ใน Binance Futures
     try:
         # เปิด Position
