@@ -284,13 +284,13 @@ def future_find_signal():
             if signal == 'short':
                 is_close = False
                 is_order = True
-                positions = client.futures_position_information(symbol=symbol)
+                """positions = client.futures_position_information(symbol=symbol)
                 for position in positions:
                     position_amount = float(position['positionAmt'])
                     if position_amount != 0 and position['positionSide'] == "BUY":
                         is_close = True
                         print(f"Close position {symbol} {position_amount}", flush=True)
-                        break
+                        break"""
                 if is_close:
                     # ปิด Position ที่เปิดอยู่
                     quantity = float(position['positionAmt']) * -1
