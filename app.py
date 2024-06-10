@@ -356,10 +356,12 @@ def future_find_signal():
 
 def future_get_balance():
     balance = client.futures_account_balance()
+    balance_usdt = 0
     for item in balance:
         if item['asset'] == 'USDT':
-            return float(item['balance'])
-    return 0
+            balance_usdt = float(item['balance'])    
+    print(f"Balance USDT: {balance_usdt}", flush=True)  
+    return balance_usdt
 
 future_balance = future_get_balance()
 future_check_profit_or_loss()
