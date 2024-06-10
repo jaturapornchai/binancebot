@@ -14,6 +14,7 @@ tread_time_frame = '15m'
 exchange = ccxt.binance()
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+future_balance = 0
 
 def send_line_notify(message):
     """Send notifications through LINE Notify."""
@@ -145,14 +146,14 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
-    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 2 ชั่วโมง ให้ return true
+    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
         return True
     last_trade = trades[-1]
     trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
     time_diff = datetime.now() - trade_time
-    if time_diff.total_seconds() < 60 * 60 * 2:
+    if time_diff.total_seconds() < 60 * 60 * 4:
         return False
     return True
 
@@ -189,8 +190,9 @@ def round_quantity(quantity, step_size):
 def round_price(price, tick_size):
     return round(price / tick_size) * tick_size
 
-def future_open_position(symbol, side, usdt_amount=10, leverage=5):
+def future_open_position(symbol, side, leverage=5):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
+    usdt_amount = future_balance / 50.0
     try:
         positions = client.futures_position_information(symbol=symbol)
         current_leverage = positions[0]['leverage']
@@ -284,16 +286,17 @@ def future_find_signal():
             if signal == 'short':
                 is_close = False
                 is_order = True
+                quantity = 0
                 """positions = client.futures_position_information(symbol=symbol)
                 for position in positions:
                     position_amount = float(position['positionAmt'])
                     if position_amount != 0 and position['positionSide'] == "BUY":
                         is_close = True
+                        quantity = float(position['positionAmt']) * -1
                         print(f"Close position {symbol} {position_amount}", flush=True)
                         break"""
                 if is_close:
                     # ปิด Position ที่เปิดอยู่
-                    quantity = float(position['positionAmt']) * -1
                     client.futures_create_order(
                         symbol=symbol,
                         side='BUY',
@@ -304,10 +307,10 @@ def future_find_signal():
                     )                    
                     # รอให้ Position ปิดเสร็จสิ้น
                     time.sleep(1)
-                else:                
+                else:
                     # ดึง position ที่เปิดอยู่
                     if not future_get_last_trade(symbol):
-                        print(f"Skip symbol {symbol} because last trade within 2 hours", flush=True)
+                        print(f"Skip symbol {symbol} because last trade within 4 hours", flush=True)
                         is_order = False
                 if is_order:
                     message = f"Symbol: {symbol}, Signal: {signal}"
@@ -351,11 +354,20 @@ def future_find_signal():
             continue    
     print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
 
-future_check_profit_or_loss()
-future_find_signal()
+def future_get_balance():
+    balance = client.futures_account_balance()
+    for item in balance:
+        if item['asset'] == 'USDT':
+            return float(item['balance'])
+    return 0
+
+#future_balance = future_get_balance()
+#future_check_profit_or_loss()
+#future_find_signal()
 while True:    
     date_time_now = datetime.now()
     if date_time_now.minute % 15 == 0:
+        future_balance = future_get_balance()
         future_check_profit_or_loss()
         future_find_signal()
         time.sleep(120)
