@@ -413,13 +413,14 @@ future_check_trialing_stop()
 while True:    
     try:
         date_time_now = datetime.now()
-        send_line_notify(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}")
         if date_time_now.minute % 15 == 0:
+            send_line_notify(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}")
             future_balance = future_get_balance()
             #future_check_profit_or_loss()
             future_find_signal()
             future_check_trialing_stop()
             time.sleep(120)
     except Exception as e:
+        send_line_notify(f"Error: {e}")
         print(f"Error: {e}", flush=True)
     time.sleep(10)
