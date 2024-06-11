@@ -203,6 +203,13 @@ def future_open_position(symbol, side, leverage=5):
         print(f"Error checking or setting leverage: {e}", flush=True)
         return None
     
+    try:
+        # เปลี่ยนเป็น isolated margin
+        client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')        
+    except Exception as e:
+        print(f"Error: {e}", flush=True)
+        return None
+    
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
     try:
         current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
@@ -260,6 +267,7 @@ def future_check_profit_or_loss():
             continue
 
 def future_find_signal():
+    print("Start check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
     symbols = fetch_future_symbols()
     for symbol in symbols:
         try:
@@ -344,16 +352,72 @@ def future_get_balance():
     print(f"Balance USDT: {balance_usdt}", flush=True)  
     return balance_usdt
 
+def future_check_trialing_stop():
+    print("Start check trial stop : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+    time.sleep(10)
+    positions = future_get_position()
+    for position in positions:
+        try:
+            position_info = client.futures_position_information(symbol=position)
+            position_leverage = float(position_info[0]['leverage'])
+            position_amount = float(position_info[0]['positionAmt']) * -1
+            position_enter_price = float(position_info[0]['entryPrice'])
+            # ค้นหาใน order ที่เป็น trial stop
+            have_trial_stop = False
+            orders = client.futures_get_open_orders(symbol=position)
+            for order in orders:
+                if order['type'] == 'TRAILING_STOP_MARKET':
+                    have_trial_stop = True
+                    break
+            if not have_trial_stop:
+                # สร้าง trial stop ณ.จุดกำไร 3% * leverage
+                trialing_price = position_enter_price - (position_enter_price * (0.15 / position_leverage)) 
+                step_size = get_step_size(position)
+                tick_size = get_tick_size(position)
+                quantity = round_quantity(position_amount, step_size)
+                stop_price = round_price(trialing_price, tick_size)
+                
+                # ปรับทศนิยมของ stop_price ให้เหมาะสม
+                stop_price = round(stop_price, 2)  # เปลี่ยนจำนวนทศนิยมตามความเหมาะสม
+                
+                print(f"Create trial stop {position} {quantity} {position_enter_price} {stop_price}", flush=True)
+                client.futures_create_order(
+                    symbol=position,
+                    side='BUY',
+                    type='TRAILING_STOP_MARKET',
+                    quantity=quantity,
+                    activationPrice=stop_price,
+                    reduceOnly=True,
+                    recvWindow=5000,
+                    callbackRate=0.5                    
+                )                                                
+                
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            continue
+    #ลบ trial stop ถ้าไม่มี position แล้ว
+    positions = future_get_position()
+    orders = client.futures_get_open_orders()
+    for order in orders:
+        if order['type'] == 'TRAILING_STOP_MARKET':
+            if order['symbol'] not in positions:
+                print(f"Cancel trial stop {order['symbol']} {order['orderId']}", flush=True)
+                client.futures_cancel_order(symbol=order['symbol'], orderId=order['orderId'])
+
+    print("End check trial stop : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+
 future_balance = future_get_balance()
-future_check_profit_or_loss()
+#future_check_profit_or_loss()
 future_find_signal()
+future_check_trialing_stop()
 while True:    
     try:
         date_time_now = datetime.now()
         if date_time_now.minute % 15 == 0:
             future_balance = future_get_balance()
-            future_check_profit_or_loss()
+            #future_check_profit_or_loss()
             future_find_signal()
+            future_check_trialing_stop()
             time.sleep(120)
     except Exception as e:
         print(f"Error: {e}", flush=True)
