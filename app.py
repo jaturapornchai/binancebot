@@ -271,7 +271,7 @@ def future_find_signal():
         try:
             signal = check_div_signal(symbol)
             #signal = 'long'
-            signal = 'short'
+            #signal = 'short'
             if signal == 'short':
                 is_close = False
                 is_order = True
