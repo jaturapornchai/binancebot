@@ -16,6 +16,7 @@ ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 future_balance = 0
 future_exchange_info = []
+future_leverage = 5
 
 def send_line_notify(message):
     """Send notifications through LINE Notify."""
@@ -147,6 +148,7 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
+    return True
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
@@ -157,15 +159,6 @@ def future_get_last_trade(symbol):
     if time_diff.total_seconds() < 60 * 60 * 4:
         return False
     return True
-
-
-def set_leverage(symbol, leverage):
-    try:
-        response = client.futures_change_leverage(symbol=symbol, leverage=leverage)
-        return response
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        return None
 
 def get_step_size(symbol):
     for item in future_exchange_info['symbols']:
@@ -186,35 +179,42 @@ def get_tick_size(symbol):
 def round_quantity(quantity, step_size):
     return (quantity // step_size) * step_size
 
-def future_open_position(symbol, side, leverage=5):
+def future_change_margin_type_and_leverage():
+    symbols = fetch_future_symbols()
+    for symbol in symbols:
+        print(f"Change margin type and leverage for {symbol}", flush=True)
+        try:
+            # เปลี่ยนเป็น isolated margin ถ้าเป็น cross margin
+            positions = client.futures_position_information(symbol=symbol)
+            if positions[0]['marginType'] == 'cross':
+                print(f"Change margin type to ISOLATED for {symbol}", flush=True)
+                client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            return None
+        
+        try:
+            positions = client.futures_position_information(symbol=symbol)
+            current_leverage = positions[0]['leverage']
+            if int(current_leverage) != future_leverage:
+                print(f"Change leverage to {future_leverage} for {symbol}", flush=True)
+                client.futures_change_leverage(symbol=symbol, leverage=future_leverage)
+        except Exception as e:
+            print(f"Error checking or setting leverage: {e}", flush=True)
+            return None
+        
+
+def future_open_position(symbol, side):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 75.0
-    try:
-        positions = client.futures_position_information(symbol=symbol)
-        current_leverage = positions[0]['leverage']
-        if int(current_leverage) != leverage:
-            set_leverage(symbol, leverage)
-            time.sleep(1)  # รอให้ leverage เปลี่ยนแปลงเสร็จสิ้น
-    except Exception as e:
-        print(f"Error checking or setting leverage: {e}", flush=True)
-        return None
-    
-    try:
-        # เปลี่ยนเป็น isolated margin ถ้าเป็น cross margin
-        positions = client.futures_position_information(symbol=symbol)
-        if positions[0]['marginType'] == 'cross':
-            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
-            time.sleep(1)  # รอให้ margin type เปลี่ยนแปลงเสร็จสิ้น          
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        return None
-    
+    usdt_amount = future_balance / 100.0    
+    print(f"USDT amount: {usdt_amount}", flush=True)
+    quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
     try:
         current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
         step_size = get_step_size(symbol)
         tick_size = get_tick_size(symbol)
-        quantity = usdt_amount / current_price * leverage
+        quantity = usdt_amount / current_price * future_leverage
         quantity = round_quantity(quantity, step_size)
     except Exception as e:
         print(f"Error calculating quantity: {e}", flush=True)
@@ -225,12 +225,12 @@ def future_open_position(symbol, side, leverage=5):
         # เปิด Position
         # รอ 1 วินาที หลังจากปิด Position เพื่อป้องกันการเปิด Position ซ้ำ
         time.sleep(1)
+        print(f"Open position {symbol} {side} {quantity}", flush=True)
         order = client.futures_create_order(
             symbol=symbol,
             side=side,
             type='MARKET',
             quantity=quantity,
-            reduceOnly=False,
             recvWindow=5000
         )
     except Exception as e:
@@ -257,7 +257,6 @@ def future_check_profit_or_loss():
                     side='BUY',
                     type='MARKET',
                     quantity=quantity,
-                    reduceOnly=True,
                     recvWindow=5000
                 )            
                 
@@ -271,28 +270,32 @@ def future_find_signal():
     for symbol in symbols:
         try:
             signal = check_div_signal(symbol)
+            #signal = 'long'
+            signal = 'short'
             if signal == 'short':
                 is_close = False
                 is_order = True
-                quantity = 0
-                """positions = client.futures_position_information(symbol=symbol)
+                positions = client.futures_position_information(symbol=symbol)
                 for position in positions:
                     position_amount = float(position['positionAmt'])
-                    if position_amount != 0 and position['positionSide'] == "BUY":
-                        is_close = True
-                        quantity = float(position['positionAmt']) * -1
-                        print(f"Close position {symbol} {position_amount}", flush=True)
-                        break"""
+                    if position_amount != 0:
+                        if position_amount > 0.0:
+                            is_close = True
+                            break
+                        else:
+                            is_order = False
+                            break
                 if is_close:
-                    # ปิด Position ที่เปิดอยู่
+                    # ปิด Position BUY ที่เปิดอยู่
+                    print(f"Close position {symbol}", flush=True)
+                    quantity = float(position['positionAmt']) 
                     client.futures_create_order(
                         symbol=symbol,
-                        side='BUY',
+                        side='SELL',
                         type='MARKET',
                         quantity=quantity,
-                        reduceOnly=True,
                         recvWindow=5000
-                    )                    
+                    )  
                     # รอให้ Position ปิดเสร็จสิ้น
                     time.sleep(1)
                 else:
@@ -306,24 +309,28 @@ def future_find_signal():
                     send_line_notify(message)
                     future_open_position(symbol, "SELL")
 
-            if signal == 'xxlong':
+            if signal == 'long':
                 is_close = False
                 is_order = True
+                quantity = 0
                 positions = client.futures_position_information(symbol=symbol)
                 for position in positions:
                     position_amount = float(position['positionAmt'])
-                    if position_amount != 0 and position['positionSide'] == "SELL":
-                        is_close = True
-                        break
+                    if position_amount != 0:
+                        if position_amount < 0.0: 
+                            is_close = True
+                            break
+                        else:
+                            is_order = False
+                            break
                 if is_close:
                     # ปิด Position ที่เปิดอยู่
                     quantity = float(position['positionAmt']) * -1
                     client.futures_create_order(
                         symbol=symbol,
-                        side='SELL',
+                        side='BUY',
                         type='MARKET',
                         quantity=quantity,
-                        reduceOnly=True,
                         recvWindow=5000
                     )
                     # รอให้ Position ปิดเสร็จสิ้น
@@ -344,18 +351,20 @@ def future_find_signal():
 
 def future_get_balance():
     balance = client.futures_account_balance()
-    balance_usdt = 0
+    balance_asset = 0
     for item in balance:
         if item['asset'] == 'USDT':
-            balance_usdt = float(item['balance'])    
-    print(f"Balance USDT: {balance_usdt}", flush=True)  
-    return balance_usdt
+            balance_asset = float(item['balance'])
+            break
+    print(f"Balance USDT: {balance_asset}", flush=True)  
+    return balance_asset
 
 # clear screen terminal
 print("\033[H\033[J")
+#future_change_margin_type_and_leverage()
 future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
-future_check_profit_or_loss()
+#future_check_profit_or_loss()
 future_find_signal()
 while True:    
     try:
@@ -364,7 +373,7 @@ while True:
             send_line_notify(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}")
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
-            future_check_profit_or_loss()
+            #future_check_profit_or_loss()
             future_find_signal()
             time.sleep(120)
     except Exception as e:
