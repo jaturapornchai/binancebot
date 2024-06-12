@@ -15,6 +15,7 @@ exchange = ccxt.binance()
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 future_balance = 0
+future_exchange_info = []
 
 def send_line_notify(message):
     """Send notifications through LINE Notify."""
@@ -31,7 +32,7 @@ def fetch_future_symbols():
     symbols = [item['symbol'] for item in info['symbols'] if 'USDT' in item['symbol'] and item['status'] == 'TRADING']
     symbols = [symbol for symbol in symbols if not any(char.isdigit() for char in symbol)]
     symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
-    symbols.sort()
+    symbols.sort()    
     return symbols
 
 def get_usdt_volume_symbols(symbol, limit=24):
@@ -167,8 +168,7 @@ def set_leverage(symbol, leverage):
         return None
 
 def get_step_size(symbol):
-    info = client.futures_exchange_info()
-    for item in info['symbols']:
+    for item in future_exchange_info['symbols']:
         if item['symbol'] == symbol:
             for filt in item['filters']:
                 if filt['filterType'] == 'LOT_SIZE':
@@ -176,8 +176,7 @@ def get_step_size(symbol):
     return None
 
 def get_tick_size(symbol):
-    info = client.futures_exchange_info()
-    for item in info['symbols']:
+    for item in future_exchange_info['symbols']:
         if item['symbol'] == symbol:
             for filt in item['filters']:
                 if filt['filterType'] == 'PRICE_FILTER':
@@ -187,12 +186,9 @@ def get_tick_size(symbol):
 def round_quantity(quantity, step_size):
     return (quantity // step_size) * step_size
 
-def round_price(price, tick_size):
-    return round(price / tick_size) * tick_size
-
 def future_open_position(symbol, side, leverage=5):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 75.0
+    usdt_amount = future_balance / 50.0
     try:
         positions = client.futures_position_information(symbol=symbol)
         current_leverage = positions[0]['leverage']
@@ -204,8 +200,11 @@ def future_open_position(symbol, side, leverage=5):
         return None
     
     try:
-        # เปลี่ยนเป็น isolated margin
-        client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')        
+        # เปลี่ยนเป็น isolated margin ถ้าเป็น cross margin
+        positions = client.futures_position_information(symbol=symbol)
+        if positions[0]['marginType'] == 'cross':
+            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
+            time.sleep(1)  # รอให้ margin type เปลี่ยนแปลงเสร็จสิ้น          
     except Exception as e:
         print(f"Error: {e}", flush=True)
         return None
@@ -302,7 +301,7 @@ def future_find_signal():
                         print(f"Skip symbol {symbol} because last trade within 4 hours", flush=True)
                         is_order = False
                 if is_order:
-                    message = f"Symbol: {symbol}, Signal: {signal}"
+                    message = f"{signal} Symbol: {symbol}, Signal: {signal}"
                     print(message, flush=True)
                     send_line_notify(message)
                     future_open_position(symbol, "SELL")
@@ -352,73 +351,21 @@ def future_get_balance():
     print(f"Balance USDT: {balance_usdt}", flush=True)  
     return balance_usdt
 
-def future_check_trialing_stop():
-    print("Start check trial stop : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-    time.sleep(10)
-    positions = future_get_position()
-    for position in positions:
-        try:
-            position_info = client.futures_position_information(symbol=position)
-            position_leverage = float(position_info[0]['leverage'])
-            position_amount = float(position_info[0]['positionAmt']) * -1
-            position_enter_price = float(position_info[0]['entryPrice'])
-            # ค้นหาใน order ที่เป็น trial stop
-            have_trial_stop = False
-            orders = client.futures_get_open_orders(symbol=position)
-            for order in orders:
-                if order['type'] == 'TRAILING_STOP_MARKET':
-                    have_trial_stop = True
-                    break
-            if not have_trial_stop:
-                # สร้าง trial stop ณ.จุดกำไร 3% * leverage
-                trialing_price = position_enter_price - (position_enter_price * (0.15 / position_leverage)) 
-                step_size = get_step_size(position)
-                tick_size = get_tick_size(position)
-                quantity = round_quantity(position_amount, step_size)
-                stop_price = round_price(trialing_price, tick_size)
-                
-                # ปรับทศนิยมของ stop_price ให้เหมาะสม
-                stop_price = round(stop_price, 2)  # เปลี่ยนจำนวนทศนิยมตามความเหมาะสม
-                
-                print(f"Create trial stop {position} {quantity} {position_enter_price} {stop_price}", flush=True)
-                client.futures_create_order(
-                    symbol=position,
-                    side='BUY',
-                    type='TRAILING_STOP_MARKET',
-                    quantity=quantity,
-                    activationPrice=stop_price,
-                    reduceOnly=True,
-                    recvWindow=5000,
-                    callbackRate=0.5                    
-                )                                                
-                
-        except Exception as e:
-            print(f"Error: {e}", flush=True)
-            continue
-    #ลบ trial stop ถ้าไม่มี position แล้ว
-    positions = future_get_position()
-    orders = client.futures_get_open_orders()
-    for order in orders:
-        if order['type'] == 'TRAILING_STOP_MARKET':
-            if order['symbol'] not in positions:
-                print(f"Cancel trial stop {order['symbol']} {order['orderId']}", flush=True)
-                client.futures_cancel_order(symbol=order['symbol'], orderId=order['orderId'])
-
-    print("End check trial stop : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-
+# clear screen terminal
+print("\033[H\033[J")
 future_balance = future_get_balance()
-#future_check_profit_or_loss()
+future_exchange_info = client.futures_exchange_info()
+future_check_profit_or_loss()
 future_find_signal()
-future_check_trialing_stop()
 while True:    
     try:
         date_time_now = datetime.now()
         if date_time_now.minute % 15 == 0:
             send_line_notify(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}")
+            future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
-            #future_check_profit_or_loss()
+            future_check_profit_or_loss()
             future_find_signal()
-            future_check_trialing_stop()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
