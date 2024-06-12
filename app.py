@@ -188,7 +188,7 @@ def round_quantity(quantity, step_size):
 
 def future_open_position(symbol, side, leverage=5):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 50.0
+    usdt_amount = future_balance / 75.0
     try:
         positions = client.futures_position_information(symbol=symbol)
         current_leverage = positions[0]['leverage']
