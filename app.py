@@ -123,13 +123,13 @@ def check_div_signal(symbol):
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
         time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 4:
+        if time_since_bullish < 6:
             latest_divergence = 'long'
 
     if divergences['bearish']:
         latest_bearish_divergence = divergences['bearish'][-1][0]
         time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 4:
+        if time_since_bearish < 6:
             latest_divergence = 'short'
 
     if not latest_divergence:
@@ -206,7 +206,7 @@ def future_change_margin_type_and_leverage():
 
 def future_open_position(symbol, side):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 100.0    
+    usdt_amount = future_balance / 50.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -244,21 +244,35 @@ def future_check_profit_or_loss():
             position_info = client.futures_position_information(symbol=position)
             position_profit_or_loss = float(position_info[0]['unRealizedProfit'])
             position_leverage = float(position_info[0]['leverage'])
-            position_enter_amount = float(position_info[0]['positionAmt']) * -1
+            position_enter_amount = float(position_info[0]['positionAmt']) 
             position_enter_price = float(position_info[0]['markPrice'])
             position_enter_total_amount = position_enter_amount * position_enter_price
             position_profit_or_loss_persent = ((position_profit_or_loss * 100) / position_enter_total_amount) * position_leverage
             print(f"Symbol: {position}, Profit/Loss: {position_profit_or_loss} {position_enter_amount} {position_enter_price} {position_profit_or_loss_persent}", flush=True)            
             if position_profit_or_loss_persent > 15:
                 # ปิด Position ที่มีกำไรมากกว่า 15%
-                quantity = float(position_info[0]['positionAmt']) * -1
-                order = client.futures_create_order(
-                    symbol=position,
-                    side='BUY',
-                    type='MARKET',
-                    quantity=quantity,
-                    recvWindow=5000
-                )            
+                # ถ้าเป็นฝั่ง short
+                if position_enter_amount < 0:
+                    quantity = position_enter_amount * -1
+                    print(f"Short Close position {position} {quantity}", flush=True)
+                    order = client.futures_create_order(
+                        symbol=position,
+                        side='BUY',
+                        type='MARKET',
+                        quantity=quantity,
+                        recvWindow=5000
+                    )
+                # ถ้าเป็นฝั่ง long
+                if position_enter_amount > 0:
+                    quantity = position_enter_amount
+                    print(f"Long Close position {position} {quantity}", flush=True)
+                    order = client.futures_create_order(
+                        symbol=position,
+                        side='SELL',
+                        type='MARKET',
+                        quantity=quantity,
+                        recvWindow=5000
+                    )
                 
         except Exception as e:
             print(f"Error: {e}", flush=True)
@@ -342,8 +356,8 @@ def future_find_signal():
                 if is_order:
                     message = f"Symbol: {symbol}, Signal: {signal}"
                     print(message, flush=True)
-                    send_line_notify(message)
-                    future_open_position(symbol, "BUY")
+                    #send_line_notify(message)
+                    #future_open_position(symbol, "BUY")
         except Exception as e:
             print(f"Error: {e}", flush=True)    
             continue    
@@ -364,7 +378,7 @@ print("\033[H\033[J")
 #future_change_margin_type_and_leverage()
 future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
-#future_check_profit_or_loss()
+future_check_profit_or_loss()
 future_find_signal()
 while True:    
     try:
@@ -373,10 +387,11 @@ while True:
             send_line_notify(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}")
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
-            #future_check_profit_or_loss()
+            future_check_profit_or_loss()
             future_find_signal()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
         print(f"Error: {e}", flush=True)
     time.sleep(10)
+    
