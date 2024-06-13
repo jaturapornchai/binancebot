@@ -148,7 +148,6 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
-    return True
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
@@ -206,7 +205,7 @@ def future_change_margin_type_and_leverage():
 
 def future_open_position(symbol, side):
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 50.0    
+    usdt_amount = future_balance / 75.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -356,8 +355,8 @@ def future_find_signal():
                 if is_order:
                     message = f"Symbol: {symbol}, Signal: {signal}"
                     print(message, flush=True)
-                    #send_line_notify(message)
-                    #future_open_position(symbol, "BUY")
+                    send_line_notify(message)
+                    future_open_position(symbol, "BUY")
         except Exception as e:
             print(f"Error: {e}", flush=True)    
             continue    
