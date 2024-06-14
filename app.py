@@ -380,7 +380,7 @@ while True:
             future_balance = future_get_balance()
             #future_check_profit_or_loss()
             #future_find_signal(tread_time_frame)
-            future_find_signal("1h",open_position=False)
+            future_find_signal("4h",open_position=False)
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
