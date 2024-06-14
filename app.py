@@ -132,6 +132,7 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
+    return True
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
@@ -162,34 +163,35 @@ def get_tick_size(symbol):
 def round_quantity(quantity, step_size):
     return (quantity // step_size) * step_size
 
-def future_change_margin_type_and_leverage():
+def future_change_margin_type_and_leverage(symbol):
+    print(f"Change margin type and leverage for {symbol}", flush=True)
+    try:
+        # เปลี่ยนเป็น isolated margin ถ้าเป็น cross margin
+        positions = client.futures_position_information(symbol=symbol)
+        if positions[0]['marginType'] == 'cross':
+            print(f"Change margin type to ISOLATED for {symbol}", flush=True)
+            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
+    except Exception as e:
+        print(f"Error: {e}", flush=True)
+    
+    try:
+        positions = client.futures_position_information(symbol=symbol)
+        current_leverage = positions[0]['leverage']
+        if int(current_leverage) != future_leverage:
+            print(f"Change leverage to {future_leverage} for {symbol}", flush=True)
+            client.futures_change_leverage(symbol=symbol, leverage=future_leverage)
+    except Exception as e:
+        print(f"Error checking or setting leverage: {e}", flush=True)
+
+def future_change_margin_type_and_leverage_all():
     symbols = fetch_future_symbols()
     for symbol in symbols:
-        print(f"Change margin type and leverage for {symbol}", flush=True)
-        try:
-            # เปลี่ยนเป็น isolated margin ถ้าเป็น cross margin
-            positions = client.futures_position_information(symbol=symbol)
-            if positions[0]['marginType'] == 'cross':
-                print(f"Change margin type to ISOLATED for {symbol}", flush=True)
-                client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
-        except Exception as e:
-            print(f"Error: {e}", flush=True)
-            return None
-        
-        try:
-            positions = client.futures_position_information(symbol=symbol)
-            current_leverage = positions[0]['leverage']
-            if int(current_leverage) != future_leverage:
-                print(f"Change leverage to {future_leverage} for {symbol}", flush=True)
-                client.futures_change_leverage(symbol=symbol, leverage=future_leverage)
-        except Exception as e:
-            print(f"Error checking or setting leverage: {e}", flush=True)
-            return None
-        
+        future_change_margin_type_and_leverage(symbol)        
 
 def future_open_position(symbol, side):
+    future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 75.0    
+    usdt_amount = future_balance / 125.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -235,8 +237,8 @@ def future_check_profit_or_loss():
             position_enter_total_amount = position_enter_amount * position_enter_price
             position_profit_or_loss_persent = ((position_profit_or_loss * 100) / position_enter_total_amount) * position_leverage
             print(f"Symbol: {position}, Profit/Loss: {position_profit_or_loss} {position_enter_amount} {position_enter_price} {position_profit_or_loss_persent}", flush=True)     
-            if position_profit_or_loss_persent > 15:
-                # ปิด Position ที่มีกำไรมากกว่า 15%
+            if position_profit_or_loss_persent > 10:
+                # ปิด Position ที่มีกำไรมากกว่า 10%
                 # ถ้าเป็นฝั่ง short
                 if position_amount < 0:
                     quantity = position_amount * -1
@@ -365,19 +367,19 @@ def future_get_balance():
 tread_time_frame = '15m'
 # clear screen terminal
 print("\033[H\033[J")
-#future_change_margin_type_and_leverage()
+#future_change_margin_type_and_leverage_all()
 future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
-future_check_profit_or_loss()
-future_find_signal(tread_time_frame)
+#future_check_profit_or_loss()
+#future_find_signal(tread_time_frame)
 while True:    
     try:
         date_time_now = datetime.now()
         if date_time_now.minute % 15 == 0:
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
-            future_check_profit_or_loss()
-            future_find_signal(tread_time_frame)
+            #future_check_profit_or_loss()
+            #future_find_signal(tread_time_frame)
             future_find_signal("1h",open_position=False)
             time.sleep(120)
     except Exception as e:

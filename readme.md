@@ -18,8 +18,11 @@ sudo docker pull jaturapornchai/getspot:latest
 
 sudo docker-compose up -d
 
+-- ดูการทำงาน
 sudo docker logs -f jeadspotbot
 
+-- หยุดทำงาน
+sudo docker-compose stop
 ```
 
 docker build -t binancebot .
