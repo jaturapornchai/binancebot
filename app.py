@@ -390,4 +390,3 @@ while True:
         send_line_notify(f"Error: {e}")
         print(f"Error: {e}", flush=True)
     time.sleep(10)
-    
