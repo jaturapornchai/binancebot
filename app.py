@@ -80,8 +80,8 @@ def find_divergence(data, swing_highs, swing_lows):
 def check_div_signal(symbol, tread_time_frame='1h'):
     # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
     limit = 1000  
-    # ดึงข้อมูลย้อนหลัง 10 วัน
-    since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 10  
+    # ดึงข้อมูลย้อนหลัง 20 วัน
+    since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 20  
 
     # ดึงข้อมูลในช่วงเวลาที่กำหนด
     bars = []
@@ -107,13 +107,13 @@ def check_div_signal(symbol, tread_time_frame='1h'):
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
         time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 6:
+        if time_since_bullish < 2:
             latest_divergence = 'long'
 
     if divergences['bearish']:
         latest_bearish_divergence = divergences['bearish'][-1][0]
         time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 6:
+        if time_since_bearish < 2:
             latest_divergence = 'short'
 
     if not latest_divergence:
@@ -237,8 +237,8 @@ def future_check_profit_or_loss():
             position_enter_total_amount = position_enter_amount * position_enter_price
             position_profit_or_loss_persent = ((position_profit_or_loss * 100) / position_enter_total_amount) * position_leverage
             print(f"Symbol: {position}, Profit/Loss: {position_profit_or_loss} {position_enter_amount} {position_enter_price} {position_profit_or_loss_persent}", flush=True)     
-            if position_profit_or_loss_persent > 10:
-                # ปิด Position ที่มีกำไรมากกว่า 10%
+            if position_profit_or_loss_persent > 15:
+                # ปิด Position ที่มีกำไรมากกว่า 15%
                 # ถ้าเป็นฝั่ง short
                 if position_amount < 0:
                     quantity = position_amount * -1
@@ -342,10 +342,10 @@ def future_find_signal(tread_time_frame,open_position=True):
                     if is_order:
                         message = f"Symbol: {symbol}, Signal: {signal}"
                         print(message, flush=True)
-                        future_open_position(symbol, "BUY")
+                        #future_open_position(symbol, "BUY")
             else:
                 if signal != 'normal':
-                    message = f"Symbol: {symbol}, Signal: {signal}"
+                    message = f"Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
                     print(message, flush=True)
                     send_line_notify(message)
         except Exception as e:
@@ -370,17 +370,21 @@ print("\033[H\033[J")
 #future_change_margin_type_and_leverage_all()
 future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
-#future_check_profit_or_loss()
-#future_find_signal(tread_time_frame)
+future_check_profit_or_loss()
+future_find_signal(tread_time_frame)
+#future_find_signal("15m",open_position=False)
 while True:    
     try:
         date_time_now = datetime.now()
-        if date_time_now.minute % 15 == 0:
+        last_minute = date_time_now.minute
+        if last_minute % 15 == 0:
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
-            #future_check_profit_or_loss()
-            #future_find_signal(tread_time_frame)
-            future_find_signal("4h",open_position=False)
+            future_check_profit_or_loss()
+            future_find_signal(tread_time_frame)
+            if last_minute == 0:
+                future_find_signal("1h",open_position=False)
+                future_find_signal("4h",open_position=False)
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
