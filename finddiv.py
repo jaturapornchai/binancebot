@@ -105,13 +105,13 @@ def check_div_signal(symbol):
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
         time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 14:
+        if time_since_bullish < 6:
             latest_divergence = 'long'
 
     if divergences['bearish']:
         latest_bearish_divergence = divergences['bearish'][-1][0]
         time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 14:
+        if time_since_bearish < 6:
             latest_divergence = 'short'
 
     if not latest_divergence:
