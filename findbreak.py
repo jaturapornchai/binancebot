@@ -1,148 +1,113 @@
-import time
-import requests
-import numpy as np
-import pandas as pd
-from sklearn.linear_model import LinearRegression
-from datetime import datetime
-import numpy as np
-import requests
-from scipy.stats import linregress
-from binance.client import Client
-import time
-from scipy.stats import linregress
-from bs4 import BeautifulSoup
-import traceback
-import concurrent.futures
 import datetime
-import random
-import time
 import ccxt
-from binance.client import Client
-from binance.enums import *
-import requests
 import pandas as pd
+from datetime import datetime
 import requests
-import talib
-import ta
+from binance.client import Client
+import time
 import numpy as np
-import pandas_datareader as pdr
-import datetime
+from sklearn.linear_model import LinearRegression
 
-api_key = 'KWMryBr2zeiDLIMHAwmqx5ohgDAaphC343LeGTnQlUGXYMoT6ptSq1qq1iEkfPgP'
-api_secret = 'mcBTf5n829LJq09htb4Z9uzkr89aYZ6Gl2TzCCG3JEIUCiHzfjAhbLH3hQem4v5m'
+# Configure API key authorization
+api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
+api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
-# LINE Notify token
-line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
-dollar_amount = 75  # Order amount in USD
-leverage = 10
-timeframe = '1h'
 exchange = ccxt.binance()
-future_symbols = []
-spot_symbols = []
-exchange_rate_thai = 0.0
-ignore_symbols = ['DONUSDT','USDCUSDT','SRMUSDT']
+ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
+line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 
 def send_line_notify(message):
+    """Send notifications through LINE Notify."""
     headers = {
-        'Authorization': f'Bearer {line_token}',
+        'Authorization': f'Bearer ' + line_token,
         'Content-Type': 'application/x-www-form-urlencoded'
     }
     payload = {'message': message}
     response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
     return response.status_code
 
-def get_exchange_rate_thai():
-    url = 'https://www.x-rates.com/calculator/?from=USD&to=THB&amount=1'
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-
-    rate = soup.find('span', class_='ccOutputTrail').previous_sibling
-    # return double
-    return float(rate)
-
-def fetch_spot_symbols():
-    url = "https://api.binance.com/api/v3/exchangeInfo"
-    response = requests.get(url)
-    data = response.json()
-
-    symbols = []
-    for symbol in data["symbols"]:
-        if symbol["status"] == "TRADING" and symbol["isSpotTradingAllowed"] and symbol["symbol"].endswith("USDT"):
-            symbols.append(symbol["symbol"])
-
-    # remove ignore_symbols
+def fetch_future_symbols():
+    info = client.futures_exchange_info()
+    symbols = [item['symbol'] for item in info['symbols'] if 'USDT' in item['symbol'] and item['status'] == 'TRADING']
+    symbols = [symbol for symbol in symbols if not any(char.isdigit() for char in symbol)]
     symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
-    ## remove ถ้ามีคำว่า UPUSDT หรือ DOWNUSDT อยู่ในชื่อ symbol
-    symbols = [symbol for symbol in symbols if 'UPUSDT' not in symbol]
-    symbols = [symbol for symbol in symbols if 'DOWNUSDT' not in symbol]
+    symbols.sort()    
     return symbols
 
-def fetch_data(symbol, timeframe='1h', limit=500):
-    exchange = ccxt.binance()  # Using Binance as the exchange
-    candles = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    return df
+def linear_regression_channel(data, window, devlen):
+    X = np.arange(window).reshape(-1, 1)
+    model = LinearRegression()
+    upper_bound = []
+    lower_bound = []
+    middle = []
+    for i in range(len(data) - window + 1):
+        y = data[i:i+window]
+        model.fit(X, y)
+        trend = model.predict(X)
+        residuals = y - trend
+        std_res = np.std(residuals)
+        middle.append(trend[-1])
+        upper_bound.append(trend[-1] + std_res * devlen)
+        lower_bound.append(trend[-1] - std_res * devlen)
+    return middle, upper_bound, lower_bound
 
-# Calculate RSI
-def calculate_rsi(df, period=14):
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    df['rsi'] = rsi
-    return df
+def check_breakout(data, upper_bound, lower_bound):
+    if data[-1] > upper_bound[-1]:
+        return 'breakout_up'
+    elif data[-1] < lower_bound[-1]:
+        return 'breakout_down'
+    else:
+        return 'normal'
 
-# Example of a simple breakout detection (to be adapted for your specific logic)
-def detect_breakouts(df):
-    # This is a placeholder function. You need to define how you detect breakouts based on RSI and trendlines.
-    # For instance, you might look for RSI moving above a certain threshold or crossing a trendline you've defined.
-    breakouts = df[df['rsi'] > 70]  # Simplified example: detecting when RSI goes above 70
-    return breakouts
+def check_signal(symbol, tread_time_frame='1h', window=100, devlen=2):
+    limit = 1000  
+    since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 20  
 
-def find_break(symbol):
-    # Fetch data
-    df = fetch_data(symbol, timeframe)
-    # Calculate RSI
-    df = calculate_rsi(df)
-    # Detect breakouts
-    breakouts = detect_breakouts(df)
-    return len(breakouts) > 0
-
-if __name__ == "__main__":
-    find_name = 'spot_symbols.txt'
-    first = True
-    found_symbols = []
+    bars = []
     while True:
-        # ดึงเวลาปัจจุบัน ทำงานเมื่อ ครบ 15 นาที นับจากเวลาที่เริ่มต้น ชั่วโมง
-        now = datetime.datetime.now()
-        if now.minute % 5 == 0 or first:
-            if not first:
-                time.sleep(30)
-            first = False
-            found_symbols_list_new = []
-            try:
-                spot_symbols = [symbol for symbol in fetch_spot_symbols() if '_' not in symbol and not any(char.isdigit() for char in symbol)]
-                spot_symbols.sort()
-                for symbol in spot_symbols:
-                    if find_break(symbol):
-                        if symbol not in found_symbols:
-                            print(symbol)
-                            found_symbols.append(symbol)
-                            found_symbols_list_new.append(symbol + '\n')
-                if len(found_symbols_list_new) > 0:
-                    send_line_notify('Found symbols\n' + ''.join(found_symbols_list_new))
-                # ลบไฟล์เดิมทิ้ง
-                open(find_name, 'w').close()    
-                with open(find_name, 'w') as f:
-                    for symbol in found_symbols:
-                        f.write(symbol + '\n')
-                print('*** done ***')
-                # รอ 60 วินาที
-                time.sleep(60)
-            except:
-                print('error')        
-        time.sleep(1)
+        ohlcv = exchange.fetch_ohlcv(symbol, tread_time_frame, since, limit)
+        if not ohlcv:
+            break
+        since = ohlcv[-1][0] + 1
+        bars.extend(ohlcv)
+        if len(ohlcv) < limit:
+            break
 
+    data = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
+    data.set_index('timestamp', inplace=True)
+    
+    close_prices = data['close'].values
+    middle, upper_bound, lower_bound = linear_regression_channel(close_prices, window, devlen)
+
+    return check_breakout(close_prices, upper_bound, lower_bound)
+
+def future_find_signal(tread_time_frame, window=100, devlen=2):
+    print("Start check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+    symbols = fetch_future_symbols()
+    for symbol in symbols:
+        try:
+            signal = check_signal(symbol, tread_time_frame, window, devlen)
+            if signal != 'normal':
+                message = f"Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
+                print(message, flush=True)
+                send_line_notify(message)
+        except Exception as e:
+            print(f"Error: {e}", flush=True)    
+            continue    
+    print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+
+tread_time_frame = '4h'
+print("\033[H\033[J")
+future_find_signal(tread_time_frame)
+while True:    
+    try:
+        date_time_now = datetime.now()
+        last_minute = date_time_now.minute
+        if last_minute == 0:
+            future_find_signal(tread_time_frame)
+            time.sleep(120)
+    except Exception as e:
+        send_line_notify(f"Error: {e}")
+        print(f"Error: {e}", flush=True)
+    time.sleep(10)

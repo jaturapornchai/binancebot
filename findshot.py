@@ -75,13 +75,17 @@ def find_divergence(data, swing_highs, swing_lows):
     
     return divergences
 
+def check_price_near_high(data, period=288, lower_tolerance=0.01, upper_tolerance=0.05):
+    highest_high = data['high'][-period:].max()
+    current_price = data['close'].iloc[-1]
+    if highest_high * (1 - upper_tolerance) <= current_price <= highest_high * (1 - lower_tolerance):
+        return True, highest_high
+    return False, highest_high
+
 def check_div_signal(symbol):
-    # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
     limit = 1000  
-    # ดึงข้อมูลย้อนหลัง 10 วัน
     since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 10  
 
-    # ดึงข้อมูลในช่วงเวลาที่กำหนด
     bars = []
     while True:
         ohlcv = exchange.fetch_ohlcv(symbol, tread_time_frame, since, limit)
@@ -116,6 +120,12 @@ def check_div_signal(symbol):
 
     if not latest_divergence:
         latest_divergence = 'normal'
+    
+    is_near_high, highest_high = check_price_near_high(data)
+    if is_near_high:
+        print(f"Symbol: {symbol}, Current Price is near the highest price of the last 288 periods ({highest_high})", flush=True)
+        send_line_notify(f"Short : Symbol: {symbol}, Current Price is near the highest price of the last 288 periods ({highest_high})")
+        latest_divergence = 'short'
 
     return latest_divergence
 
@@ -127,11 +137,6 @@ def future_find_signal():
             signal = check_div_signal(symbol)
             if signal == 'short':
                 print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
-                send_line_notify(f"Short : Symbol: {symbol}, Signal: {signal}")
-
-            if signal == 'longx':
-                print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
-                send_line_notify(f"Long : Symbol: {symbol}, Signal: {signal}")
 
         except Exception as e:
             print(f"Error: {e}", flush=True)    
