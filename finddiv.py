@@ -10,7 +10,7 @@ import time
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
 api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
-tread_time_frame = '1h'
+tread_time_frame = '30m'
 exchange = ccxt.binance()
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
@@ -105,13 +105,13 @@ def check_div_signal(symbol):
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
         time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 6:
+        if time_since_bullish < 5:
             latest_divergence = 'long'
 
     if divergences['bearish']:
         latest_bearish_divergence = divergences['bearish'][-1][0]
         time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 6:
+        if time_since_bearish < 5:
             latest_divergence = 'short'
 
     if not latest_divergence:
