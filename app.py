@@ -133,7 +133,6 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
-    return True
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
@@ -238,7 +237,7 @@ def future_check_profit_or_loss():
             position_enter_total_amount = position_enter_amount * position_enter_price
             position_profit_or_loss_persent = ((position_profit_or_loss * 100) / position_enter_total_amount) * position_leverage
             print(f"Symbol: {position}, Profit/Loss: {position_profit_or_loss} {position_enter_amount} {position_enter_price} {position_profit_or_loss_persent}", flush=True)     
-            if position_profit_or_loss_persent < -10:
+            """if position_profit_or_loss_persent < -10:
                 # ปิด Position ที่มีขาดทุนมากกว่า 10%
                 # ถ้าเป็นฝั่ง short
                 if position_amount < 0:
@@ -261,7 +260,7 @@ def future_check_profit_or_loss():
                         type='MARKET',
                         quantity=quantity,
                         recvWindow=5000
-                    )
+                    )"""
                 
             if position_profit_or_loss_persent > 15:
                 # ปิด Position ที่มีกำไรมากกว่า 15%
