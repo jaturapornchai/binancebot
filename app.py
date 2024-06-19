@@ -17,8 +17,10 @@ future_balance = 0
 future_exchange_info = []
 future_leverage = 5
 tread_time_frame = '15m'
+symbol_file_name = 'symbol.txt'
 
 def send_line_notify(message):
+    return
     """Send notifications through LINE Notify."""
     headers = {
         'Authorization': f'Bearer ' + line_token,
@@ -140,7 +142,7 @@ def future_get_last_trade(symbol):
     last_trade = trades[-1]
     trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
     time_diff = datetime.now() - trade_time
-    if time_diff.total_seconds() < 60 * 60 * 4:
+    if time_diff.total_seconds() < 60 * 60 * 1:
         return False
     return True
 
@@ -191,10 +193,11 @@ def future_change_margin_type_and_leverage_all():
 def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 50.0    
+    usdt_amount = future_balance / 100.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
+    current_price = 0
     try:
         current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
         step_size = get_step_size(symbol)
@@ -211,16 +214,64 @@ def future_open_position(symbol, side):
         # รอ 1 วินาที หลังจากปิด Position เพื่อป้องกันการเปิด Position ซ้ำ
         time.sleep(1)
         print(f"Open position {symbol} {side} {quantity}", flush=True)
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type='MARKET',
-            quantity=quantity,
-            recvWindow=5000
-        )
+        if side == 'BUY':
+            # หาราคาย้อนหลัง 44 time frame ในราคาที่ต่ำที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=49), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            # ไม่รวม 2 time frame นับจากปัจจุบัน
+            df = df.iloc[:-2]
+            min_price = df['low'].min()
+            if current_price > min_price:
+                print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
+                order = client.futures_create_order(
+                    symbol=symbol,
+                    side='BUY',
+                    type='MARKET',
+                    quantity=quantity,
+                    recvWindow=5000
+                )
+                # สร้าง stop loss ที่ราคา min_price 
+                order = client.futures_create_order(
+                    symbol=symbol,
+                    side='SELL',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=min_price,
+                    recvWindow=5000
+                )
+        if side == 'SELL':
+            # หาราคาย้อนหลัง 44 time frame ในราคาที่สูงที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=49), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            # ไม่รวม 2 time frame นับจากปัจจุบัน
+            df = df.iloc[:-2]
+            max_price = df['high'].max()
+            print(f"Current price: {current_price}, Max price: {max_price}", flush=True)
+            if current_price < max_price:
+                print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
+                order = client.futures_create_order(
+                    symbol=symbol,
+                    side='SELL',
+                    type='MARKET',
+                    quantity=quantity,
+                    recvWindow=5000
+                )
+                # สร้าง stop loss ที่ราคา max_price 
+                order = client.futures_create_order(
+                    symbol=symbol,
+                    side='BUY',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=max_price,
+                    recvWindow=5000
+                )
+
     except Exception as e:
         print(f"Error: {e}", flush=True)
         return None
+
 
 def future_check_profit_or_loss():
     positions = future_get_position()    
@@ -237,33 +288,66 @@ def future_check_profit_or_loss():
             position_enter_total_amount = position_enter_amount * position_enter_price
             position_profit_or_loss_persent = ((position_profit_or_loss * 100) / position_enter_total_amount) * position_leverage
             print(f"Symbol: {position}, Profit/Loss: {position_profit_or_loss} {position_enter_amount} {position_enter_price} {position_profit_or_loss_persent}", flush=True)     
-            """if position_profit_or_loss_persent < -10:
+            if position_profit_or_loss_persent < -10:
                 # ปิด Position ที่มีขาดทุนมากกว่า 10%
                 # ถ้าเป็นฝั่ง short
                 if position_amount < 0:
-                    quantity = position_amount * -1
-                    print(f"Short Close position {position} {quantity}", flush=True)
-                    order = client.futures_create_order(
-                        symbol=position,
-                        side='BUY',
-                        type='MARKET',
-                        quantity=quantity,
-                        recvWindow=5000
-                    )
-                # ถ้าเป็นฝั่ง long
+                    print(f"Short Close position {position} {position_amount}", flush=True)
+                    
+                    # Fetch 49 time frames historical data (44 + 5)
+                    bars = exchange.fetch_ohlcv(position, timeframe=tread_time_frame, limit=49)
+                    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
+                    
+                    # Exclude the most recent 5 time frames
+                    df = df.iloc[:-5]
+                    
+                    # Find the highest price in the remaining 44 time frames
+                    max_price = df['high'].max()
+                    current_price = float(client.futures_symbol_ticker(symbol=position)['price'])
+                    
+                    # Close the position if the current price is higher than the max price
+                    if current_price > max_price:
+                        quantity = position_amount * -1
+                        print(f"Price > MAX : Short Close position {position} {quantity}", flush=True)
+                        order = client.futures_create_order(
+                            symbol=position,
+                            side='BUY',
+                            type='MARKET',
+                            quantity=quantity,
+                            recvWindow=5000
+                        )                # ถ้าเป็นฝั่ง long
                 if position_amount > 0:
-                    quantity = position_amount
-                    print(f"Long Close position {position} {quantity}", flush=True)
-                    order = client.futures_create_order(
-                        symbol=position,
-                        side='SELL',
-                        type='MARKET',
-                        quantity=quantity,
-                        recvWindow=5000
-                    )"""
+                    print(f"Long Close position {position} {position_amount}", flush=True)
+                    
+                    # Fetch 49 time frames historical data (44 + 5)
+                    bars = exchange.fetch_ohlcv(position, timeframe=tread_time_frame, limit=49)
+                    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
+                    
+                    # Exclude the most recent 5 time frames
+                    df = df.iloc[:-5]
+                    
+                    # Find the lowest price in the remaining 44 time frames
+                    min_price = df['low'].min()
+                    current_price = float(client.futures_symbol_ticker(symbol=position)['price'])
+                    
+                    # Close the position if the current price is lower than the min price
+                    if current_price < min_price:
+                        quantity = position_amount
+                        print(f"Price < MIN : Long Close position {position} {quantity}", flush=True)
+                        order = client.futures_create_order(
+                            symbol=position,
+                            side='SELL',
+                            type='MARKET',
+                            quantity=quantity,
+                            recvWindow=5000
+                        )
                 
             if position_profit_or_loss_persent > 15:
-                # ปิด Position ที่มีกำไรมากกว่า 15%
+                # ปิด Position ที่มีกำไรมากกว่า 10%
                 # ถ้าเป็นฝั่ง short
                 if position_amount < 0:
                     quantity = position_amount * -1
@@ -294,88 +378,98 @@ def future_check_profit_or_loss():
 def future_find_signal(open_position=True):
     print("Start check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
     symbols = fetch_future_symbols()
-    for symbol in symbols:
-        try:
-            signal = check_div_signal(symbol)
-            if open_position:
+    # delet old symbol file
+    with open(symbol_file_name, 'w') as f:
+        f.write('')
+    # write new symbol file
+    with open(symbol_file_name, 'a') as f:
+        for symbol in symbols:
+            try:
+                signal = check_div_signal(symbol)
                 if signal == 'short':
-                    is_close = False
-                    is_order = True
-                    positions = client.futures_position_information(symbol=symbol)
-                    for position in positions:
-                        position_amount = float(position['positionAmt'])
-                        if position_amount != 0:
-                            if position_amount > 0.0:
-                                is_close = True
-                                break
-                            else:
+                    f.write(symbol + '\n')
+                    send_line_notify(f"Signal: {signal} Symbol: {symbol}")
+                if open_position:
+                    if signal == 'short':
+                        is_close = False
+                        is_order = True
+                        positions = client.futures_position_information(symbol=symbol)
+                        for position in positions:
+                            position_amount = float(position['positionAmt'])
+                            if position_amount != 0:
+                                if position_amount > 0.0:
+                                    is_close = True
+                                    break
+                                else:
+                                    is_order = False
+                                    break
+                        if is_close:
+                            # ปิด Position BUY ที่เปิดอยู่
+                            print(f"Close position {symbol}", flush=True)
+                            quantity = float(position['positionAmt']) 
+                            client.futures_create_order(
+                                symbol=symbol,
+                                side='SELL',
+                                type='MARKET',
+                                quantity=quantity,
+                                recvWindow=5000
+                            )  
+                            # รอให้ Position ปิดเสร็จสิ้น
+                            time.sleep(1)
+                        else:
+                            # ดึง position ที่เปิดอยู่
+                            if not future_get_last_trade(symbol):
+                                print(f"Skip symbol {symbol} because last trade near", flush=True)
                                 is_order = False
-                                break
-                    if is_close:
-                        # ปิด Position BUY ที่เปิดอยู่
-                        print(f"Close position {symbol}", flush=True)
-                        quantity = float(position['positionAmt']) 
-                        client.futures_create_order(
-                            symbol=symbol,
-                            side='SELL',
-                            type='MARKET',
-                            quantity=quantity,
-                            recvWindow=5000
-                        )  
-                        # รอให้ Position ปิดเสร็จสิ้น
-                        time.sleep(1)
-                    else:
-                        # ดึง position ที่เปิดอยู่
-                        if not future_get_last_trade(symbol):
-                            print(f"Skip symbol {symbol} because last trade within 4 hours", flush=True)
-                            is_order = False
-                    if is_order:
-                        message = f"{signal} Symbol: {symbol}, Signal: {signal}"
-                        print(message, flush=True)
-                        future_open_position(symbol, "SELL")
+                        if is_order:
+                            message = f"{signal} Symbol: {symbol}, Signal: {signal}"
+                            print(message, flush=True)
+                            future_open_position(symbol, "SELL")
 
-                if signal == 'long':
-                    is_close = False
-                    is_order = True
-                    quantity = 0
-                    positions = client.futures_position_information(symbol=symbol)
-                    for position in positions:
-                        position_amount = float(position['positionAmt'])
-                        if position_amount != 0:
-                            if position_amount < 0.0: 
-                                is_close = True
-                                break
-                            else:
+                    if signal == 'long':
+                        is_close = False
+                        is_order = True
+                        quantity = 0
+                        positions = client.futures_position_information(symbol=symbol)
+                        for position in positions:
+                            position_amount = float(position['positionAmt'])
+                            if position_amount != 0:
+                                if position_amount < 0.0: 
+                                    is_close = True
+                                    break
+                                else:
+                                    is_order = False
+                                    break
+                        if is_close:
+                            # ปิด Position ที่เปิดอยู่
+                            quantity = float(position['positionAmt']) * -1
+                            client.futures_create_order(
+                                symbol=symbol,
+                                side='BUY',
+                                type='MARKET',
+                                quantity=quantity,
+                                recvWindow=5000
+                            )
+                            # รอให้ Position ปิดเสร็จสิ้น
+                            time.sleep(1)
+                        else:
+                            if not future_get_last_trade(symbol):
+                                print(f"Skip symbol {symbol} because last trade near", flush=True)
                                 is_order = False
-                                break
-                    if is_close:
-                        # ปิด Position ที่เปิดอยู่
-                        quantity = float(position['positionAmt']) * -1
-                        client.futures_create_order(
-                            symbol=symbol,
-                            side='BUY',
-                            type='MARKET',
-                            quantity=quantity,
-                            recvWindow=5000
-                        )
-                        # รอให้ Position ปิดเสร็จสิ้น
-                        time.sleep(1)
-                    else:
-                        if not future_get_last_trade(symbol):
-                            print(f"Skip symbol {symbol} because last trade within 4 hours", flush=True)
-                            is_order = False
-                    if is_order:
-                        message = f"Symbol: {symbol}, Signal: {signal}"
+                        if is_order:
+                            message = f"Symbol: {symbol}, Signal: {signal}"
+                            print(message, flush=True)
+                            future_open_position(symbol, "BUY")
+                else:
+                    if signal != 'normal':
+                        message = f"Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
                         print(message, flush=True)
-                        #future_open_position(symbol, "BUY")
-            else:
-                if signal != 'normal':
-                    message = f"Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
-                    print(message, flush=True)
-                    send_line_notify(message)
-        except Exception as e:
-            print(f"Error: {e}", flush=True)    
-            continue    
+                        send_line_notify(message)
+            except Exception as e:
+                print(f"Error: {e}", flush=True)    
+                continue    
+    # close file
+    f.close()
     print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
 
 def future_get_balance():
@@ -388,23 +482,68 @@ def future_get_balance():
     print(f"Balance USDT: {balance_asset}", flush=True)  
     return balance_asset
 
+def future_find_position_no_stop_loss():
+    # position ที่ไม่มี stop loss ให้ปิด position ทิ้ง
+    positions = future_get_position()
+    for position in positions:
+        try:
+            position_info = client.futures_position_information(symbol=position)
+            position_amount = float(position_info[0]['positionAmt'])
+            if position_amount != 0:
+                # ค้นหา stop loss ของ position จาก order ที่เปิดอยู่
+                orders = client.futures_get_all_orders(symbol=position)
+                is_stop_loss = False
+                for order in orders:
+                    if order['type'] == 'STOP_MARKET':
+                        is_stop_loss = True
+                        break
+                if not is_stop_loss:
+                    # ปิด position ที่ไม่มี stop loss
+                    print(f"Close position {position} because no stop loss", flush=True)
+                    quantity = float(position_info[0]['positionAmt'])
+                    if quantity > 0:
+                        client.futures_create_order(
+                            symbol=position,
+                            side='SELL',
+                            type='MARKET',
+                            quantity=quantity,
+                            recvWindow=5000
+                        )
+                    if quantity < 0:
+                        client.futures_create_order(
+                            symbol=position,
+                            side='BUY',
+                            type='MARKET',
+                            quantity=quantity * -1,
+                            recvWindow=5000
+                        )                
+                    
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            continue
+
+
 # start
 # clear screen terminal
 print("\033[H\033[J")
 #future_change_margin_type_and_leverage_all()
 future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
-future_check_profit_or_loss()
-future_find_signal()
+#future_open_position('TAOUSDT', 'BUY')
+#future_check_profit_or_loss()
+#future_find_signal()
+#future_find_position_no_stop_loss()
 while True:    
     try:
         date_time_now = datetime.now()
-        last_minute = date_time_now.minute
-        if last_minute % 15 == 0:
+        if date_time_now.minute % 15 == 0:
+            time.sleep(60)
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
-            future_check_profit_or_loss()
+            #future_check_profit_or_loss()
             future_find_signal()
+            time.sleep(60)
+            future_find_position_no_stop_loss()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
