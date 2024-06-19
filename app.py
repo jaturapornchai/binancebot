@@ -110,13 +110,13 @@ def check_div_signal(symbol):
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
         time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 5:
+        if time_since_bullish < 4:
             latest_divergence = 'long'
 
     if divergences['bearish']:
         latest_bearish_divergence = divergences['bearish'][-1][0]
         time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 5:
+        if time_since_bearish < 4:
             latest_divergence = 'short'
 
     if not latest_divergence:
@@ -135,14 +135,14 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
-    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 4 ชั่วโมง ให้ return true
+    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 2 ชั่วโมง ให้ return true
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
         return True
     last_trade = trades[-1]
     trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
     time_diff = datetime.now() - trade_time
-    if time_diff.total_seconds() < 60 * 60 * 1:
+    if time_diff.total_seconds() < 60 * 60 * 2:
         return False
     return True
 
@@ -522,6 +522,26 @@ def future_find_position_no_stop_loss():
             print(f"Error: {e}", flush=True)
             continue
 
+def future_find_order_no_position():
+    print("Start check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+    # หา order ที่ไม่มี position ให้ยกเลิก order
+    orders = client.futures_get_open_orders()
+    positions = client.futures_position_information()
+    for order in orders:
+        try:
+            symbol = order['symbol']
+            is_position = False
+            for position in positions:
+                if position['symbol'] == symbol:
+                    is_position = True
+                    break
+            if not is_position:
+                # ยกเลิก order ที่ไม่มี position
+                print(f"Cancel order {order['orderId']} {symbol}", flush=True)
+                client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+    print("End check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
 
 # start
 # clear screen terminal
@@ -531,19 +551,24 @@ future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
 #future_open_position('TAOUSDT', 'BUY')
 #future_check_profit_or_loss()
-#future_find_signal()
-#future_find_position_no_stop_loss()
+future_find_signal()
+future_find_position_no_stop_loss()
+future_find_order_no_position()
 while True:    
     try:
         date_time_now = datetime.now()
         if date_time_now.minute % 15 == 0:
-            time.sleep(60)
+            time.sleep(10)
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
             #future_check_profit_or_loss()
+            future_find_order_no_position()
+            time.sleep(10)
             future_find_signal()
-            time.sleep(60)
+            time.sleep(10)
             future_find_position_no_stop_loss()
+            time.sleep(10)
+            future_find_order_no_position()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
