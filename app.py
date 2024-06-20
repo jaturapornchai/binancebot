@@ -16,7 +16,7 @@ line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 future_balance = 0
 future_exchange_info = []
 future_leverage = 5
-tread_time_frame = '15m'
+tread_time_frame = '1h'
 symbol_file_name = 'symbol.txt'
 
 def send_line_notify(message):
@@ -106,17 +106,22 @@ def check_div_signal(symbol):
     divergences = find_divergence(data, swing_highs, swing_lows)
 
     latest_divergence = None
+    time_since = 4
+    if tread_time_frame == '1h':
+        time_since = 6
+    if tread_time_frame == '15':
+        time_since = 4
 
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
         time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 4:
+        if time_since_bullish < time_since:
             latest_divergence = 'long'
 
     if divergences['bearish']:
         latest_bearish_divergence = divergences['bearish'][-1][0]
         time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 4:
+        if time_since_bearish < time_since:
             latest_divergence = 'short'
 
     if not latest_divergence:
@@ -135,14 +140,19 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
-    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน 2 ชั่วโมง ให้ return true
+    # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน ชั่วโมงที่กำหนด ให้ return true
+    time_hour = 4
+    if tread_time_frame == '1h':
+        time_hour = 4
+    if tread_time_frame == '15':
+        time_hour = 2
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
         return True
     last_trade = trades[-1]
     trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
     time_diff = datetime.now() - trade_time
-    if time_diff.total_seconds() < 60 * 60 * 2:
+    if time_diff.total_seconds() < 60 * 60 * time_hour:
         return False
     return True
 
@@ -193,7 +203,8 @@ def future_change_margin_type_and_leverage_all():
 def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
-    usdt_amount = future_balance / 200.0    
+    #usdt_amount = future_balance / 200.0    
+    usdt_amount = future_balance / 10.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -215,8 +226,8 @@ def future_open_position(symbol, side):
         time.sleep(1)
         print(f"Open position {symbol} {side} {quantity}", flush=True)
         if side == 'BUY':
-            # หาราคาย้อนหลัง 44 time frame ในราคาที่ต่ำที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
-            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=49), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # หาราคาย้อนหลัง 24 time frame ในราคาที่ต่ำที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=29), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             # ไม่รวม 2 time frame นับจากปัจจุบัน
@@ -232,17 +243,18 @@ def future_open_position(symbol, side):
                     recvWindow=5000
                 )
                 # สร้าง stop loss ที่ราคา min_price 
-                order = client.futures_create_order(
+                stop_order = client.futures_create_order(
                     symbol=symbol,
                     side='SELL',
                     type='STOP_MARKET',
                     quantity=quantity,
                     stopPrice=min_price,
+                    closePosition=True,
                     recvWindow=5000
                 )
         if side == 'SELL':
-            # หาราคาย้อนหลัง 44 time frame ในราคาที่สูงที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
-            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=49), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # หาราคาย้อนหลัง 24 time frame ในราคาที่สูงที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=29), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             # ไม่รวม 2 time frame นับจากปัจจุบัน
@@ -259,12 +271,13 @@ def future_open_position(symbol, side):
                     recvWindow=5000
                 )
                 # สร้าง stop loss ที่ราคา max_price 
-                order = client.futures_create_order(
+                stop_order = client.futures_create_order(
                     symbol=symbol,
                     side='BUY',
                     type='STOP_MARKET',
                     quantity=quantity,
                     stopPrice=max_price,
+                    closePosition=True,
                     recvWindow=5000
                 )
 
@@ -294,8 +307,8 @@ def future_check_profit_or_loss():
                 if position_amount < 0:
                     print(f"Short Close position {position} {position_amount}", flush=True)
                     
-                    # Fetch 49 time frames historical data (44 + 5)
-                    bars = exchange.fetch_ohlcv(position, timeframe=tread_time_frame, limit=49)
+                    # Fetch 29 time frames historical data (24 + 5)
+                    bars = exchange.fetch_ohlcv(position, timeframe=tread_time_frame, limit=29)
                     df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                     df.set_index('timestamp', inplace=True)
@@ -303,7 +316,7 @@ def future_check_profit_or_loss():
                     # Exclude the most recent 5 time frames
                     df = df.iloc[:-5]
                     
-                    # Find the highest price in the remaining 44 time frames
+                    # Find the highest price in the remaining 24 time frames
                     max_price = df['high'].max()
                     current_price = float(client.futures_symbol_ticker(symbol=position)['price'])
                     
@@ -317,12 +330,13 @@ def future_check_profit_or_loss():
                             type='MARKET',
                             quantity=quantity,
                             recvWindow=5000
-                        )                # ถ้าเป็นฝั่ง long
+                        )                
+                # ถ้าเป็นฝั่ง long
                 if position_amount > 0:
                     print(f"Long Close position {position} {position_amount}", flush=True)
                     
-                    # Fetch 49 time frames historical data (44 + 5)
-                    bars = exchange.fetch_ohlcv(position, timeframe=tread_time_frame, limit=49)
+                    # Fetch 29 time frames historical data (24 + 5)
+                    bars = exchange.fetch_ohlcv(position, timeframe=tread_time_frame, limit=29)
                     df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                     df.set_index('timestamp', inplace=True)
@@ -330,7 +344,7 @@ def future_check_profit_or_loss():
                     # Exclude the most recent 5 time frames
                     df = df.iloc[:-5]
                     
-                    # Find the lowest price in the remaining 44 time frames
+                    # Find the lowest price in the remaining 24 time frames
                     min_price = df['low'].min()
                     current_price = float(client.futures_symbol_ticker(symbol=position)['price'])
                     
@@ -390,6 +404,7 @@ def future_find_signal(open_position=True):
                     f.write(symbol + '\n')
                     send_line_notify(f"Signal: {signal} Symbol: {symbol}")
                 if open_position:
+                    close_positioned = False
                     if signal == 'short':
                         is_close = False
                         is_order = True
@@ -416,12 +431,13 @@ def future_find_signal(open_position=True):
                             )  
                             # รอให้ Position ปิดเสร็จสิ้น
                             time.sleep(1)
+                            close_positioned = True
                         else:
                             # ดึง position ที่เปิดอยู่
                             if not future_get_last_trade(symbol):
                                 print(f"Skip symbol {symbol} because last trade near", flush=True)
                                 is_order = False
-                        if is_order:
+                        if is_order and close_positioned == False:
                             message = f"{signal} Symbol: {symbol}, Signal: {signal}"
                             print(message, flush=True)
                             future_open_position(symbol, "SELL")
@@ -452,11 +468,12 @@ def future_find_signal(open_position=True):
                             )
                             # รอให้ Position ปิดเสร็จสิ้น
                             time.sleep(1)
+                            close_positioned = True
                         else:
                             if not future_get_last_trade(symbol):
                                 print(f"Skip symbol {symbol} because last trade near", flush=True)
                                 is_order = False
-                        if is_order:
+                        if is_order and close_positioned == False:
                             message = f"Symbol: {symbol}, Signal: {signal}"
                             print(message, flush=True)
                             future_open_position(symbol, "BUY")
@@ -557,7 +574,7 @@ future_find_order_no_position()
 while True:    
     try:
         date_time_now = datetime.now()
-        if date_time_now.minute % 15 == 0:
+        if date_time_now.minute == 5:
             time.sleep(10)
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
