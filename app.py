@@ -232,9 +232,10 @@ def future_open_position(symbol, side):
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
             min_price = df['low'].min()
-            if current_price > min_price:
+            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน 1%
+            if current_price > min_price and current_price < min_price + (min_price * 0.01):
                 print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
-                order = client.futures_create_order(
+                client.futures_create_order(
                     symbol=symbol,
                     side='BUY',
                     type='MARKET',
@@ -242,7 +243,7 @@ def future_open_position(symbol, side):
                     recvWindow=5000
                 )
                 # สร้าง stop loss ที่ราคา min_price 
-                stop_order = client.futures_create_order(
+                client.futures_create_order(
                     symbol=symbol,
                     side='SELL',
                     type='STOP_MARKET',
@@ -259,10 +260,10 @@ def future_open_position(symbol, side):
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
             max_price = df['high'].max()
-            print(f"Current price: {current_price}, Max price: {max_price}", flush=True)
-            if current_price < max_price:
+            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน 1% 
+            if current_price < max_price and current_price > max_price - (max_price * 0.01):
                 print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
-                order = client.futures_create_order(
+                client.futures_create_order(
                     symbol=symbol,
                     side='SELL',
                     type='MARKET',
@@ -270,7 +271,7 @@ def future_open_position(symbol, side):
                     recvWindow=5000
                 )
                 # สร้าง stop loss ที่ราคา max_price 
-                stop_order = client.futures_create_order(
+                client.futures_create_order(
                     symbol=symbol,
                     side='BUY',
                     type='STOP_MARKET',
