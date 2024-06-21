@@ -20,7 +20,6 @@ tread_time_frame = '1h'
 symbol_file_name = 'symbol.txt'
 
 def send_line_notify(message):
-    return
     """Send notifications through LINE Notify."""
     headers = {
         'Authorization': f'Bearer ' + line_token,
@@ -107,8 +106,8 @@ def check_div_signal(symbol):
 
     latest_divergence = None
     time_since = 4
-    if tread_time_frame == '1h':
-        time_since = 6
+    if tread_time_frame == '1h' or tread_time_frame == '4h':
+        time_since = 14
     if tread_time_frame == '15':
         time_since = 4
 
@@ -143,7 +142,7 @@ def future_get_last_trade(symbol):
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน ชั่วโมงที่กำหนด ให้ return true
     time_hour = 4
     if tread_time_frame == '1h':
-        time_hour = 4
+        time_hour = 14
     if tread_time_frame == '15':
         time_hour = 2
     trades = client.futures_account_trades(symbol=symbol)
@@ -204,7 +203,7 @@ def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     #usdt_amount = future_balance / 200.0    
-    usdt_amount = future_balance / 10.0    
+    usdt_amount = future_balance / 50.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -400,9 +399,9 @@ def future_find_signal(open_position=True):
         for symbol in symbols:
             try:
                 signal = check_div_signal(symbol)
-                if signal == 'short':
-                    f.write(symbol + '\n')
-                    send_line_notify(f"Signal: {signal} Symbol: {symbol}")
+                if signal != 'normal' and open_position == False:
+                    print(f"Check signal {symbol} {signal}", flush=True)
+                    send_line_notify(f"Check signal {symbol} {signal}")
                 if open_position:
                     close_positioned = False
                     if signal == 'short':
@@ -476,7 +475,7 @@ def future_find_signal(open_position=True):
                         if is_order and close_positioned == False:
                             message = f"Symbol: {symbol}, Signal: {signal}"
                             print(message, flush=True)
-                            future_open_position(symbol, "BUY")
+                            #future_open_position(symbol, "BUY")
                 else:
                     if signal != 'normal':
                         message = f"Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
@@ -568,9 +567,9 @@ future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
 #future_open_position('TAOUSDT', 'BUY')
 #future_check_profit_or_loss()
-future_find_signal()
-future_find_position_no_stop_loss()
-future_find_order_no_position()
+future_find_signal(False)
+#future_find_position_no_stop_loss()
+#future_find_order_no_position()
 while True:    
     try:
         date_time_now = datetime.now()
@@ -579,13 +578,13 @@ while True:
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
             #future_check_profit_or_loss()
-            future_find_order_no_position()
+            #future_find_order_no_position()
             time.sleep(10)
-            future_find_signal()
+            future_find_signal(False)
             time.sleep(10)
-            future_find_position_no_stop_loss()
+            #future_find_position_no_stop_loss()
             time.sleep(10)
-            future_find_order_no_position()
+            #future_find_order_no_position()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
