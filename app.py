@@ -143,7 +143,7 @@ def future_get_last_trade(symbol):
     time_hour = 4
     if tread_time_frame == '1h':
         time_hour = 14
-    if tread_time_frame == '15':
+    if tread_time_frame == '15m':
         time_hour = 2
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
@@ -203,7 +203,7 @@ def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     #usdt_amount = future_balance / 200.0    
-    usdt_amount = future_balance / 20.0    
+    usdt_amount = future_balance / 30.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -225,15 +225,18 @@ def future_open_position(symbol, side):
         time.sleep(1)
         print(f"Open position {symbol} {side} {quantity}", flush=True)
         if side == 'BUY':
-            # หาราคาย้อนหลัง 24 time frame ในราคาที่ต่ำที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
+            # หาราคาย้อนหลัง 24 time frame ในราคาที่ต่ำที่สุด 
             df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=29), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
-            min_price = df['low'].min()
-            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน 1%
-            if current_price > min_price and current_price < min_price + (min_price * 0.01):
+            min_price = df['low'].min()    
+            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน 3%
+            diff_price = (min_price - current_price) * -1
+            diff_percent = (diff_price * 100) / min_price
+            print(f"min_price: {min_price} current_price:{current_price} diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)            
+            if current_price > min_price and diff_percent < 3:
                 print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -253,15 +256,18 @@ def future_open_position(symbol, side):
                     recvWindow=5000
                 )
         if side == 'SELL':
-            # หาราคาย้อนหลัง 24 time frame ในราคาที่สูงที่สุด ไม่รวม 5 time frame นับจากปัจจุบัน
+            # หาราคาย้อนหลัง 24 time frame ในราคาที่สูงที่สุด 
             df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=29), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
             max_price = df['high'].max()
-            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน 1% 
-            if current_price < max_price and current_price > max_price - (max_price * 0.01):
+            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน 3% 
+            diff_price = max_price - current_price
+            diff_percent = (diff_price * 100) / max_price
+            print(f"diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)
+            if current_price < max_price and diff_percent < 3:
                 print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -476,7 +482,7 @@ def future_find_signal(open_position=True):
                         if is_order and close_positioned == False:
                             message = f"Symbol: {symbol}, Signal: {signal}"
                             print(message, flush=True)
-                            #future_open_position(symbol, "BUY")
+                            future_open_position(symbol, "BUY")
                 else:
                     if signal != 'normal':
                         message = f"Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
@@ -499,7 +505,108 @@ def future_get_balance():
     print(f"Balance USDT: {balance_asset}", flush=True)  
     return balance_asset
 
+def future_compare_stop_loss(symbol):
+    # สร้าง stop loss ให้กับ position ที่เปิดอยู่
+    try:
+        position_info = client.futures_position_information(symbol=symbol)
+        position_amount = float(position_info[0]['positionAmt'])
+        position_side = (position_amount > 0) and 'BUY' or 'SELL'
+        # ถ้ามี ให้ตรวจสอบ ราคา ให้เหมาะสม
+        future_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
+        # ค้นหา order ที่เปิดอยู่
+        orders = client.futures_get_all_orders(symbol=symbol)
+        order = None
+        for item in orders:
+            if item['status'] == 'NEW':
+                order = item
+                break
+        if order == None:
+            print(f"Order not found {symbol}", flush=True)
+            # สร้าง stop loss ให้กับ position ที่ไม่มี stop loss
+            if position_side == 'BUY':
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 14 time frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=14), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                bottom_price = df['low'].min()
+                print(f"Reorder {symbol} {position_side} {position_amount} {bottom_price}", flush=True)
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL",
+                    type='STOP_MARKET',
+                    quantity=position_amount,
+                    stopPrice=bottom_price,
+                    closePosition=True,
+                    recvWindow=5000
+                )
+            if position_side == 'SELL':
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 14 time frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=14), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                top_price = df['high'].max()
+                print(f"Reorder {symbol} {position_side} {position_amount} {top_price}", flush=True)
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="BUY",
+                    type='STOP_MARKET',
+                    quantity=position_amount,
+                    stopPrice=top_price,
+                    closePosition=True,
+                    recvWindow=5000
+                )            
+        else:
+            old_order_stop_price = float(order['stopPrice'])                
+            top_price = 0;
+            bottom_price = 0;
+            # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 14 time frame
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=14), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            top_price = df['high'].max()
+            bottom_price = df['low'].min()
+            if position_side == 'BUY':
+                # ถ้าราคา order เดิม ต่ำกว่า bottom_price ให้ยกเลิก order แล้วสร้าง order ใหม่
+                if old_order_stop_price > bottom_price and future_price > bottom_price:
+                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
+                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
+                    time.sleep(5) 
+                    print(f"Reorder {symbol} {order['side']} {position_amount} {bottom_price}", flush=True)
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side=order['side'],
+                        type=order['type'],
+                        quantity=position_amount,
+                        stopPrice=bottom_price,
+                        closePosition=True,
+                        recvWindow=5000
+                    )
+            if position_side == 'SELL':
+                # ถ้าราคา order เดิม สูงกว่า top_price ให้ยกเลิก order แล้วสร้าง order ใหม่
+                if old_order_stop_price > top_price and future_price < top_price:
+                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
+                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
+                    time.sleep(1) 
+                    print(f"Reorder {symbol} {order['side']} {position_amount} {top_price}", flush=True)
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side=order['side'],
+                        type=order['type'],
+                        quantity=position_amount,
+                        stopPrice=top_price,
+                        closePosition=True,
+                        recvWindow=5000
+                    )                
+    except Exception as e:
+        print(f"Error: {e}", flush=True)
+        return None
+    
 def future_find_position_no_stop_loss():
+    # สร้าง stop loss ให้กับ position ที่ไม่มี stop loss
+    print("Start check position no stop loss : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+    positions = future_get_position()
+    for position in positions:
+        future_compare_stop_loss(position)
     # position ที่ไม่มี stop loss ให้ปิด position ทิ้ง
     positions = future_get_position()
     for position in positions:
@@ -543,17 +650,16 @@ def future_find_order_no_position():
     print("Start check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
     # หา order ที่ไม่มี position ให้ยกเลิก order
     orders = client.futures_get_open_orders()
-    positions = client.futures_position_information()
     for order in orders:
         try:
             symbol = order['symbol']
             is_position = False
-            for position in positions:
-                if position['symbol'] == symbol:
-                    is_position = True
-                    break
+            position_info = client.futures_position_information(symbol=symbol)
+            position_amount = float(position_info[0]['positionAmt'])            
+            if position_amount != 0:
+                is_position = True
             if not is_position:
-                # ยกเลิก order ที่ไม่มี position
+                # ถ้าไม่มียกเลิก order ที่ไม่มี position
                 print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                 client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
         except Exception as e:
@@ -566,9 +672,10 @@ print("\033[H\033[J")
 #future_change_margin_type_and_leverage_all()
 future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
-#future_open_position('TAOUSDT', 'BUY')
+#future_open_position('BATUSDT', 'BUY')
+#exit()
 #future_check_profit_or_loss()
-future_find_signal()
+#future_find_signal()
 #future_find_position_no_stop_loss()
 #future_find_order_no_position()
 while True:    
