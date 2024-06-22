@@ -232,11 +232,11 @@ def future_open_position(symbol, side):
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
             min_price = df['low'].min()    
-            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน 3%
+            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน 2%
             diff_price = (min_price - current_price) * -1
             diff_percent = (diff_price * 100) / min_price
             print(f"min_price: {min_price} current_price:{current_price} diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)            
-            if current_price > min_price and diff_percent < 3:
+            if current_price > min_price and diff_percent < 2:
                 print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -263,11 +263,11 @@ def future_open_position(symbol, side):
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
             max_price = df['high'].max()
-            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน 3% 
+            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน 2% 
             diff_price = max_price - current_price
             diff_percent = (diff_price * 100) / max_price
             print(f"diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)
-            if current_price < max_price and diff_percent < 3:
+            if current_price < max_price and diff_percent < 2:
                 print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
