@@ -524,8 +524,8 @@ def future_compare_stop_loss(symbol):
             print(f"Order not found {symbol}", flush=True)
             # สร้าง stop loss ให้กับ position ที่ไม่มี stop loss
             if position_side == 'BUY':
-                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 14 time frame
-                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=14), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 7 time frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=7), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
                 bottom_price = df['low'].min()
@@ -540,8 +540,8 @@ def future_compare_stop_loss(symbol):
                     recvWindow=5000
                 )
             if position_side == 'SELL':
-                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 14 time frame
-                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=14), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 7 time frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=7), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
                 top_price = df['high'].max()
