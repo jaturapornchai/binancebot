@@ -567,7 +567,8 @@ def future_compare_stop_loss(symbol):
             bottom_price = df['low'].min()
             if position_side == 'BUY':
                 # ถ้าราคา order เดิม ต่ำกว่า bottom_price ให้ยกเลิก order แล้วสร้าง order ใหม่
-                if old_order_stop_price > bottom_price and future_price > bottom_price:
+                print(f"Old order stop price: {old_order_stop_price} bottom price: {bottom_price} future price: {future_price}", flush=True)
+                if old_order_stop_price < bottom_price and future_price > bottom_price:
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
                     time.sleep(5) 
@@ -645,6 +646,7 @@ def future_find_position_no_stop_loss():
         except Exception as e:
             print(f"Error: {e}", flush=True)
             continue
+    print("End check position no stop loss : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
 
 def future_find_order_no_position():
     print("Start check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
