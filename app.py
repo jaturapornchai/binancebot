@@ -559,15 +559,15 @@ def future_compare_stop_loss(symbol):
             old_order_stop_price = float(order['stopPrice'])                
             top_price = 0;
             bottom_price = 0;
-            # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 14 time frame
-            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=14), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 7 time frame
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=7), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             top_price = df['high'].max()
             bottom_price = df['low'].min()
             if position_side == 'BUY':
                 # ถ้าราคา order เดิม ต่ำกว่า bottom_price ให้ยกเลิก order แล้วสร้าง order ใหม่
-                print(f"Old order stop price: {old_order_stop_price} bottom price: {bottom_price} future price: {future_price}", flush=True)
+                print(f"Old order stop price: {symbol} {old_order_stop_price} bottom price: {bottom_price} future price: {future_price}", flush=True)
                 if old_order_stop_price < bottom_price and future_price > bottom_price:
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
@@ -678,8 +678,8 @@ future_exchange_info = client.futures_exchange_info()
 #exit()
 #future_check_profit_or_loss()
 #future_find_signal()
-#future_find_position_no_stop_loss()
-#future_find_order_no_position()
+future_find_position_no_stop_loss()
+future_find_order_no_position()
 while True:    
     try:
         date_time_now = datetime.now()
