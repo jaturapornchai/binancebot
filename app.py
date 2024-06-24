@@ -105,11 +105,7 @@ def check_div_signal(symbol):
     divergences = find_divergence(data, swing_highs, swing_lows)
 
     latest_divergence = None
-    time_since = 4
-    if tread_time_frame == '15m':
-        time_since = 4
-    else:
-        time_since = 14
+    time_since = 14
 
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
@@ -140,11 +136,7 @@ def future_get_position():
 
 def future_get_last_trade(symbol):
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน ชั่วโมงที่กำหนด ให้ return true
-    time_hour = 4
-    if tread_time_frame == '1h':
-        time_hour = 14
-    if tread_time_frame == '15m':
-        time_hour = 2
+    time_hour = 2
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
         return True
@@ -203,7 +195,7 @@ def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     #usdt_amount = future_balance / 200.0    
-    usdt_amount = future_balance / 30.0    
+    usdt_amount = future_balance / 100.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -232,11 +224,11 @@ def future_open_position(symbol, side):
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
             min_price = df['low'].min()    
-            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน 2%
+            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน 1%
             diff_price = (min_price - current_price) * -1
             diff_percent = (diff_price * 100) / min_price
             print(f"min_price: {min_price} current_price:{current_price} diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)            
-            if current_price > min_price and diff_percent < 2:
+            if current_price > min_price and diff_percent < 1:
                 print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -263,11 +255,11 @@ def future_open_position(symbol, side):
             # ไม่รวม 2 time frame นับจากปัจจุบัน
             df = df.iloc[:-2]
             max_price = df['high'].max()
-            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน 2% 
+            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน 1% 
             diff_price = max_price - current_price
             diff_percent = (diff_price * 100) / max_price
             print(f"diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)
-            if current_price < max_price and diff_percent < 2:
+            if current_price < max_price and diff_percent < 1:
                 print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -524,8 +516,8 @@ def future_compare_stop_loss(symbol):
             print(f"Order not found {symbol}", flush=True)
             # สร้าง stop loss ให้กับ position ที่ไม่มี stop loss
             if position_side == 'BUY':
-                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 7 time frame
-                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=7), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 5 time frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=5), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
                 bottom_price = df['low'].min()
@@ -540,8 +532,8 @@ def future_compare_stop_loss(symbol):
                     recvWindow=5000
                 )
             if position_side == 'SELL':
-                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 7 time frame
-                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=7), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 5 time frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=5), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
                 top_price = df['high'].max()
@@ -559,8 +551,8 @@ def future_compare_stop_loss(symbol):
             old_order_stop_price = float(order['stopPrice'])                
             top_price = 0;
             bottom_price = 0;
-            # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 7 time frame
-            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=7), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 5 time frame
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=5), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             top_price = df['high'].max()
@@ -677,13 +669,13 @@ future_exchange_info = client.futures_exchange_info()
 #future_open_position('BATUSDT', 'BUY')
 #exit()
 #future_check_profit_or_loss()
-#future_find_signal()
+future_find_signal()
 future_find_position_no_stop_loss()
 future_find_order_no_position()
 while True:    
     try:
         date_time_now = datetime.now()
-        if date_time_now.minute == 5:
+        if date_time_now.minute == 2:
             time.sleep(10)
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
