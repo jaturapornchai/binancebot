@@ -195,7 +195,7 @@ def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     #usdt_amount = future_balance / 200.0    
-    usdt_amount = future_balance / 100.0    
+    usdt_amount = future_balance / 20.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
