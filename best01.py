@@ -16,7 +16,7 @@ line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 future_balance = 0
 future_exchange_info = []
 future_leverage = 5
-tread_time_frame = '15m'
+tread_time_frame = '1h'
 symbol_file_name = 'symbol.txt'
 
 def send_line_notify(message):
@@ -195,7 +195,7 @@ def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     #usdt_amount = future_balance / 200.0    
-    usdt_amount = future_balance / 100.0    
+    usdt_amount = future_balance / 20.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
