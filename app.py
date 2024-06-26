@@ -678,7 +678,7 @@ future_find_position_no_stop_loss()
 while True:    
     try:
         date_time_now = datetime.now()
-        if date_time_now.minute % 15 == 0:
+        if date_time_now.minute == 5:
             time.sleep(10)
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
