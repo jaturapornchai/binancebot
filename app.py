@@ -16,7 +16,7 @@ line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
 future_balance = 0
 future_exchange_info = []
 future_leverage = 5
-tread_time_frame = '15m'
+tread_time_frame = '1h'
 symbol_file_name = 'symbol.txt'
 
 def send_line_notify(message):
@@ -105,7 +105,7 @@ def check_div_signal(symbol):
     divergences = find_divergence(data, swing_highs, swing_lows)
 
     latest_divergence = None
-    time_since = 14
+    time_since = 5
 
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
@@ -135,6 +135,7 @@ def future_get_position():
     return positions_open
 
 def future_get_last_trade(symbol):
+    return True
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน ชั่วโมงที่กำหนด ให้ return true
     time_hour = 2
     trades = client.futures_account_trades(symbol=symbol)
@@ -498,6 +499,8 @@ def future_get_balance():
     return balance_asset
 
 def future_compare_stop_loss(symbol):
+    tread_time_frame_stop_loss = '15m'
+    limit_time_frame = 14
     # สร้าง stop loss ให้กับ position ที่เปิดอยู่
     try:
         position_info = client.futures_position_information(symbol=symbol)
@@ -516,8 +519,8 @@ def future_compare_stop_loss(symbol):
             print(f"Order not found {symbol}", flush=True)
             # สร้าง stop loss ให้กับ position ที่ไม่มี stop loss
             if position_side == 'BUY':
-                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 5 time frame
-                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=5), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป limit_time_frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
                 bottom_price = df['low'].min()
@@ -532,8 +535,8 @@ def future_compare_stop_loss(symbol):
                     recvWindow=5000
                 )
             if position_side == 'SELL':
-                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 5 time frame
-                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=5), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป limit_time_frame
+                df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
                 top_price = df['high'].max()
@@ -551,8 +554,8 @@ def future_compare_stop_loss(symbol):
             old_order_stop_price = float(order['stopPrice'])                
             top_price = 0;
             bottom_price = 0;
-            # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป 5 time frame
-            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame, limit=5), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # หาราคาต่ำสุด และราคาสูงสุด ย้อนหลังไป limit_time_frame
+            df = pd.DataFrame(exchange.fetch_ohlcv(symbol, timeframe=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             top_price = df['high'].max()
@@ -669,24 +672,24 @@ future_exchange_info = client.futures_exchange_info()
 #future_open_position('BATUSDT', 'BUY')
 #exit()
 #future_check_profit_or_loss()
-future_find_signal()
+future_find_signal( False)
 future_find_position_no_stop_loss()
-future_find_order_no_position()
+#future_find_order_no_position()
 while True:    
     try:
         date_time_now = datetime.now()
-        if date_time_now.minute == 2:
+        if date_time_now.minute % 15 == 0:
             time.sleep(10)
             future_exchange_info = client.futures_exchange_info()
             future_balance = future_get_balance()
             #future_check_profit_or_loss()
-            future_find_order_no_position()
+            #future_find_order_no_position()
             time.sleep(10)
-            future_find_signal()
+            future_find_signal( False)
             time.sleep(10)
             future_find_position_no_stop_loss()
             time.sleep(10)
-            future_find_order_no_position()
+            #future_find_order_no_position()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
