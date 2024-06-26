@@ -105,7 +105,7 @@ def check_div_signal(symbol):
     divergences = find_divergence(data, swing_highs, swing_lows)
 
     latest_divergence = None
-    time_since = 5
+    time_since = 6
 
     if divergences['bullish']:
         latest_bullish_divergence = divergences['bullish'][-1][0]
@@ -196,7 +196,7 @@ def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)
     # ตรวจสอบและเปลี่ยน leverage เป็น 5x ถ้าเป็นอย่างอื่น
     #usdt_amount = future_balance / 200.0    
-    usdt_amount = future_balance / 100.0    
+    usdt_amount = future_balance / 10.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     # คำนวณจำนวน contracts จากจำนวนเงิน USDT
@@ -672,7 +672,7 @@ future_exchange_info = client.futures_exchange_info()
 #future_open_position('BATUSDT', 'BUY')
 #exit()
 #future_check_profit_or_loss()
-future_find_signal( False)
+future_find_signal()
 future_find_position_no_stop_loss()
 #future_find_order_no_position()
 while True:    
@@ -685,7 +685,7 @@ while True:
             #future_check_profit_or_loss()
             #future_find_order_no_position()
             time.sleep(10)
-            future_find_signal( False)
+            future_find_signal()
             time.sleep(10)
             future_find_position_no_stop_loss()
             time.sleep(10)
