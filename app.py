@@ -79,7 +79,7 @@ def find_divergence(data, swing_highs, swing_lows):
     
     return divergences
 
-def check_div_signal(symbol):
+def check_div_signal(symbol,time_frame):
     # สร้างเงื่อนไขการเทรด จากการหา divergence ของ RSI
     time_since = 6
     # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
@@ -90,7 +90,7 @@ def check_div_signal(symbol):
     # ดึงข้อมูลในช่วงเวลาที่กำหนด
     bars = []
     while True:
-        ohlcv = exchange.fetch_ohlcv(symbol, tread_time_frame, since, limit)
+        ohlcv = exchange.fetch_ohlcv(symbol, time_frame, since, limit)
         if not ohlcv:
             break
         since = ohlcv[-1][0] + 1
@@ -137,7 +137,7 @@ def future_get_position():
 
 def future_get_last_trade(symbol):
     # ดึงข้อมูล Last trade จาก symbol ถ้าไม่มีการเทรดล่าสุด ภายใน ชั่วโมงที่กำหนด ให้ return true
-    time_hour = 2
+    time_hour = 4
     trades = client.futures_account_trades(symbol=symbol)
     if len(trades) == 0:
         return True
@@ -399,7 +399,7 @@ def future_find_signal(open_position=True):
     with open(symbol_file_name, 'a') as f:
         for symbol in symbols:
             try:
-                signal = check_div_signal(symbol)
+                signal = check_div_signal(symbol, tread_time_frame)
                 if open_position:
                     close_positioned = False
                     if signal == 'short':
@@ -662,6 +662,41 @@ def future_find_order_no_position():
             print(f"Error: {e}", flush=True)
     print("End check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
 
+def future_find_stop_position():
+    print("Start check stop position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+    # หา position ที่ถึง stop loss แล้วให้ปิด position
+    positions = future_get_position()
+    for position in positions:
+        try:
+            position_info = client.futures_position_information(symbol=position)
+            position_amount = float(position_info[0]['positionAmt'])
+            signal =  check_div_signal(position,"15m")
+            if signal == 'short' and position_amount > 0:
+                # ปิด Position BUY เมื่อมีสัญญาณ short
+                print(f"Close position {position} because stop loss", flush=True)
+                client.futures_create_order(
+                    symbol=position,
+                    side='SELL',
+                    type='MARKET',
+                    quantity=position_amount,
+                    recvWindow=5000
+                )
+            if signal == 'long' and position_amount < 0:
+                # ปิด Position SELL เมื่อมีสัญญณ long
+                print(f"Close position {position} because stop loss", flush=True)
+                client.futures_create_order(
+                    symbol=position,
+                    side='BUY',
+                    type='MARKET',
+                    quantity=position_amount * -1,
+                    recvWindow=5000
+                )
+            
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            continue
+    print("End check stop position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+
 # start
 # clear screen terminal
 print("\033[H\033[J")
@@ -671,9 +706,10 @@ future_exchange_info = client.futures_exchange_info()
 #future_open_position('BATUSDT', 'BUY')
 #exit()
 #future_check_profit_or_loss()
-future_find_signal()
-future_find_position_no_stop_loss()
+#future_find_signal()
+#future_find_position_no_stop_loss()
 #future_find_order_no_position()
+#future_find_stop_position()
 while True:    
     try:
         date_time_now = datetime.now()
@@ -683,11 +719,10 @@ while True:
             future_balance = future_get_balance()
             #future_check_profit_or_loss()
             #future_find_order_no_position()
-            if date_time_now.minute < 15:
-                # เฉพาะ 15 นาทีแรกของทุกชั่วโมง ให้ทำการเทรด 
-                future_find_signal()
-                time.sleep(10)
+            future_find_signal()
+            time.sleep(10)
             future_find_position_no_stop_loss()
+            future_find_stop_position()
             time.sleep(10)
             #future_find_order_no_position()
             time.sleep(120)
