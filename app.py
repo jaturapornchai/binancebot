@@ -722,9 +722,9 @@ while True:
             future_find_signal()
             time.sleep(10)
             future_find_position_no_stop_loss()
-            future_find_stop_position()
+            #future_find_stop_position()
             time.sleep(10)
-            #future_find_order_no_position()
+            future_find_order_no_position()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
