@@ -81,7 +81,7 @@ def find_divergence(data, swing_highs, swing_lows):
 
 def check_div_signal(symbol,time_frame):
     # สร้างเงื่อนไขการเทรด จากการหา divergence ของ RSI
-    time_since = 6
+    time_since = 5
     # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
     limit = 1000  
     # ดึงข้อมูลย้อนหลัง 10 วัน
@@ -707,7 +707,7 @@ future_exchange_info = client.futures_exchange_info()
 #future_open_position('BATUSDT', 'BUY')
 #exit()
 #future_check_profit_or_loss()
-#future_find_signal(False)
+future_find_signal(False)
 #future_find_position_no_stop_loss()
 #future_find_order_no_position()
 #future_find_stop_position()
