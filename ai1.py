@@ -1,70 +1,110 @@
-# ตั้งค่า API Key และ Organization ID
 #openai.api_key = "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"
 #openai.organization = "org-11xo74V3OJfKvqVSZddRJhET"
 
-from openai import OpenAI
-import pandas as pd
-import json
+import openai
+import os
+import time
+import csv
+import jsonlines
 
-client = OpenAI(api_key="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")
+# ตั้งค่า API Key และ Organization ID
+openai.api_key = "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"
+openai.organization = "org-11xo74V3OJfKvqVSZddRJhET"
 
-# 1. Prepare Your Data
-# Create a JSONL file containing your Binance trading data
-# Each line is a JSON object with relevant info:
-"""
-{"prompt": "BTC/USDT price on 2023-11-15?", "completion": "18500.25 USD"}
-{"prompt": "What is the highest volume pair on Binance in Q4 2023?", "completion": "ETH/USDT"}
-{"prompt": "Analyse the trend of DOGE/USDT in the past month.", "completion": "The price of DOGE/USDT has been steadily increasing over the past month, with a notable surge in trading volume."}
-"""
+model = "gpt-3.5-turbo" # ใช้โมเดลที่รองรับการปรับแต่ง
 
-# 2. Fine-tune your Model (Only do this once)
-# Replace 'sales_data.jsonl' with your JSONL file path
+def setup_api_key():
+    os.environ["OPENAI_API_KEY"] = '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'
 
-def fine_tune_model(filename):
-    with open(filename, "rb") as file:
-        file_upload_response = client.files.create(file=file, purpose="fine-tune")
-        file_id = file_upload_response.id
+def create_fine_tuning_file(file_path):
+    print("Processing fine tuning file " + file_path)
+    client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+    file = client.files.create(
+        file=open(file_path, "rb"),
+        purpose='fine-tune'
+    )
+
+    # Get the file ID
+    file_id = file.id
+
+    # Check the file's status
+    status = file.status
+
+    while status != 'processed':
+        print(f"File status: {status}. Waiting for the file to be processed...")
+        time.sleep(10)  # Wait for 10 seconds
+        file_response = client.files.retrieve(file_id)
+        status = file_response.status
+        print(file_response)
     
-    # Create a fine-tuning job
-    fine_tune_response = client.fine_tuning.create(training_file=file_id, model="gpt-3.5-turbo")
-    job_id = fine_tune_response.id
+    fine_tuning_response = client.fine_tuning.jobs.create(training_file=file_id, model=model)
+    print(fine_tuning_response)
+    return fine_tuning_response
 
-    print(f"Fine-tuning job created: {job_id}")
-    # Check completion
-    while True:
-        job_status = client.fine_tuning.retrieve(id=job_id)
-        if job_status.status in ["succeeded", "failed", "cancelled"]:
-            break
-
-# fine_tune_model("sales_data.jsonl")
-
-# 3. Retrieve your Fine-tuned Model
-
-fine_tuned_model = "ft:gpt-3.5-turbo-2023-06-26-08-12-20"  # Replace with your actual fine-tuned model name
-
-# 4. Ask Questions
-
-def ask_openai(prompt, model=fine_tuned_model):
-    """Asks a question to the OpenAI model."""
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant providing insights on Binance trading data."},
-                {"role": "user", "content": prompt}
-            ]
+def fine_tune_model(fine_tuning_file):
+    print("Starting fine tuning job with ID: " + fine_tuning_file.id)
+    if fine_tuning_file.status == 'processed':
+        client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        fine_tuning_response = client.fine_tuning.jobs.create(
+            training_file=fine_tuning_file.id,
+            model=model
         )
-        return response.choices[0].message.content.strip()
-    except openai.OpenAIError as e:
-        print(f"OpenAI Error: {e}")
+        print(fine_tuning_response.id)
 
-questions = [
-    "รายการขายสินค้ามีอะไรบ้าง?",  # Replace with relevant Binance questions
-    "สินค้าตัวไหนขายดีที่สุด?",
-    "ยอดขายรวมเป็นเท่าไหร่?"
-]
+def load_csv_finetuning(csv_file, output_path):
+    # Open the CSV file for reading
+    with open(csv_file, 'r', encoding='utf-8', newline='') as csv_file:
+        csv_reader = csv.reader(csv_file)
 
-for question in questions:
-    answer = ask_openai(question)
-    print(f"Q: {question}")
-    print(f"A: {answer}\n")
+        # Open the JSONL file for writing
+        with jsonlines.open(output_path, mode='w') as jsonl_file:
+            for row in csv_reader:
+                system = row[0]
+                values = [{"role": "system", "content": system}]
+                odd = True
+                for value in row[1:]:
+                    if odd:
+                        if len(value) > 0:
+                            values.append({"role": "user", "content": value})
+                        odd = False
+                    else:
+                        if len(value) > 0:
+                            values.append({"role": "assistant", "content": value})
+                        odd = True
+                if values[-1]["role"] != "assistant":
+                    values.append({"role": "assistant", "content": "ข้อความจากผู้ช่วยที่ถูกต้อง"})
+                json_data = {"messages": values}
+                jsonl_file.write(json_data)
+
+def wait_for_fine_tuning_completion(job_id):
+    client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    while True:
+        job_status = client.fine_tuning.jobs.retrieve(job_id)
+        status = job_status.status
+        if status in ["succeeded", "failed"]:
+            break
+        print(f"Job status: {status}. Waiting...")
+        time.sleep(60)  # Wait for 1 minute before checking again
+    return job_status
+
+if __name__ == '__main__':
+    setup_api_key()
+    fine_tuning_data = "docdetail_data.jsonl"
+    load_csv_finetuning("docdetail_data.csv", fine_tuning_data)
+    fine_tuning_file = create_fine_tuning_file(fine_tuning_data)
+    job_status = wait_for_fine_tuning_completion(fine_tuning_file.id)
+    print(job_status)
+
+    if job_status.status == "succeeded":
+        fine_tuned_model = job_status.fine_tuned_model
+        print(f"Fine-tuned model: {fine_tuned_model}")
+        client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        # ใช้โมเดลที่ปรับแต่งแล้ว
+        response = client.chat.completions.create(
+            model=fine_tuned_model,
+            messages=[{"role": "user", "content": "ตัวอย่างข้อความเพื่อทดสอบโมเดล"}]
+        )
+        print(response.choices[0].message.content)
+    else:
+        print(f"Fine-tuning failed with status: {job_status.status}")
