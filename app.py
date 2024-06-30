@@ -497,6 +497,7 @@ def future_get_balance():
     return balance_asset
 
 def future_compare_stop_loss(symbol):
+    print(f"Compare stop loss {symbol}", flush=True)
     tread_time_frame_stop_loss = '15m'
     limit_time_frame = 14
     # สร้าง stop loss ให้กับ position ที่เปิดอยู่
@@ -514,6 +515,7 @@ def future_compare_stop_loss(symbol):
             if item['status'] == 'NEW':
                 order = item
                 break
+        
         if order == None:
             print(f"Order not found {symbol}", flush=True)
             # สร้าง stop loss ให้กับ position ที่ไม่มี stop loss
@@ -561,7 +563,6 @@ def future_compare_stop_loss(symbol):
             bottom_price = df['low'].min()
             if position_side == 'BUY':
                 # ถ้าราคา order เดิม ต่ำกว่า bottom_price ให้ยกเลิก order แล้วสร้าง order ใหม่
-                print(f"Old order stop price: {symbol} {old_order_stop_price} bottom price: {bottom_price} future price: {future_price}", flush=True)
                 if old_order_stop_price < bottom_price and future_price > bottom_price:
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
@@ -706,7 +707,7 @@ future_exchange_info = client.futures_exchange_info()
 #future_open_position('BATUSDT', 'BUY')
 #exit()
 #future_check_profit_or_loss()
-future_find_signal(False)
+#future_find_signal(False)
 #future_find_position_no_stop_loss()
 #future_find_order_no_position()
 #future_find_stop_position()
@@ -721,8 +722,8 @@ while True:
             #future_find_order_no_position()
             future_find_signal(False)
             time.sleep(10)
-            #future_find_position_no_stop_loss()
-            future_find_stop_position()
+            future_find_position_no_stop_loss()
+            #future_find_stop_position()
             time.sleep(10)
             #future_find_order_no_position()
             time.sleep(120)
