@@ -5,6 +5,8 @@ from datetime import datetime
 import requests
 from binance.client import Client
 import time
+from scipy.signal import argrelextrema
+import numpy as np
 
 # Configure API key authorization
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
@@ -81,7 +83,7 @@ def find_divergence(data, swing_highs, swing_lows):
 
 def check_div_signal(symbol,time_frame):
     # สร้างเงื่อนไขการเทรด จากการหา divergence ของ RSI
-    time_since = 5
+    time_since = 6
     # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
     limit = 1000  
     # ดึงข้อมูลย้อนหลัง 10 วัน
