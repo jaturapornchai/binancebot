@@ -2,21 +2,20 @@ import os
 import time
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 import requests
 import ccxt
 
 
 # ตั้งค่า API keys
-api_key = "wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN"
-api_secret = "8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU"
-line_notify_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+api_key = os.getenv('BINANCE_API_KEY')
+api_secret = os.getenv('BINANCE_SECRET_KEY')
+line_notify_token = os.getenv('LINE_NOTIFY_TOKEN')
 tread_time_frame = '15m'
 future_leverage = 10
 exchange = ccxt.binance()
-future_balance  = 0
-future_exchange_info = []
-
 
 # สร้าง Binance client
 client = Client(api_key, api_secret)
@@ -45,15 +44,29 @@ def calculate_support_resistance(df):
     
     return support, resistance
 
-def send_line_notify(message):
-    """Send notifications through LINE Notify."""
-    headers = {
-        'Authorization': f'Bearer ' + line_notify_token,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
+def plot_wave(symbol,df, support, resistance):
+    plt.figure(figsize=(12, 6))
+    plt.plot(df['timestamp'], df['close'], label='Close Price')
+    plt.axhline(y=support, color='g', linestyle='--', label='Support')
+    plt.axhline(y=resistance, color='r', linestyle='--', label='Resistance')
+    plt.title(symbol + ' Price with Support and Resistance')
+    plt.xlabel('Time')
+    plt.ylabel('Price')
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig('btc_wave.png')
+    plt.close()
+
+def send_line_notify(message, image_path=None):
+    url = 'https://notify-api.line.me/api/notify'
+    headers = {'Authorization': f'Bearer {line_notify_token}'}
     payload = {'message': message}
-    response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-    return response.status_code
+    files = {'imageFile': open(image_path, 'rb')} if image_path else None
+    try:
+        requests.post(url, headers=headers, data=payload, files=files)
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending Line notification: {e}")
 
 def get_futures_symbols():
     exchange_info = client.futures_exchange_info()
@@ -291,43 +304,51 @@ def future_get_position():
     return positions_open
 
 
-future_balance = future_get_balance()
-future_exchange_info = client.futures_exchange_info()
+def main():
+    global future_balance 
+    global future_exchange_info
 
-interval = Client.KLINE_INTERVAL_15MINUTE
-limit = 1000
-
-symbols = get_futures_symbols()
-symbols = [symbol for symbol in symbols if 'USDT' in symbol and not any(char.isdigit() for char in symbol)]
-
-while True:
-    future_exchange_info = client.futures_exchange_info()
     future_balance = future_get_balance()
+    future_exchange_info = client.futures_exchange_info()
 
-    positions = future_get_position()
-    for position in positions:
-        future_compare_stop_loss(position)
+    interval = Client.KLINE_INTERVAL_15MINUTE
+    limit = 1000
 
-    for symbol in symbols:
-        df = get_klines(symbol, interval, limit)
-        
-        if df is not None:
-            support, resistance = calculate_support_resistance(df)
+    symbols = get_futures_symbols()
+    symbols = [symbol for symbol in symbols if 'USDT' in symbol and not any(char.isdigit() for char in symbol)]
+    
+    while True:
+        future_exchange_info = client.futures_exchange_info()
+        future_balance = future_get_balance()
+
+        positions = future_get_position()
+        for position in positions:
+            future_compare_stop_loss(position)
+
+        for symbol in symbols:
+            df = get_klines(symbol, interval, limit)
             
-            if support is not None and resistance is not None:
+            if df is not None:
+                support, resistance = calculate_support_resistance(df)
                 
-                current_price = float(df['close'].iloc[-1])
-                
-                if current_price > resistance:
-                    message = f"LONG signal: {symbol} price ({current_price}) broke above resistance ({resistance})"
-                    send_line_notify(message)
-                elif current_price < support:
-                    message = f"SHORT signal: {symbol} price ({current_price}) broke below support ({support})"
-                    send_line_notify(message)
-                    if symbol not in positions:
-                        future_open_position(symbol, 'SELL')                   
-            else:
-                print("Not enough data to calculate support and resistance")
-    # รอ 5 นาที
-    time.sleep(5 * 60)  
+                if support is not None and resistance is not None:
+                   
+                    current_price = float(df['close'].iloc[-1])
+                    
+                    if current_price > resistance:
+                        message = f"LONG signal: {symbol} price ({current_price}) broke above resistance ({resistance})"
+                        plot_wave(symbol,df, support, resistance)
+                        send_line_notify(message, 'btc_wave.png')
+                    elif current_price < support:
+                        message = f"SHORT signal: {symbol} price ({current_price}) broke below support ({support})"
+                        plot_wave(symbol,df, support, resistance)
+                        send_line_notify(message, 'btc_wave.png')
+                        if symbol not in positions:
+                            future_open_position(symbol, 'SELL')                   
+                else:
+                    print("Not enough data to calculate support and resistance")
+        # รอ 5 นาที
+        time.sleep(5 * 60)  
 
+if __name__ == "__main__":
+    main()
