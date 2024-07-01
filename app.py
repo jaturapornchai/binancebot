@@ -703,7 +703,7 @@ def future_find_stop_position():
 # start
 # clear screen terminal
 print("\033[H\033[J")
-#future_change_margin_type_and_leverage_all()
+future_change_margin_type_and_leverage_all()
 future_balance = future_get_balance()
 future_exchange_info = client.futures_exchange_info()
 #future_open_position('BATUSDT', 'BUY')
