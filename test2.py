@@ -224,6 +224,10 @@ def main():
 
                 print("\nSummary of signals across all timeframes:")
                 for symbol, signals in all_signals.items():
+                    # Check if all signals are "No recent Elliott Wave pattern"
+                    if all("No recent Elliott Wave pattern" in analysis for _, analysis, _, _ in signals):
+                        continue  # Skip this symbol and move to the next one
+
                     print(f"\n{symbol}:")
                     for interval, analysis, signal, wave in signals:
                         if signal in ['strong_short_alert', 'short_alert']:
