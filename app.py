@@ -506,16 +506,65 @@ def future_profit_or_loss_notify():
         balance_thb = balance_usdt * exchange_rate
         profit_thb = profit_usdt * exchange_rate
         loss_thb = loss_usdt * exchange_rate
-        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสินทรัพย์ Spot : {spot_balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt:,.2f} USDT\n\nกำไร: {profit_thb:,.2f} บาท\nขาดทน: {loss_thb:,.2f} บาท\nยอดคงเหลือ: {balance_thb:,.2f} บาท\nสินทรัพย์: {(spot_balance_usdt * exchange_rate):,.2f} บาท\nสินทรัพย์ Spot : {spot_balance_usdt * exchange_rate:,.2f} บาท\nสุทธิ: {balance_thb + profit_thb + loss_thb + (spot_balance_usdt * exchange_rate):,.2f} บาท"
-        send_line_notify(message)
-        send_line_notify_group(message)
+        spot_balance_thb = spot_balance_usdt * exchange_rate
+        net_usdt = balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt
+        net_thb = balance_thb + profit_thb + loss_thb + spot_balance_thb
+
+        message = (
+            "Binance:\n"
+            "USDT:\n"
+            f"{format_message(f'กำไร ({profit_position_count}) ไม้:', profit_usdt, 'USDT')}\n"
+            f"{format_message(f'ขาดทุน ({loss_position_count}) ไม้:', loss_usdt, 'USDT')}\n"
+            f"{format_message('ยอดคงเหลือ:', balance_usdt, 'USDT')}\n"
+            f"{format_message('สินทรัพย์ Spot:', spot_balance_usdt, 'USDT')}\n"
+            f"{format_message('สุทธิ:', net_usdt, 'USDT')}\n"
+            "\nTHB:\n"
+            f"{format_message(f'กำไร ({profit_position_count}) ไม้:', profit_thb, 'บาท')}\n"
+            f"{format_message(f'ขาดทุน ({loss_position_count}) ไม้:', loss_thb, 'บาท')}\n"
+            f"{format_message('ยอดคงเหลือ:', balance_thb, 'บาท')}\n"
+            f"{format_message('สินทรัพย์ Spot:', spot_balance_thb, 'บาท')}\n"
+            f"{format_message('สุทธิ:', net_thb, 'บาท')}"
+        )
     else:
-        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสินทรัพย์ Spot : {spot_balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt:,.2f} USDT"
-        send_line_notify(message)
-        send_line_notify_group(message)
+        net_usdt = balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt
+        message = (
+            "Binance:\n"
+            "USDT:\n"
+            f"{format_message(f'กำไร ({profit_position_count}) ไม้:', profit_usdt, 'USDT')}\n"
+            f"{format_message(f'ขาดทุน ({loss_position_count}) ไม้:', loss_usdt, 'USDT')}\n"
+            f"{format_message('ยอดคงเหลือ:', balance_usdt, 'USDT')}\n"
+            f"{format_message('สินทรัพย์ Spot:', spot_balance_usdt, 'USDT')}\n"
+            f"{format_message('สุทธิ:', net_usdt, 'USDT')}\n\n"
+            "ไม่สามารถคำนวณเป็นเงินบาทได้ เนื่องจากไม่สามารถดึงข้อมูลอัตราแลกเปลี่ยนได้"
+        )
+
+    send_line_notify(message)
+    send_line_notify_group(message)
+
+def format_message(label, value, unit, width=15):
+    return f"{label:<{width}} {value:>{width},.2f} {unit}"
+
+def transfer_usdt_to_future():
+    # ดึง USDT ที่สามารถ transfer ได้
+    data = client.futures_account_balance()
+    max_withdraw_amount = 0
+    for item in data:
+        if item['asset'] == 'USDT':
+            max_withdraw_amount += float(item['maxWithdrawAmount'])
+    
+    print(f"USDT balance ready for Transfer : {max_withdraw_amount}", flush=True)
+
+    try:
+        #client.futures_transfer(coin='USDT', amount=max_withdraw_amount - 2000, transferType=2)
+        client.futures_account_transfer(asset='USDT', amount=max_withdraw_amount-2000, type=2)
+
+    except Exception as e:
+        print(f"Error: {e}", flush=True)
+        return None
 
 # start
 print("Start", flush=True)
+#transfer_usdt_to_future()
 #future_change_margin_type_and_leverage_all()
 #future_profit_or_loss_notify()
 #future_change_margin_type_and_leverage('BTCUSDT')
@@ -531,6 +580,7 @@ while True:
             future_find_signal(tread_time_frame)
             future_find_order_no_position()
             future_profit_or_loss_notify()
+            transfer_usdt_to_future()
     except Exception as e:
         send_line_notify(f"Error: {e}")
         print(f"Error: {e}", flush=True)
