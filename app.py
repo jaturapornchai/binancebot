@@ -212,14 +212,6 @@ def future_open_position(symbol, side):
                     quantity=quantity
                 )
                 send_line_notify(f"Open position {symbol} {side}")
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='SELL',
-                    type='STOP_MARKET',
-                    quantity=quantity,
-                    stopPrice=min_price,
-                    closePosition=True
-                )
         if side == 'SELL':
             df['high'] = df['high'].astype(float)
             max_price = df['high'].max()
@@ -236,14 +228,6 @@ def future_open_position(symbol, side):
                     quantity=quantity
                 )
                 send_line_notify(f"Open position {symbol} {side}")
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='BUY',
-                    type='STOP_MARKET',
-                    quantity=quantity,
-                    stopPrice=max_price,
-                    closePosition=True
-                )
 
     except Exception as e:
         print(f"Error: {e}", flush=True)
@@ -258,7 +242,7 @@ def future_get_balance():
             balance_usdt = float(item['balance'])
             break
     print(f"USDT balance: {balance_usdt}", flush=True)
-    balance_usdt = balance_usdt / 4
+    balance_usdt = balance_usdt / 3
     return balance_usdt
 
 def future_get_last_trade(symbol):
@@ -280,7 +264,7 @@ def future_get_last_trade(symbol):
 def future_compare_stop_loss(symbol):
     print(f"Compare stop loss {symbol}", flush=True)
     tread_time_frame_stop_loss = '15m'
-    limit_time_frame = 7
+    limit_time_frame = 14
     try:
         position_info = client.futures_position_information(symbol=symbol)
         position_amount = float(position_info[0]['positionAmt'])
@@ -305,8 +289,7 @@ def future_compare_stop_loss(symbol):
                 df.set_index('timestamp', inplace=True)
                 df['low'] = df['low'].astype(float)
                 bottom_price = df['low'].min()
-                # ปรับ bottom_price ลง 1%
-                bottom_price = bottom_price - (bottom_price * 0.01)
+                bottom_price = round_quantity(bottom_price, get_step_size(symbol))
                 print(f"Reorder {symbol} {position_side} {position_amount} {bottom_price}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -322,8 +305,6 @@ def future_compare_stop_loss(symbol):
                 df.set_index('timestamp', inplace=True)
                 df['high'] = df['high'].astype(float)
                 top_price = df['high'].max()
-                # ปรับ top_price ขึ้น 1%
-                top_price = top_price + (top_price * 0.01)
                 print(f"Reorder {symbol} {position_side} {position_amount} {top_price}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -349,9 +330,6 @@ def future_compare_stop_loss(symbol):
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
                     time.sleep(1) 
-                    # ปรับ bottom_price ลง 1%
-                    bottom_price = bottom_price - (bottom_price * 0.01)
-                    # ปรับราคาให้เหมาะสมกับ step size (get_step_size)
                     print(f"Reorder {symbol} {order['side']} {position_amount} {bottom_price}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
@@ -366,8 +344,6 @@ def future_compare_stop_loss(symbol):
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
                     time.sleep(1) 
-                    # ปรับ top_price ขึ้น 1%
-                    top_price = top_price + (top_price * 0.01)
                     print(f"Reorder {symbol} {order['side']} {position_amount} {top_price}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
@@ -506,25 +482,43 @@ def future_profit_or_loss_notify():
                 loss_usdt += position_profit
                 loss_position_count += 1
            
+    # ดึงทรัพย์ทั้งหมด ของมูลค่าตลาด spot จาก Binance ดึงราคามาด้วย คำนวเป็น USDT
+    spot_account = client.get_account()
+    spot_balance_usdt = 0
+    for asset in spot_account['balances']:
+        if float(asset['free']) > 0:
+            if asset['asset'] == 'USDT':
+                spot_balance_usdt += float(asset['free'])
+            else:
+                print(asset, flush=True)
+                symbol = asset['asset'] + 'USDT'
+
+                try:
+                    ticker = client.futures_symbol_ticker(symbol=symbol)
+                    spot_balance_usdt += float(asset['free']) * float(ticker['price'])
+                except Exception as e:
+                    print(f"Error with symbol {symbol}: {e}", flush=True)
+                    continue
+
     # ดึงอัตราแลกเปลี่ยน thb/usd จาก internet
     exchange_rate = get_thb_usd_rate()
     if exchange_rate:
         balance_thb = balance_usdt * exchange_rate
         profit_thb = profit_usdt * exchange_rate
         loss_thb = loss_usdt * exchange_rate
-        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt:,.2f} USDT\n\nกำไร: {profit_thb:,.2f} บาท\nขาดทน: {loss_thb:,.2f} บาท\nยอดคงเหลือ: {balance_thb:,.2f} บาท\nสุทธิ: {balance_thb + profit_thb + loss_thb:,.2f} บาท"
+        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสินทรัพย์ Spot : {spot_balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt:,.2f} USDT\n\nกำไร: {profit_thb:,.2f} บาท\nขาดทน: {loss_thb:,.2f} บาท\nยอดคงเหลือ: {balance_thb:,.2f} บาท\nสินทรัพย์: {(spot_balance_usdt * exchange_rate):,.2f} บาท\nสินทรัพย์ Spot : {spot_balance_usdt * exchange_rate:,.2f} บาท\nสุทธิ: {balance_thb + profit_thb + loss_thb + (spot_balance_usdt * exchange_rate):,.2f} บาท"
         send_line_notify(message)
         send_line_notify_group(message)
     else:
-        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt:,.2f} USDT"
+        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสินทรัพย์ Spot : {spot_balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt:,.2f} USDT"
         send_line_notify(message)
         send_line_notify_group(message)
 
 # start
 print("Start", flush=True)
-# future_change_margin_type_and_leverage_all()
+#future_change_margin_type_and_leverage_all()
 #future_profit_or_loss_notify()
-# future_change_margin_type_and_leverage('BTCUSDT')
+#future_change_margin_type_and_leverage('BTCUSDT')
 #future_find_order_no_position()
 #future_find_signal(tread_time_frame)
 
