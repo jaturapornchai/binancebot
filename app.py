@@ -581,6 +581,7 @@ while True:
             future_find_order_no_position()
             future_profit_or_loss_notify()
             transfer_usdt_to_future()
+            time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
         print(f"Error: {e}", flush=True)
