@@ -569,7 +569,7 @@ print("Start", flush=True)
 #future_profit_or_loss_notify()
 #future_change_margin_type_and_leverage('BTCUSDT')
 #future_find_order_no_position()
-#future_find_signal(tread_time_frame)
+future_find_signal(tread_time_frame)
 
 while True:
     try:
