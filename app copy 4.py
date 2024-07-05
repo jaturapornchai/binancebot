@@ -1,5 +1,4 @@
 import os
-import random
 import time
 import pandas as pd
 import numpy as np
@@ -14,12 +13,12 @@ from sklearn.linear_model import LinearRegression
 #line_token = os.getenv('LINE_NOTIFY_TOKEN')
 api_key="wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN"
 api_secret="8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU"
-line_token="cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
-line_token_group="u63d6tjQyeDimyWKB8p2a4uecdtZ7DkKuhTSFNfJoGO"
+line_token="LINE_NOTIFY_TOKEN=cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+
 
 # สร้างอินสแตนซ์ของ Binance Futures
 client = Client(api_key, api_secret)
-future_leverage = 10
+future_leverage = 15
 tread_time_frame = '1h'
 
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
@@ -38,23 +37,11 @@ def send_line_notify(message):
     response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
     return response.status_code
 
-def send_line_notify_group(message):
-    """Send notifications through LINE Notify."""
-    headers = {
-        'Authorization': f'Bearer ' + line_token_group,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    payload = {'message': message}
-    response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-    return response.status_code
-
 def fetch_future_symbols():
     exchange_info = client.futures_exchange_info()
     symbols = [s['symbol'] for s in exchange_info['symbols'] if s['symbol'].endswith('USDT') and s['status'] == 'TRADING']
     symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
     symbols.sort()
-    # random
-    random.shuffle(symbols)
     return symbols
 
 def linear_regression_channel(data, window=100, devlen=2.0):
@@ -135,6 +122,7 @@ def future_find_signal(timeframe, window=100, devlen=2.0):
                 if signal == 'SHORT':
                     print(f"Open position {symbol} {signal}", flush=True)
                     future_open_position(symbol, 'SELL')                
+                send_line_notify(message)
                 time.sleep(1)
             except Exception as e:
                 print(f"Error sending LINE message: {e}", flush=True)        
@@ -164,8 +152,6 @@ def round_quantity(quantity, step_size):
     return (quantity // step_size) * step_size
 
 def future_open_position(symbol, side):
-    diff_percent_max = 5 # จะต้องห่างจากราคาปัจจุบันไม่เกิน 5%
-
     if not future_get_last_trade(symbol):
         print(f"Skip symbol {symbol} because last trade near", flush=True)
         return None
@@ -174,7 +160,7 @@ def future_open_position(symbol, side):
         print(f"Error changing margin type and leverage for {symbol}", flush=True)
         return None
     
-    usdt_amount = future_balance / 125.0    
+    usdt_amount = future_balance / 75.0    
     print(f"USDT amount: {usdt_amount}", flush=True)
     quantity = 0
     current_price = 0
@@ -192,18 +178,14 @@ def future_open_position(symbol, side):
     try:
         time.sleep(1)
         print(f"Open position {symbol} {side} {quantity}", flush=True)
-        df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df = df.iloc[:-2]
         if side == 'BUY':
+            df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=100), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df = df.iloc[:-2]
             df['low'] = df['low'].astype(float)
             min_price = df['low'].min()    
-            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน diff_percent_max
-            diff_price = (min_price - current_price) * -1
-            diff_percent = (diff_price * 100) / min_price
-            print(f"min_price: {min_price} current_price:{current_price} diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)            
-            if current_price > min_price and diff_percent < diff_percent_max:
+            if current_price > min_price:
                 print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -221,13 +203,13 @@ def future_open_position(symbol, side):
                     closePosition=True
                 )
         if side == 'SELL':
+            df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=100), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df = df.iloc[:-2]
             df['high'] = df['high'].astype(float)
             max_price = df['high'].max()
-            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน diff_percent_max
-            diff_price = max_price - current_price
-            diff_percent = (diff_price * 100) / max_price
-            print(f"max_price: {max_price} current_price:{current_price} diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)            
-            if current_price < max_price and diff_percent < diff_percent_max:
+            if current_price < max_price:
                 print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -247,6 +229,7 @@ def future_open_position(symbol, side):
 
     except Exception as e:
         print(f"Error: {e}", flush=True)
+        send_line_notify(f"Error: {e}")
         return None
 
 def future_get_balance():
@@ -258,7 +241,6 @@ def future_get_balance():
             balance_usdt = float(item['balance'])
             break
     print(f"USDT balance: {balance_usdt}", flush=True)
-    balance_usdt = balance_usdt / 4
     return balance_usdt
 
 def future_get_last_trade(symbol):
@@ -280,7 +262,7 @@ def future_get_last_trade(symbol):
 def future_compare_stop_loss(symbol):
     print(f"Compare stop loss {symbol}", flush=True)
     tread_time_frame_stop_loss = '15m'
-    limit_time_frame = 7
+    limit_time_frame = 14
     try:
         position_info = client.futures_position_information(symbol=symbol)
         position_amount = float(position_info[0]['positionAmt'])
@@ -305,8 +287,6 @@ def future_compare_stop_loss(symbol):
                 df.set_index('timestamp', inplace=True)
                 df['low'] = df['low'].astype(float)
                 bottom_price = df['low'].min()
-                # ปรับ bottom_price ลง 1%
-                bottom_price = bottom_price - (bottom_price * 0.01)
                 print(f"Reorder {symbol} {position_side} {position_amount} {bottom_price}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -322,8 +302,6 @@ def future_compare_stop_loss(symbol):
                 df.set_index('timestamp', inplace=True)
                 df['high'] = df['high'].astype(float)
                 top_price = df['high'].max()
-                # ปรับ top_price ขึ้น 1%
-                top_price = top_price + (top_price * 0.01)
                 print(f"Reorder {symbol} {position_side} {position_amount} {top_price}", flush=True)
                 client.futures_create_order(
                     symbol=symbol,
@@ -348,10 +326,7 @@ def future_compare_stop_loss(symbol):
                 if old_order_stop_price < bottom_price and future_price > bottom_price:
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                    time.sleep(1) 
-                    # ปรับ bottom_price ลง 1%
-                    bottom_price = bottom_price - (bottom_price * 0.01)
-                    # ปรับราคาให้เหมาะสมกับ step size (get_step_size)
+                    time.sleep(5) 
                     print(f"Reorder {symbol} {order['side']} {position_amount} {bottom_price}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
@@ -366,8 +341,6 @@ def future_compare_stop_loss(symbol):
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
                     time.sleep(1) 
-                    # ปรับ top_price ขึ้น 1%
-                    top_price = top_price + (top_price * 0.01)
                     print(f"Reorder {symbol} {order['side']} {position_amount} {top_price}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
@@ -379,7 +352,6 @@ def future_compare_stop_loss(symbol):
                     )                
     except Exception as e:
         print(f"Error: {e}", flush=True)
-        send_line_notify(f"Error: {e}")
         return None
 
 def future_get_position():
@@ -395,9 +367,9 @@ def future_change_margin_type_and_leverage(symbol):
     try:
         # เปลี่ยนเป็น cross margin ถ้าเป็น isolated margin
         positions = client.futures_position_information(symbol=symbol)
-        if positions[0]['marginType'] == 'cross':
-            print(f"Change margin type to ISOLATED for {symbol}", flush=True)
-            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
+        if positions[0]['marginType'] == 'isolated':
+            print(f"Change margin type to CROSS for {symbol}", flush=True)
+            client.futures_change_margin_type(symbol=symbol, marginType='CROSSED')              
     except Exception as e:
         print(f"Error changing margin type: {e}", flush=True)
         return False
@@ -432,30 +404,6 @@ def future_find_order_no_position():
                 client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
         except Exception as e:
             print(f"Error: {e}", flush=True)
-
-    # ตรวจสอบ position ที่มี order มากกว่า 1 order ให้ลบ order ที่เก่าที่สุดออก ให้เหลือ 1 order
-    positions = future_get_position()
-    for symbol in positions:
-        orders = client.futures_get_open_orders(symbol=symbol)
-        if len(orders) > 1:
-            orders.sort(key=lambda x: x['time'])
-            for order in orders[:-1]:
-                try:
-                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                except Exception as e:
-                    print(f"Error: {e}", flush=True)
-
-    # ตรวจสอบ postion ที่ไม่มี order ให้เตือน line notify
-    positions = future_get_position()
-    for symbol in positions:
-        orders = client.futures_get_open_orders(symbol=symbol)
-        if len(orders) == 0:
-            try:
-                send_line_notify(f"Position {symbol} without order")
-            except Exception as e:
-                print(f"Error: {e}", flush=True)
-
     print("End check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
 
 def future_change_margin_type_and_leverage_all():
@@ -463,70 +411,16 @@ def future_change_margin_type_and_leverage_all():
     for symbol in symbols:
         future_change_margin_type_and_leverage(symbol)        
 
-def get_thb_usd_rate():
-    url = "https://api.exchangerate-api.com/v4/latest/USD"
-    
-    try:
-        response = requests.get(url)
-        data = response.json()
-        
-        if response.status_code == 200:
-            thb_rate = data['rates']['THB']
-            return thb_rate
-        else:
-            return None
-    except requests.RequestException:
-        return None
-    
-def future_profit_or_loss_notify():
-    # ดึงช้อมูล จากตลาด Future คำนวณ ยอดกำไร ยอดขายทุน ยอดคงเหลือ กำไรหักขาดทุน ส่ง line notify
-    balance = client.futures_account_balance()
-    balance_usdt = 0
-    profit_usdt = 0
-    profit_position_count = 0
-    loss_usdt = 0
-    loss_position_count = 0
-    for item in balance:
-        if item['asset'] == 'USDT':
-            balance_usdt = float(item['balance'])
-            break
-    positions = client.futures_position_information()
-    for position in positions:
-        position_amount = float(position['positionAmt'])
-        if position_amount != 0:
-            symbol = position['symbol']
-            position_side = (position_amount > 0) and 'BUY' or 'SELL'
-            position_price = float(position['entryPrice'])
-            current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
-            position_profit = (current_price - position_price) * position_amount
-            if position_profit > 0:
-                profit_usdt += position_profit
-                profit_position_count += 1
-            if position_profit < 0:
-                loss_usdt += position_profit
-                loss_position_count += 1
-           
-    # ดึงอัตราแลกเปลี่ยน thb/usd จาก internet
-    exchange_rate = get_thb_usd_rate()
-    if exchange_rate:
-        balance_thb = balance_usdt * exchange_rate
-        profit_thb = profit_usdt * exchange_rate
-        loss_thb = loss_usdt * exchange_rate
-        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt:,.2f} USDT\n\nกำไร: {profit_thb:,.2f} บาท\nขาดทน: {loss_thb:,.2f} บาท\nยอดคงเหลือ: {balance_thb:,.2f} บาท\nสุทธิ: {balance_thb + profit_thb + loss_thb:,.2f} บาท"
-        send_line_notify(message)
-        send_line_notify_group(message)
-    else:
-        message = f"\nกำไร: {profit_usdt:,.2f} USDT ({profit_position_count:,.0f})\nขาดทุน: {loss_usdt:,.2f} USDT ({loss_position_count:,.0f})\nยอดคงเหลือ: {balance_usdt:,.2f} USDT\nสุทธิ: {balance_usdt + profit_usdt + loss_usdt:,.2f} USDT"
-        send_line_notify(message)
-        send_line_notify_group(message)
+
+# ดึงข้อมูล exchange และ balance
+#future_exchange_info = client.futures_exchange_info()
+#future_balance = future_get_balance()
 
 # start
+#future_change_margin_type_and_leverage_all()
 print("Start", flush=True)
-# future_change_margin_type_and_leverage_all()
-#future_profit_or_loss_notify()
-# future_change_margin_type_and_leverage('BTCUSDT')
-#future_find_order_no_position()
-#future_find_signal(tread_time_frame)
+future_find_order_no_position()
+future_find_signal(tread_time_frame)
 
 while True:
     try:
@@ -535,8 +429,10 @@ while True:
         last_minute = date_time_now.minute
         if last_minute % 15 == 0:
             future_find_signal(tread_time_frame)
+            time.sleep(120)
             future_find_order_no_position()
-            future_profit_or_loss_notify()
+            # wait 5 minutes
+            time.sleep(300)
     except Exception as e:
         send_line_notify(f"Error: {e}")
         print(f"Error: {e}", flush=True)

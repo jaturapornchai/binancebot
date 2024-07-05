@@ -192,7 +192,7 @@ def future_change_margin_type_and_leverage(symbol):
 def future_change_margin_type_and_leverage_all():
     symbols = fetch_future_symbols()
     for symbol in symbols:
-        future_change_margin_type_and_leverage(symbol)        
+        future_change_margin_type_and_leverage(symbol)
 
 def future_open_position(symbol, side):
     # future_change_margin_type_and_leverage(symbol)

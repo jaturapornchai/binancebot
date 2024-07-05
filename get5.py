@@ -8,7 +8,7 @@ def fetch_and_save_bitcoin_prices(api_key, api_secret):
 
     # Calculate the start and end timestamps for the past year
     end_time = datetime.now()
-    start_time = end_time - timedelta(days=365)
+    start_time = end_time - timedelta(days=65)
 
     # Convert timestamps to milliseconds for the API call
     start_str = int(start_time.timestamp() * 1000)
