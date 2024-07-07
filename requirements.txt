@@ -3,6 +3,5 @@ numpy
 requests
 python-binance
 scipy
-matplotlib
 scikit-learn
 ccxt

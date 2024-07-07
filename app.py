@@ -9,7 +9,6 @@ import numpy as np
 import requests
 from binance.client import Client
 from sklearn.linear_model import LinearRegression
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
 # ดึงค่า API key และ secret จาก environment variables
@@ -34,7 +33,7 @@ tread_time_frame_stop_loss = '15m'
 limit_time_frame_for_stop_loss = 14
 future_leverage = 10
 temp_folder = 'temp'
-
+line_all_message = ""
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 
 # ตรวจสอบว่า API key, secret และ line_token ไม่เป็น None
@@ -62,24 +61,6 @@ def get_latest_klines(symbol: str, interval: str, limit: int) -> pd.DataFrame:
 
 def calculate_ma(df: pd.DataFrame, window: int) -> pd.Series:
     return df['close'].rolling(window=window).mean()
-
-def plot_chart(df: pd.DataFrame, symbol: str, signal: str):
-    plt.figure(figsize=(12, 6))
-    plt.plot(df.index, df['close'], label='Price')
-    plt.plot(df.index, df['MA7'], label='MA7')
-    plt.plot(df.index, df['MA25'], label='MA25')
-    plt.plot(df.index, df['MA99'], label='MA99')
-    plt.title(f'{symbol} - {signal} Signal')
-    plt.xlabel('Time')
-    plt.ylabel('Price')
-    plt.legend()
-    
-    # Create temp folder if it doesn't exist
-    if not os.path.exists('temp'):
-        os.makedirs('temp')
-    
-    plt.savefig(f'temp/{symbol}_{signal}_signal.png')
-    plt.close()
 
 def check_signal(symbol: str) -> str:
     # Fetch the latest 600 klines
@@ -146,10 +127,10 @@ def future_find_signal(timeframe):
 
     future_exchange_info = client.futures_exchange_info()
     future_balance = future_get_balance()
+    print(f"USDT balance: {future_balance}", flush=True)
     if future_balance < 10:
         print("USDT balance is not enough", flush=True)
         return None
-    
     symbols = fetch_future_symbols()
     positions = future_get_position()
     for symbol in symbols:
@@ -218,13 +199,15 @@ def round_quantity(quantity, step_size):
 
 def future_open_position(symbol, side):   
     global line_all_message
+    global future_balance
     
-    usdt_amount = future_balance / 100.0    
-    print(f"USDT amount: {usdt_amount}", flush=True)
-    if usdt_amount < 50:
+    if future_balance < 250:
         print("USDT balance is not enough", flush=True)
         return None
     
+    usdt_amount = future_balance / 100.0    
+    print(f"USDT amount for positon : {usdt_amount}", flush=True)
+
     diff_percent_max = 5 # จะต้องห่างจากราคาปัจจุบันไม่เกินกี่ %
 
     if not future_get_last_trade(symbol):
@@ -300,12 +283,12 @@ def future_get_balance():
         if item['asset'] == 'USDT':
             balance_usdt = float(item['balance'])
             break
-    print(f"USDT balance: {balance_usdt}", flush=True)
+    print(f"future_get_balance : USDT balance: {balance_usdt}", flush=True)
     return balance_usdt
 
 def future_get_last_trade(symbol):
     try:
-        time_hour = 8
+        time_hour = 4
         trades = client.futures_account_trades(symbol=symbol)
         if len(trades) == 0:
             return True
@@ -389,10 +372,13 @@ def future_compare_stop_loss(symbol):
             # ดึงกำไรล่าสุด คำนวณเป็น % ของกำไร ถ้ากำไรมากกว่าที่กำหนด ให้ stop loss ใกล้ขึ้น
             profit_percent = calculate_profit_percentage(position_info[0])
             print(f"Profit percent: {profit_percent}", flush=True)
-            if profit_percent > 50:
-                limit_time_stop_loss = 4
+            if profit_percent > 10:
+                # ถ้ากำไรมากกว่า 10% ให้ลดเวลาในการเปรียบเทียบ stop loss เป็น step จาก profit_percent * 2
+                limit_time_stop_loss = limit_time_frame_for_stop_loss - ((profit_percent * 2) % 10)
+                if limit_time_stop_loss < 4:
+                    limit_time_stop_loss = 4
                 print(f"Change limit time frame for stop loss to {limit_time_stop_loss}", flush=True)
-            #
+            # ดึง order ที่เป็น stop loss มาเทียบกับราคาปัจจุบัน
             old_order_stop_price = float(order['stopPrice'])                
             top_price = 0
             bottom_price = 0
@@ -433,7 +419,6 @@ def future_compare_stop_loss(symbol):
                     )                
     except Exception as e:
         print(f"Error: {e}", flush=True)
-        line_all_message += f"Error: {e}\n"
         return None
 
 def future_get_position():
@@ -533,9 +518,22 @@ def future_profit_or_loss_notify():
     loss_usdt = 0
     loss_position_count = 0
     for item in balance:
-        if item['asset'] == 'USDT':
-            balance_usdt = float(item['balance'])
-            break
+        balance_amount = float(item['balance'])
+        if balance_amount > 0:
+            if item['asset'] == 'USDT' :
+                balance_usdt += balance_amount
+                break
+            else:
+                # ดึงราคาปัจจุบันของเหรียญนั้น
+                symbol = item['asset'] + 'USDT'
+                try:
+                    ticker = client.futures_symbol_ticker(symbol=symbol)
+                    balance_usdt += balance_amount * float(ticker['price'])
+                except Exception as e:
+                    print(f"Error with symbol {symbol}: {e}", flush=True)
+                    continue            
+            
+
     positions = client.futures_position_information()
     for position in positions:
         position_amount = float(position['positionAmt'])
@@ -555,6 +553,8 @@ def future_profit_or_loss_notify():
     # ดึงทรัพย์ทั้งหมด ของมูลค่าตลาด spot จาก Binance ดึงราคามาด้วย คำนวเป็น USDT
     spot_account = client.get_account()
     spot_balance_usdt = 0
+    # sort
+    spot_account['balances'].sort(key=lambda x: x['asset'])
     for asset in spot_account['balances']:
         total = float(asset['free']) + float(asset['locked'])
         if total > 0:
@@ -564,11 +564,13 @@ def future_profit_or_loss_notify():
                 symbol = asset['asset'] + 'USDT'
 
                 try:
-                    ticker = client.futures_symbol_ticker(symbol=symbol)
+                    ticker = client.get_symbol_ticker(symbol=symbol)
                     spot_balance_usdt += total * float(ticker['price'])
+                    print(f"Symbol: {symbol} Total: {total} Price: {ticker['price']} Total USDT: {total * float(ticker['price'])}", flush=True)
                 except Exception as e:
                     print(f"Error with symbol {symbol}: {e}", flush=True)
                     continue
+    print(f"Spot balance: {spot_balance_usdt}", flush=True)
 
     # ดึงอัตราแลกเปลี่ยน thb/usd จาก internet
     exchange_rate = get_thb_usd_rate()
@@ -624,7 +626,7 @@ def transfer_usdt_to_future():
     print(f"USDT balance ready for Transfer : {max_withdraw_amount}", flush=True)
 
     try:
-        max_withdraw = max_withdraw_amount - 1000
+        max_withdraw = max_withdraw_amount - 1500
         if max_withdraw < 100:
             print("USDT balance is not enough", flush=True)
             return None
@@ -634,15 +636,100 @@ def transfer_usdt_to_future():
         print(f"Error: {e}", flush=True)
         return None
 
+
+
+
+
+# spot market
+
+def get_spot_usdt_pairs():
+    try:
+        exchange_info = client.get_exchange_info()
+        pairs = [symbol['symbol'] for symbol in exchange_info['symbols']
+                if symbol['symbol'].endswith('USDT')
+                and 'USDC' not in symbol['symbol']
+                and 'BULL' not in symbol['symbol']
+                and 'BEAR' not in symbol['symbol']
+                and symbol['status'] == 'TRADING']
+        print(f"จำนวนคู่เทรด USDT ทั้งหมด: {len(pairs)}")
+        return pairs
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในการดึงข้อมูล exchange info: {e}")
+        return []
+
+def analyze_price_and_buy(spot_symbol):
+    try:
+        klines = client.get_historical_klines(spot_symbol, Client.KLINE_INTERVAL_1DAY, f"14 days ago UTC")
+        
+        # ตัดวันแรกออก
+        klines = klines[2:]
+
+        if len(klines) == 0:
+            print(f"ไม่พบข้อมูลสำหรับ {spot_symbol}")
+            return None
+        
+        # หาราคาต่ำสุด
+        lowest_price = min(float(kline[3]) for kline in klines)  # kline[3] คือราคาต่ำสุดของวัน
+        
+        # ดึงราคาปัจจุบัน
+        current_price = float(client.get_symbol_ticker(symbol=spot_symbol)['price'])
+        ticker_price = lowest_price * 0.95
+        if current_price <= ticker_price:
+            print(f"ราคาปัจจุบันของ {spot_symbol} ({current_price:.8f} USDT) ต่ำกว่าราคาต่ำสุดในอดีต")
+            buy_coin(spot_symbol, 10)  # ซื้อทันที 10 USD
+        else:
+            print(f"ราคาปัจจุบันของ {spot_symbol}: {current_price:.8f} USDT / ราคาต่ำสุดในอดีต: {lowest_price:.8f} USDT / ราคาเป้าหมายสำหรับการซื้อ : {ticker_price:.8f} USDT")
+
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในการวิเคราะห์ราคาสำหรับ {spot_symbol}: {e}")
+
+def buy_coin(symbol, amount_usd):
+    try:
+        # ดึงข้อมูลราคาปัจจุบัน
+        ticker = client.get_symbol_ticker(symbol=symbol)
+        price = float(ticker['price'])
+        
+        # คำนวณจำนวนเหรียญที่จะซื้อ
+        quantity = amount_usd / price
+        
+        # ปรับจำนวนทศนิยมให้ถูกต้องตามข้อกำหนดของ Binance
+        info = client.get_symbol_info(symbol)
+        step_size = float([f for f in info['filters'] if f['filterType'] == 'LOT_SIZE'][0]['stepSize'])
+        quantity = round(quantity - (quantity % step_size), len(str(step_size).split('.')[1]))
+        
+        # ส่งคำสั่งซื้อ
+        order = client.create_order(
+            symbol=symbol,
+            side=Client.SIDE_BUY,
+            type=Client.ORDER_TYPE_MARKET,
+            quantity=quantity)
+        
+        print(f"ซื้อ {symbol} สำเร็จ: จำนวน {quantity} ในราคาประมาณ {price:.8f} USDT")
+        return order
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในการซื้อ {symbol}: {e}")
+        return None
+
+def spot_main():
+    try:
+        spot_usdt_pairs = get_spot_usdt_pairs()
+
+        for spot_symbol in spot_usdt_pairs:
+            analyze_price_and_buy(spot_symbol)
+            time.sleep(0.1)  # เพื่อหลีกเลี่ยงการถูกจำกัดการเรียก API
+
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาด: {e}")
+
 # start
 print("Start", flush=True)
 #transfer_usdt_to_future()
 #future_change_margin_type_and_leverage_all()
-#future_profit_or_loss_notify()
 #future_change_margin_type_and_leverage('BTCUSDT')
 #future_find_order_no_position()
 #future_find_signal(tread_time_frame)
 #future_compare_stop_loss_all()
+#future_profit_or_loss_notify()
 first_time = True
 while True:
     try:
@@ -661,9 +748,12 @@ while True:
             future_profit_or_loss_notify()
             transfer_usdt_to_future()
             if line_all_message != "":
-                send_line_notify("\n" + line_all_message, line_token_group)
-                
-            time.sleep(120)
+                send_line_notify(line_all_message, line_token_group)
+            if last_minute < 15:
+                # สแกนเหรียญใหม่ 15 นาที แรกของทุกๆ ชั่วโมง DCA ราคาต่ำสุด
+                spot_main()
+            else:                
+                time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}", line_token)
         print(f"Error: {e}", flush=True)
