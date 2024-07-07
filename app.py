@@ -378,6 +378,13 @@ def future_compare_stop_loss(symbol):
                 if limit_time_stop_loss < 4:
                     limit_time_stop_loss = 4
                 print(f"Change limit time frame for stop loss to {limit_time_stop_loss}", flush=True)
+
+            if profit_percent > 30:
+                # ถ้ากำไรมากกว่า 30% ให้ซื้อเพิ่ม เพราะถือว่าถูกทาง
+                print(f"Profit percent > 30% : Buy more {symbol}", flush=True)
+                future_open_position(symbol, position_side)
+
+
             # ดึง order ที่เป็น stop loss มาเทียบกับราคาปัจจุบัน
             old_order_stop_price = float(order['stopPrice'])                
             top_price = 0
