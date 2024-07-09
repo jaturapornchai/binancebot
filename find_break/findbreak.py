@@ -5,6 +5,7 @@ from datetime import datetime
 import requests
 from binance.client import Client
 import time
+import os
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
@@ -14,17 +15,24 @@ api_secret = os.getenv('BINANCE_SECRET_KEY')
 client = Client(api_key, api_secret)
 exchange = ccxt.binance()
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
-line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+line_token = "aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
+line_message = ""
 
-def send_line_notify(message):
-    """Send notifications through LINE Notify."""
-    headers = {
-        'Authorization': f'Bearer ' + line_token,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    payload = {'message': message}
-    response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-    return response.status_code
+def send_line_notify(message, token=line_token):
+    try:
+        """Send notifications through LINE Notify."""
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        payload = {'message': "\n"+message}
+        response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
+        if response.status_code == 200:
+            print("LINE notification sent successfully", flush=True)
+        else:
+            print(f"Failed to send LINE notification. Status code: {response.status_code}", flush=True)
+    except Exception as e:
+        print(f"Error sending LINE message: {e}", flush=True)
 
 def fetch_future_symbols():
     info = client.futures_exchange_info()
@@ -83,29 +91,42 @@ def check_signal(symbol, tread_time_frame='1h', window=100, devlen=2):
     return check_breakout(close_prices, upper_bound, lower_bound)
 
 def future_find_signal(tread_time_frame, window=100, devlen=2):
+    global line_message
+    
     print("Start check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
     symbols = fetch_future_symbols()
     for symbol in symbols:
         try:
             signal = check_signal(symbol, tread_time_frame, window, devlen)
             if signal != 'normal':
-                message = f"Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
+                if signal == 'breakout_up':
+                    icon = "🟢"  # Green circle for LONG
+                    color = "green"
+                elif signal == 'breakout_down':
+                    icon = "🔴"  # Red circle for SHORT
+                    color = "red"
+                
+                message = f"{icon} Symbol: {symbol}, Signal: {signal} : {tread_time_frame}"
                 print(message, flush=True)
-                send_line_notify(message)
+                line_message += f'Symbol: {symbol}, Signal: {signal} : {tread_time_frame}\n'
         except Exception as e:
             print(f"Error: {e}", flush=True)    
             continue    
-    print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-
-tread_time_frame = '4h'
+          
+tread_time_frame = '1h'
 print("\033[H\033[J")
-future_find_signal(tread_time_frame)
+first = True
 while True:    
     try:
         date_time_now = datetime.now()
         last_minute = date_time_now.minute
-        if last_minute == 0:
+        if last_minute == 0 or first:
+            print("\033[H\033[J")
+            line_message = ""
+            first = False
             future_find_signal(tread_time_frame)
+            if line_message != "":
+                send_line_notify(line_message, line_token)
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")

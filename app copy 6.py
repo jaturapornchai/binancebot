@@ -1,6 +1,3 @@
-#import matplotlib.pyplot as plt
-import hmac
-import hashlib
 import math
 from scipy import stats
 import ccxt
@@ -13,7 +10,6 @@ import requests
 from binance.client import Client
 from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
-from typing import Tuple, List
 
 # ดึงค่า API key และ secret จาก environment variables
 #api_key = os.getenv('BINANCE_API_KEY')
@@ -37,7 +33,7 @@ exchange = ccxt.binance({
 })
 
 client = Client(api_key, api_secret)
-trade_time_frame = '15m'
+trade_time_frame = '1h'
 tread_time_frame_stop_loss = '15m'
 limit_time_frame_for_stop_loss = 14
 future_leverage = 10
@@ -52,88 +48,50 @@ if not api_key or not api_secret or not line_token:
 
 
 
-def analyze_trend(symbol, api_key, api_secret):
-    # Fetch klines data
-    timeframe = '1m'
-    limit = 750
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+
+
+
+
+
+
+
+
+def get_latest_klines(symbol: str, interval: str, limit: int) -> pd.DataFrame:
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     df['close'] = df['close'].astype(float)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
 
-    # Calculate EMAs
-    df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
-    df['EMA55'] = df['close'].ewm(span=55, adjust=False).mean()
-    df['EMA89'] = df['close'].ewm(span=89, adjust=False).mean()
-    df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
-
-    # Calculate SMAs
-    df['SMA50'] = df['close'].rolling(window=50).mean()
-    df['SMA100'] = df['close'].rolling(window=100).mean()
-    df['SMA200'] = df['close'].rolling(window=200).mean()
-
-    # Get the last row for analysis
-    last_row = df.iloc[-1]
-
-    # Check if EMAs and SMAs are in ascending order (bullish) and price is above all MAs
-    is_bullish = (last_row['EMA12'] > last_row['EMA55'] > last_row['EMA89'] > last_row['EMA200'] and
-                  last_row['SMA50'] > last_row['SMA100'] > last_row['SMA200'] and
-                  last_row['close'] > last_row['EMA12'] > last_row['EMA55'] > last_row['EMA89'] > last_row['EMA200'] and
-                  last_row['close'] > last_row['SMA50'] > last_row['SMA100'] > last_row['SMA200'])
-
-    # Check if EMAs and SMAs are in descending order (bearish) and price is below all MAs
-    is_bearish = (last_row['EMA12'] < last_row['EMA55'] < last_row['EMA89'] < last_row['EMA200'] and
-                  last_row['SMA50'] < last_row['SMA100'] < last_row['SMA200'] and
-                  last_row['close'] < last_row['EMA12'] < last_row['EMA55'] < last_row['EMA89'] < last_row['EMA200'] and
-                  last_row['close'] < last_row['SMA50'] < last_row['SMA100'] < last_row['SMA200'])
-
-    if is_bullish:
-        return "LONG"
-    elif is_bearish:
-        return "SHORT"
-    else:
-        return "NORMAL"
-
-
-
-"""
-def generate_graph(df: pd.DataFrame, trend: np.ndarray, upper: np.ndarray, lower: np.ndarray, signal: str, symbol: str):
-    plt.figure(figsize=(12, 6))
-    plt.plot(df['timestamp'][-WINDOW_LENGTH:], df['close'][-WINDOW_LENGTH:], label='Close Price')
-    plt.plot(df['timestamp'][-WINDOW_LENGTH:], trend, label='Linear Regression', color='grey')
-    plt.plot(df['timestamp'][-WINDOW_LENGTH:], upper, label='Upper Channel', color='red', linestyle='--')
-    plt.plot(df['timestamp'][-WINDOW_LENGTH:], lower, label='Lower Channel', color='green', linestyle='--')
-    
-    plt.title(f'Linear Regression Channel for {symbol} - Signal: {signal}')
-    plt.xlabel('Date')
-    plt.ylabel('Price')
-    plt.legend()
-    
-    # Create temp folder if it doesn't exist
-    if not os.path.exists('temp'):
-        os.makedirs('temp')
-    
-    # Save the graph
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f'temp/{symbol}_{signal}_{timestamp}.png'
-    plt.savefig(filename)
-    plt.close()
-    
-    print(f"Graph saved as {filename}")
-"""
+def calculate_ma(df: pd.DataFrame, window: int) -> pd.Series:
+    return df['close'].rolling(window=window).mean()
 
 def check_signal(symbol: str) -> str:
-    try:
-        signal = analyze_trend(symbol, api_key, api_secret)
-        return signal
-    except Exception as e:
-        print(f"Error processing {symbol}: {str(e)}")
-        return 'NORMAL'
-
+    # Fetch the latest 600 klines
+    df = get_latest_klines(symbol, trade_time_frame, 600)
     
-
-
-
+    # Calculate MAs
+    df['MA7'] = calculate_ma(df, 7)
+    df['MA25'] = calculate_ma(df, 25)
+    df['MA99'] = calculate_ma(df, 99)
+    
+    # Get the latest values
+    latest = df.iloc[-1]
+    
+    # Check conditions
+    if latest['MA7'] > latest['MA25'] > latest['MA99']:
+        price_diff = (latest['close'] - latest['MA99']) / latest['MA99'] * 100
+        if 1 <= price_diff <= 4:
+            #plot_chart(df, symbol, 'LONG')
+            return 'LONG'
+    elif latest['MA7'] < latest['MA25'] < latest['MA99']:
+        price_diff = (latest['MA99'] - latest['close']) / latest['MA99'] * 100
+        if 1 <= price_diff <= 4:
+            #plot_chart(df, symbol, 'SHORT')
+            return 'SHORT'
+    
+    return 'normal'
 
 
 
@@ -187,9 +145,8 @@ def future_find_signal(timeframe):
 
         try:
             signal = check_signal(symbol)
-            print(f"Signal for {symbol}: {signal}", flush=True)
 
-            if signal != 'NORMAL':
+            if signal != 'normal':
                 color = '🟢' if signal == 'LONG' else '🔴'
                 message = f"Binance: Signal detected for {symbol}: {color} {signal}"
                 try:
@@ -211,7 +168,7 @@ def future_compare_stop_loss_all():
     global line_all_message
     
     positions = future_get_position()
-    for symbol in positions:        
+    for symbol in positions:
         future_compare_stop_loss(symbol)
         
     # ตรวจสอบ postion ที่ไม่มี order ให้เตือน line notify
@@ -253,7 +210,7 @@ def future_open_position(symbol, side,bypass=False):
         print("USDT balance is not enough", flush=True)
         return None
     
-    usdt_amount = future_balance / 20.0
+    usdt_amount = future_balance / 100.0
     if bypass == True:
         usdt_amount = usdt_amount / 2    
     print(f"USDT amount for positon : {usdt_amount}", flush=True)
@@ -371,7 +328,7 @@ def future_get_balance():
 
 def future_get_last_trade(symbol):
     try:
-        time_hour = 2
+        time_hour = 8
         trades = client.futures_account_trades(symbol=symbol)
         if len(trades) == 0:
             return True
@@ -456,13 +413,12 @@ def future_compare_stop_loss(symbol):
             print(f"Profit percent: {profit_percent}", flush=True)
             if profit_percent > 20:
                 # ถ้ากำไรมากกว่า 20% ให้ลดเวลาในการเปรียบเทียบ stop loss เป็น step 
-                limit_time_stop_loss = limit_time_frame_for_stop_loss - ((profit_percent * 2) % 10)
+                limit_time_stop_loss = limit_time_frame_for_stop_loss - (profit_percent * 2 % 10)
                 limit_time_stop_loss = round(limit_time_stop_loss)
                 if limit_time_stop_loss < 4:
                     limit_time_stop_loss = 4
                 print(f"Change limit time frame for stop loss to {limit_time_stop_loss}", flush=True)
-            
-            """
+
             if profit_percent > 50:
                 # ถ้ากำไรมากกว่า 50% ให้ซื้อเพิ่ม เพราะถือว่าถูกทาง
                 print(f"Profit percent > 50% : Buy more {symbol}", flush=True)
@@ -474,7 +430,6 @@ def future_compare_stop_loss(symbol):
                 position_info = client.futures_position_information(symbol=symbol)
                 position_amount = float(position_info[0]['positionAmt'])
                 time.sleep(2)
-            """
 
             # ดึง order ที่เป็น stop loss มาเทียบกับราคาปัจจุบัน
             old_order_stop_price = float(order['stopPrice'])                
@@ -532,9 +487,9 @@ def future_change_margin_type_and_leverage(symbol):
     try:
         # เปลี่ยนเป็น cross margin ถ้าเป็น isolated margin
         positions = client.futures_position_information(symbol=symbol)
-        if positions[0]['marginType'] != 'cross':
-            print(f"Change margin type to CROSS for {symbol}", flush=True)
-            client.futures_change_margin_type(symbol=symbol, marginType='CROSSED')  
+        if positions[0]['marginType'] == 'cross':
+            print(f"Change margin type to ISOLATED for {symbol}", flush=True)
+            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
     except Exception as e:
         print(f"Error changing margin type: {e}", flush=True)
         return False
@@ -713,43 +668,31 @@ def future_profit_or_loss_notify():
 def format_message(label, value, unit, width=15):
     return f"{label:<{width}} {value:>{width},.2f} {unit}"
 
-def transfer_usdt_to_spot():
-    # ดึงข้อมูลยอดคงเหลือใน Future account
-    futures_account_balance = client.futures_account_balance()
-    
-    # หายอด USDT ที่สามารถโอนได้
-    available_balance = 0
-    for item in futures_account_balance:
+def transfer_usdt_to_future():
+    # ดึง USDT ที่สามารถ transfer ได้
+    data = client.futures_account_balance()
+    max_withdraw_amount = 0
+    for item in data:
         if item['asset'] == 'USDT':
-            # ใช้ 'availableBalance' แทน 'withdrawAvailable'
-            available_balance = float(item['availableBalance'])
-            break
+            max_withdraw_amount += float(item['maxWithdrawAmount'])
     
-    print(f"Total USDT balance available for transfer from Future to Spot: {available_balance}", flush=True)
+    print(f"USDT balance ready for Transfer : {max_withdraw_amount}", flush=True)
 
     try:
-        # คำนวณยอดที่จะโอน (90% ของยอดที่โอนได้ทั้งหมด)
-        transfer_amount = available_balance * 0.9
-        transfer_amount = round(transfer_amount, 2)  # ปัดเศษทศนิยม 2 ตำแหน่ง
-        
-        if transfer_amount <= 1000:
-            print("No USDT available for transfer", flush=True)
+        max_withdraw = max_withdraw_amount - 1500
+        if max_withdraw < 100:
+            print("USDT balance is not enough", flush=True)
             return None
-
-        result = client.futures_account_transfer(
-            asset='USDT',
-            amount=transfer_amount,
-            type=2  # 2 means transfer from Future to Spot
-        )
-
-        print(f"Successfully transferred {transfer_amount} USDT from Future to Spot", flush=True)
-        print(f"Remaining balance in Future account: {available_balance - transfer_amount} USDT", flush=True)
-        return result
+        client.futures_account_transfer(asset='USDT', amount=max_withdraw, type=2)
 
     except Exception as e:
         print(f"Error: {e}", flush=True)
         return None
-    
+
+
+
+
+
 # spot market
 
 def get_spot_usdt_pairs():
@@ -783,7 +726,7 @@ def analyze_price_and_buy(spot_symbol):
         
         # ดึงราคาปัจจุบัน
         current_price = float(client.get_symbol_ticker(symbol=spot_symbol)['price'])
-        ticker_price = lowest_price * 0.8
+        ticker_price = lowest_price * 0.95
         if current_price <= ticker_price:
             print(f"ราคาปัจจุบันของ {spot_symbol} ({current_price:.8f} USDT) ต่ำกว่าราคาต่ำสุดในอดีต")
             buy_coin(spot_symbol, 10)  # ซื้อทันที 10 USD
@@ -831,60 +774,35 @@ def spot_main():
     except Exception as e:
         print(f"เกิดข้อผิดพลาด: {e}")
 
-
 # ถอนเหรียญ BNB ไปยังตลาดอื่น จาก spot
-
-def withdraw_bnb(address: str, amount: float):
-    client_withdraw = Client(api_key=api_key_for_withdraw, api_secret=api_secret_withdraw)
-    try:
-        # Get the BNB balance in the spot account
-        bnb_balance = float(client_withdraw.get_asset_balance(asset='BNB')['free'])
-        
-        if bnb_balance < amount:
-            print(f"Insufficient BNB balance. Current balance: {bnb_balance}")
-            return
-        
-        # Initiate the withdrawal
-        result = client_withdraw.withdraw(
-            coin='BNB',
-            address=address,
-            amount=amount,
-            network='BSC'  # Use 'BSC' for BNB Smart Chain, or 'BNB' for Binance Chain
-        )
-        
-        print(f"Withdrawal successful. Transaction ID: {result['id']}")
-        return True
-        
-    except Exception as e:
-        print(f"Error: {e}")
-    
-    return False
-
-
 def withdraw_bnb_to_other_market():
+    client_withdraw = Client(api_key=api_key_for_withdraw, api_secret=api_secret_withdraw)
     target_address = [
-        '0x6E7c351F048a6d57e023a9eE7d1c8A6A4F31385C',
         '0x7d4c6fe0cf2345b85f8bdecce7d234fde1c712ba'
     ]
 
-    bnb_amount = 0.002
+    bnb_amount = 0.001
     for address in target_address:
-        withdraw_bnb(address, bnb_amount)
+        try:
+            client.withdraw(asset='BNB', address=address, amount=bnb_amount)
+            print(f"ถอน BNB ไปยัง {address} สำเร็จ")
+        except Exception as e:
+            print(f"เกิดข้อผิดพลาดในการถอน BNB ไปยัง {address}: {e}")
 
 
 # start
 print("Start", flush=True)
 future_exchange_info = client.futures_exchange_info()
 future_balance = future_get_balance()
-#transfer_usdt_to_spot()
+#transfer_usdt_to_future()
 #future_change_margin_type_and_leverage_all()
 #future_change_margin_type_and_leverage('BTCUSDT')
 #future_find_order_no_position()
-#future_find_signal(trade_time_frame)
+#future_find_signal(tread_time_frame)
 #future_compare_stop_loss_all()
-#withdraw_bnb_to_other_market()
+#future_profit_or_loss_notify()
 first_time = True
-#print(get_linear_regression_channel_signal("ACHUSDT"))
+#withdraw_bnb_to_other_market()
 while True:
     try:
         date_time_now = datetime.now()
@@ -900,13 +818,12 @@ while True:
             future_find_order_no_position()
             future_compare_stop_loss_all()
             future_profit_or_loss_notify()
-            #transfer_usdt_to_spot()
+            transfer_usdt_to_future()
             if line_all_message != "":
-                send_line_notify(line_all_message, line_token)
+                send_line_notify(line_all_message, line_token_group)
             if last_minute < 15:
                 # สแกนเหรียญใหม่ 15 นาที แรกของทุกๆ ชั่วโมง DCA ราคาต่ำสุด
-                print("Scan spot market", flush=True)
-                #spot_main()
+                spot_main()
             else:                
                 time.sleep(120)
     except Exception as e:

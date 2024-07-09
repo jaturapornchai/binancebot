@@ -49,53 +49,59 @@ ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 if not api_key or not api_secret or not line_token:
     raise ValueError("API key, secret หรือ LINE token ไม่ถูกต้อง")
 
+# Constants
+WINDOW_LENGTH = 100
+DEVIATION = 2.0
+TIME_FRAME = Client.KLINE_INTERVAL_15MINUTE
 
+def get_linear_regression_channel_signal(symbol: str) -> str:
+    try:
+        # Fetch latest klines
+        klines = client.get_klines(symbol=symbol, interval=TIME_FRAME, limit=WINDOW_LENGTH + 1)
+        
+        # Prepare data
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        
+        # Calculate Linear Regression Channel
+        X = np.arange(WINDOW_LENGTH).reshape(-1, 1)
+        y = df['close'].values[-WINDOW_LENGTH:]  # Use all available data including the current candle
+        model = LinearRegression().fit(X, y)
+        
+        trend = model.predict(X)
+        residuals = y - trend
+        std_dev = np.std(residuals)
+        
+        upper = trend + std_dev * DEVIATION
+        lower = trend - std_dev * DEVIATION
+        
+        # Get the current candle
+        current_candle = df.iloc[-1]
+        current_price = current_candle['close']
+        current_low = current_candle['low']
+        current_high = current_candle['high']
+        
+        # Define a small threshold for "touching" the line (e.g., 0.1% of the current price)
+        touch_threshold = current_price * 0.001
 
-
-def analyze_trend(symbol, api_key, api_secret):
-    # Fetch klines data
-    timeframe = '1m'
-    limit = 750
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df['close'] = df['close'].astype(float)
-
-    # Calculate EMAs
-    df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
-    df['EMA55'] = df['close'].ewm(span=55, adjust=False).mean()
-    df['EMA89'] = df['close'].ewm(span=89, adjust=False).mean()
-    df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
-
-    # Calculate SMAs
-    df['SMA50'] = df['close'].rolling(window=50).mean()
-    df['SMA100'] = df['close'].rolling(window=100).mean()
-    df['SMA200'] = df['close'].rolling(window=200).mean()
-
-    # Get the last row for analysis
-    last_row = df.iloc[-1]
-
-    # Check if EMAs and SMAs are in ascending order (bullish) and price is above all MAs
-    is_bullish = (last_row['EMA12'] > last_row['EMA55'] > last_row['EMA89'] > last_row['EMA200'] and
-                  last_row['SMA50'] > last_row['SMA100'] > last_row['SMA200'] and
-                  last_row['close'] > last_row['EMA12'] > last_row['EMA55'] > last_row['EMA89'] > last_row['EMA200'] and
-                  last_row['close'] > last_row['SMA50'] > last_row['SMA100'] > last_row['SMA200'])
-
-    # Check if EMAs and SMAs are in descending order (bearish) and price is below all MAs
-    is_bearish = (last_row['EMA12'] < last_row['EMA55'] < last_row['EMA89'] < last_row['EMA200'] and
-                  last_row['SMA50'] < last_row['SMA100'] < last_row['SMA200'] and
-                  last_row['close'] < last_row['EMA12'] < last_row['EMA55'] < last_row['EMA89'] < last_row['EMA200'] and
-                  last_row['close'] < last_row['SMA50'] < last_row['SMA100'] < last_row['SMA200'])
-
-    if is_bullish:
-        return "LONG"
-    elif is_bearish:
-        return "SHORT"
-    else:
-        return "NORMAL"
-
-
-
+        # Check for new conditions including "touching" the lines
+        if (current_high >= upper[-1] or abs(current_high - upper[-1]) <= touch_threshold) and current_price > upper[-1]:
+            #generate_graph(df, trend, upper, lower, signal, symbol)
+            signal = 'LONG'
+        elif (current_low <= lower[-1] or abs(current_low - lower[-1]) <= touch_threshold) and current_price < lower[-1]:
+            #generate_graph(df, trend, upper, lower, signal, symbol)
+            signal = 'SHORT'
+        else:
+            signal = 'NORMAL'
+               
+        return signal
+        
+    except Exception as e:
+        print(f"Error processing {symbol}: {str(e)}")
+        return 'NORMAL'  # Return 'NORMAL' in case of any error
+    
 """
 def generate_graph(df: pd.DataFrame, trend: np.ndarray, upper: np.ndarray, lower: np.ndarray, signal: str, symbol: str):
     plt.figure(figsize=(12, 6))
@@ -122,9 +128,11 @@ def generate_graph(df: pd.DataFrame, trend: np.ndarray, upper: np.ndarray, lower
     print(f"Graph saved as {filename}")
 """
 
+
+
 def check_signal(symbol: str) -> str:
     try:
-        signal = analyze_trend(symbol, api_key, api_secret)
+        signal = get_linear_regression_channel_signal(symbol)    
         return signal
     except Exception as e:
         print(f"Error processing {symbol}: {str(e)}")
@@ -187,7 +195,6 @@ def future_find_signal(timeframe):
 
         try:
             signal = check_signal(symbol)
-            print(f"Signal for {symbol}: {signal}", flush=True)
 
             if signal != 'NORMAL':
                 color = '🟢' if signal == 'LONG' else '🔴'
@@ -253,7 +260,7 @@ def future_open_position(symbol, side,bypass=False):
         print("USDT balance is not enough", flush=True)
         return None
     
-    usdt_amount = future_balance / 20.0
+    usdt_amount = future_balance / 75.0
     if bypass == True:
         usdt_amount = usdt_amount / 2    
     print(f"USDT amount for positon : {usdt_amount}", flush=True)
@@ -532,9 +539,9 @@ def future_change_margin_type_and_leverage(symbol):
     try:
         # เปลี่ยนเป็น cross margin ถ้าเป็น isolated margin
         positions = client.futures_position_information(symbol=symbol)
-        if positions[0]['marginType'] != 'cross':
-            print(f"Change margin type to CROSS for {symbol}", flush=True)
-            client.futures_change_margin_type(symbol=symbol, marginType='CROSSED')  
+        if positions[0]['marginType'] == 'cross':
+            print(f"Change margin type to ISOLATED for {symbol}", flush=True)
+            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
     except Exception as e:
         print(f"Error changing margin type: {e}", flush=True)
         return False
@@ -882,9 +889,11 @@ future_balance = future_get_balance()
 #future_find_order_no_position()
 #future_find_signal(trade_time_frame)
 #future_compare_stop_loss_all()
+#future_profit_or_loss_notify()
 #withdraw_bnb_to_other_market()
 first_time = True
 #print(get_linear_regression_channel_signal("ACHUSDT"))
+#exit()
 while True:
     try:
         date_time_now = datetime.now()
