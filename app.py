@@ -40,7 +40,7 @@ exchange = ccxt.binance({
 client = Client(api_key, api_secret)
 trade_time_frame = '15m'
 tread_time_frame_stop_loss = '15m'
-limit_time_frame_for_stop_loss = 4
+limit_time_frame_for_stop_loss = 14
 future_leverage = 10
 temp_folder = 'temp'
 line_all_message = ""
@@ -70,120 +70,65 @@ def colorize(text, color):
 def print_color(text, color):
     print(colorize(text, color), file=sys.stderr, flush=True)
 
+
+# Constants
+WINDOW_LENGTH = 144
+DEVIATION = 2.0
+TIME_FRAME = Client.KLINE_INTERVAL_15MINUTE
+
 def analyze_trend(symbol: str) -> str:
     try:
-        TIMEFRAME = '15m'
-        limit = 750
-        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        # Fetch latest klines
+        klines = client.get_klines(symbol=symbol, interval=TIME_FRAME, limit=WINDOW_LENGTH + 3)
+        
+        # Prepare data
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df['close'] = df['close'].astype(float)
-
-        # Calculate SMA200
-        df['SMA200'] = df['close'].rolling(window=200).mean()
-
-        # Get the last two rows for analysis
-        last_row = df.iloc[-1]
-        previous_row = df.iloc[-2]
-
-        # Calculate SMA200 trend
-        sma200_trend = last_row['SMA200'] - previous_row['SMA200']
-        sma200_is_downtrend = sma200_trend < 0
-        sma200_is_uptrend = sma200_trend > 0
-
-        # Check if the current candle has crossed above or below SMA200
-        crossed_above_sma200 = previous_row['close'] <= previous_row['SMA200'] and last_row['close'] > last_row['SMA200']
-        crossed_below_sma200 = previous_row['close'] >= previous_row['SMA200'] and last_row['close'] < last_row['SMA200']
-
-        if crossed_above_sma200 and sma200_is_downtrend:
-            print_color(f"{symbol} has crossed above SMA200 while SMA200 is in downtrend. Current close: {last_row['close']:.2f}, SMA200: {last_row['SMA200']:.2f}", 'green')
-            return "LONG"
-        elif crossed_below_sma200 and sma200_is_uptrend:
-            print_color(f"{symbol} has crossed below SMA200 while SMA200 is in uptrend. Current close: {last_row['close']:.2f}, SMA200: {last_row['SMA200']:.2f}", 'red')
-            return "SHORT"
+        
+        # Calculate Linear Regression Channel for current period
+        X = np.arange(WINDOW_LENGTH).reshape(-1, 1)
+        y_current = df['close'].values[-WINDOW_LENGTH:]
+        model_current = LinearRegression().fit(X, y_current)
+        current_slope = model_current.coef_[0]
+        
+        # Calculate Linear Regression Channel for previous period
+        y_previous = df['close'].values[-WINDOW_LENGTH-1:-1]
+        model_previous = LinearRegression().fit(X, y_previous)
+        previous_slope = model_previous.coef_[0]
+        
+        # Calculate Linear Regression Channel for period before previous
+        y_before_previous = df['close'].values[-WINDOW_LENGTH-2:-2]
+        model_before_previous = LinearRegression().fit(X, y_before_previous)
+        before_previous_slope = model_before_previous.coef_[0]
+        
+        # Determine the current signal
+        if current_slope > 0:
+            current_signal = 'LONG'
+        elif current_slope < 0:
+            current_signal = 'SHORT'
         else:
-            if crossed_above_sma200:
-                print(f"{symbol} crossed above SMA200 but SMA200 is not in downtrend. Current close: {last_row['close']:.2f}, SMA200: {last_row['SMA200']:.2f}")
-            elif crossed_below_sma200:
-                print(f"{symbol} crossed below SMA200 but SMA200 is not in uptrend. Current close: {last_row['close']:.2f}, SMA200: {last_row['SMA200']:.2f}")
-            return "NORMAL"
-
-    except Exception as e:
-        print(f"Error in analyze_trend for {symbol}: {str(e)}")
-        return "ERROR"
+            current_signal = 'NORMAL'
+        
+        # Determine the previous signal
+        if previous_slope > 0:
+            previous_signal = 'LONG'
+        elif previous_slope < 0:
+            previous_signal = 'SHORT'
+        else:
+            previous_signal = 'NORMAL'
+        
+        # Check for trend change
+        if current_signal != previous_signal:
+            return current_signal  # Return new signal if there's a change
+        else:
+            return 'NORMAL'  # Return 'NORMAL' if there's no change in trend
     
-
-def xanalyze_trend(symbol: str) -> str:
-    try:
-        TIMEFRAME = '15m'
-        limit = 750
-        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df['close'] = df['close'].astype(float)
-
-        # Calculate EMAs
-        df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
-        df['EMA55'] = df['close'].ewm(span=55, adjust=False).mean()
-        df['EMA89'] = df['close'].ewm(span=89, adjust=False).mean()
-        df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
-
-        # Calculate SMAs
-        df['SMA50'] = df['close'].rolling(window=50).mean()
-        df['SMA100'] = df['close'].rolling(window=100).mean()
-        df['SMA200'] = df['close'].rolling(window=200).mean()
-
-        # Get the last row for analysis
-        last_row = df.iloc[-1]
-
-        # Price comparison logic
-        latest_price = df['close'].iloc[-1]
-        highest_price = df['high'].max()
-        lowest_price = df['low'].min()
-
-        # Check if EMAs and SMAs are in ascending order (bullish) and price is above all MAs
-        is_long = (latest_price > last_row['EMA12'] and
-                   latest_price > last_row['EMA55'] and
-                   latest_price > last_row['EMA89'] and
-                   latest_price > last_row['EMA200'] and
-                   latest_price > last_row['SMA50'] and
-                   latest_price > last_row['SMA100'] and
-                   latest_price > last_row['SMA200'])
-
-        # Check if price is below all MAs for SHORT
-        is_short = (latest_price < last_row['EMA12'] and
-                    latest_price < last_row['EMA55'] and
-                    latest_price < last_row['EMA89'] and
-                    latest_price < last_row['EMA200'] and
-                    latest_price < last_row['SMA50'] and
-                    latest_price < last_row['SMA100'] and
-                    latest_price < last_row['SMA200'])
-        
-      
-        long_diff = (latest_price - lowest_price) / lowest_price * 100
-        short_diff = (highest_price - latest_price) / highest_price * 100
-        
-        # Check if price is above SMA200 by no more than 1% for LONG
-        long_sma200_condition = 0 <= (latest_price - last_row['SMA200']) / last_row['SMA200'] * 100 <= 1
-
-        # Check if price is below SMA200 by no more than 1% for SHORT
-        short_sma200_condition = 0 <= (last_row['SMA200'] - latest_price) / last_row['SMA200'] * 100 <= 1
-
-        if is_long: 
-            print_color(f"{symbol} is bullish. Price diff from lowest: {long_diff:.2f}%, SMA200 diff: {((latest_price - last_row['SMA200']) / last_row['SMA200'] * 100):.2f}%", 'green')
-            if long_diff <= 2 and long_sma200_condition:
-                return "LONG"
-        elif is_short:
-            print_color(f"{symbol} is bearish. Price diff from highest: {short_diff:.2f}%, SMA200 diff: {((last_row['SMA200'] - latest_price) / last_row['SMA200'] * 100):.2f}%", 'red')
-            if short_diff <= 2 and short_sma200_condition:
-                return "SHORT"
-           
-        return "NORMAL"
-
     except Exception as e:
-        print(f"Error in analyze_trend for {symbol}: {str(e)}")
-        return "ERROR"
-
+        print(f"Error processing {symbol}: {str(e)}")
+        return 'NORMAL'  # Return 'NORMAL' in case of any error    
+    
 
 def check_signal(symbol: str) -> str:
     try:
@@ -516,15 +461,13 @@ def future_compare_stop_loss(symbol):
             # ดึงกำไรล่าสุด คำนวณเป็น % ของกำไร ถ้ากำไรมากกว่าที่กำหนด ให้ stop loss ใกล้ขึ้น
             profit_percent = calculate_profit_percentage(position_info[0])
             print(f"Profit percent: {profit_percent}", flush=True)
-            """
             if profit_percent > 20:
                 # ถ้ากำไรมากกว่า 20% ให้ลดเวลาในการเปรียบเทียบ stop loss เป็น step 
-                limit_time_stop_loss = limit_time_frame_for_stop_loss - ((profit_percent * 2) % 10)
+                limit_time_stop_loss = limit_time_frame_for_stop_loss - ((profit_percent) % 10)
                 limit_time_stop_loss = round(limit_time_stop_loss)
                 if limit_time_stop_loss < 4:
                     limit_time_stop_loss = 4
                 print(f"Change limit time frame for stop loss to {limit_time_stop_loss}", flush=True)
-            """
             """
             if profit_percent > 50:
                 # ถ้ากำไรมากกว่า 50% ให้ซื้อเพิ่ม เพราะถือว่าถูกทาง

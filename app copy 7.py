@@ -50,7 +50,7 @@ if not api_key or not api_secret or not line_token:
     raise ValueError("API key, secret หรือ LINE token ไม่ถูกต้อง")
 
 # Constants
-WINDOW_LENGTH = 100
+WINDOW_LENGTH = 144
 DEVIATION = 2.0
 TIME_FRAME = Client.KLINE_INTERVAL_15MINUTE
 
