@@ -74,12 +74,12 @@ def print_color(text, color):
 # Constants
 WINDOW_LENGTH = 144
 DEVIATION = 2.0
-TIME_FRAME = Client.KLINE_INTERVAL_15MINUTE
+TIME_FRAME = Client.KLINE_INTERVAL_1HOUR
 
 def analyze_trend(symbol: str) -> str:
     try:
         # Fetch latest klines
-        klines = client.get_klines(symbol=symbol, interval=TIME_FRAME, limit=WINDOW_LENGTH + 3)
+        klines = client.get_klines(symbol=symbol, interval=TIME_FRAME, limit=WINDOW_LENGTH + 8)
         
         # Prepare data
         df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
@@ -87,48 +87,52 @@ def analyze_trend(symbol: str) -> str:
             df[col] = df[col].astype(float)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         
-        # Calculate Linear Regression Channel for current period
+        # Calculate Linear Regression Channel
         X = np.arange(WINDOW_LENGTH).reshape(-1, 1)
-        y_current = df['close'].values[-WINDOW_LENGTH:]
-        model_current = LinearRegression().fit(X, y_current)
-        current_slope = model_current.coef_[0]
+        y = df['close'].values[-WINDOW_LENGTH:]
+        model = LinearRegression().fit(X, y)
         
-        # Calculate Linear Regression Channel for previous period
-        y_previous = df['close'].values[-WINDOW_LENGTH-1:-1]
-        model_previous = LinearRegression().fit(X, y_previous)
-        previous_slope = model_previous.coef_[0]
+        trend = model.predict(X)
+        residuals = y - trend
+        std_dev = np.std(residuals)
         
-        # Calculate Linear Regression Channel for period before previous
-        y_before_previous = df['close'].values[-WINDOW_LENGTH-2:-2]
-        model_before_previous = LinearRegression().fit(X, y_before_previous)
-        before_previous_slope = model_before_previous.coef_[0]
+        upper = trend + std_dev * DEVIATION
+        lower = trend - std_dev * DEVIATION
         
-        # Determine the current signal
-        if current_slope > 0:
-            current_signal = 'LONG'
-        elif current_slope < 0:
-            current_signal = 'SHORT'
+        # Get the current candle and previous candles
+        current_candle = df.iloc[-1]
+        current_price = current_candle['close']
+        
+        # Check for breakout in the last 3-7 timeframes
+        breakout_up = False
+        breakout_down = False
+        for i in range(3, 8):
+            if df['high'].iloc[-i] > upper[-i] and not breakout_up:
+                breakout_up = True
+            if df['low'].iloc[-i] < lower[-i] and not breakout_down:
+                breakout_down = True
+        
+        # Get the highest price in the last 8 timeframes
+        highest_price_8tf = df['high'].iloc[-8:].max()
+        
+        # Check conditions for LONG
+        if (breakout_up and
+            current_price > upper[-1] and
+            current_price < highest_price_8tf):
+            return 'LONG'
+        
+        # Check conditions for SHORT
+        elif (breakout_down and
+              current_price < lower[-1] and
+              current_price > df['low'].iloc[-8:].min()):
+            return 'SHORT'
+        
         else:
-            current_signal = 'NORMAL'
+            return 'NORMAL'
         
-        # Determine the previous signal
-        if previous_slope > 0:
-            previous_signal = 'LONG'
-        elif previous_slope < 0:
-            previous_signal = 'SHORT'
-        else:
-            previous_signal = 'NORMAL'
-        
-        # Check for trend change
-        if current_signal != previous_signal:
-            return current_signal  # Return new signal if there's a change
-        else:
-            return 'NORMAL'  # Return 'NORMAL' if there's no change in trend
-    
     except Exception as e:
         print(f"Error processing {symbol}: {str(e)}")
         return 'NORMAL'  # Return 'NORMAL' in case of any error    
-    
 
 def check_signal(symbol: str) -> str:
     try:
