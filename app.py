@@ -71,77 +71,49 @@ def print_color(text, color):
     print(colorize(text, color), file=sys.stderr, flush=True)
 
 
-# Constants
-WINDOW_LENGTH = 144
-DEVIATION = 2.0
-TIME_FRAME = Client.KLINE_INTERVAL_1HOUR
+def analyze_crypto(symbol):
+    # Initialize Binance client
+    client = Client()
 
-def analyze_trend(symbol: str) -> str:
-    try:
-        # Fetch latest klines
-        klines = client.get_klines(symbol=symbol, interval=TIME_FRAME, limit=WINDOW_LENGTH + 8)
-        
-        # Prepare data
-        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        
-        # Calculate Linear Regression Channel
-        X = np.arange(WINDOW_LENGTH).reshape(-1, 1)
-        y = df['close'].values[-WINDOW_LENGTH:]
-        model = LinearRegression().fit(X, y)
-        
-        trend = model.predict(X)
-        residuals = y - trend
-        std_dev = np.std(residuals)
-        
-        upper = trend + std_dev * DEVIATION
-        lower = trend - std_dev * DEVIATION
-        
-        # Get the current candle and previous candles
-        current_candle = df.iloc[-1]
-        current_price = current_candle['close']
-        
-        # Check for breakout in the last 3-7 timeframes
-        breakout_up = False
-        breakout_down = False
-        for i in range(3, 8):
-            if df['high'].iloc[-i] > upper[-i] and not breakout_up:
-                breakout_up = True
-            if df['low'].iloc[-i] < lower[-i] and not breakout_down:
-                breakout_down = True
-        
-        # Get the highest price in the last 8 timeframes
-        highest_price_8tf = df['high'].iloc[-8:].max()
-        
-        # Check conditions for LONG
-        if (breakout_up and
-            current_price > upper[-1] and
-            current_price < highest_price_8tf):
-            return 'LONG'
-        
-        # Check conditions for SHORT
-        elif (breakout_down and
-              current_price < lower[-1] and
-              current_price > df['low'].iloc[-8:].min()):
-            return 'SHORT'
-        
-        else:
-            return 'NORMAL'
-        
-    except Exception as e:
-        print(f"Error processing {symbol}: {str(e)}")
-        return 'NORMAL'  # Return 'NORMAL' in case of any error    
+    # Set parameters
+    interval = Client.KLINE_INTERVAL_1HOUR
+    lookback = 144
 
-def check_signal(symbol: str) -> str:
-    try:
-        signal = analyze_trend(symbol)
-        return signal
-    except Exception as e:
-        print(f"Error processing {symbol}: {str(e)}")
-        return 'NORMAL'
+    # Get historical data
+    to_date = datetime.now()
+    from_date = to_date - timedelta(hours=lookback)
+    
+    klines = client.get_historical_klines(
+        symbol, 
+        interval, 
+        str(from_date), 
+        str(to_date)
+    )
+    
+    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df['close'] = df['close'].astype(float)
+    df['high'] = df['high'].astype(float)
+    df['low'] = df['low'].astype(float)
 
+    # Find local minimum and maximum
+    window = 5  # Adjust this value to change the sensitivity of local min/max detection
+    df['local_min'] = df['low'].rolling(window=window, center=True).min()
+    df['local_max'] = df['high'].rolling(window=window, center=True).max()
+
+    # Check for LONG condition
+    if (df['close'].iloc[-1] > df['local_max'].iloc[-2] and 
+        df['low'].iloc[-3] < df['low'].iloc[-2] < df['low'].iloc[-1]):
+        return "LONG"
+
+    # Check for SHORT condition
+    elif (df['close'].iloc[-1] < df['local_min'].iloc[-2] and 
+          df['high'].iloc[-3] > df['high'].iloc[-2] > df['high'].iloc[-1]):
+        return "SHORT"
+
+    # If neither LONG nor SHORT conditions are met
+    else:
+        return "NORMAL"
     
 
 
@@ -198,7 +170,7 @@ def future_find_signal(timeframe):
             continue
 
         try:
-            signal = check_signal(symbol)
+            signal = analyze_crypto(symbol)
 
             if signal != 'NORMAL':
                 color = '🟢' if signal == 'LONG' else '🔴'
