@@ -14,7 +14,7 @@ import requests
 from binance.client import Client
 from datetime import datetime, timedelta
 from typing import Tuple, List
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import os
 
 # ดึงค่า API key และ secret จาก environment variables
@@ -112,7 +112,7 @@ def analyze_crypto(symbol):
             signal = 'LONG'
         elif last_swing[0] == 'high':
             signal = 'SHORT'
-
+    """
     if signal != 'NORMAL':
         # Create chart
         plt.figure(figsize=(12, 6))
@@ -133,7 +133,7 @@ def analyze_crypto(symbol):
         # Save chart
         plt.savefig(f'temp/{symbol}_analysis.png')
         plt.close()
-
+    """
     return signal
 
 
