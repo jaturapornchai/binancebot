@@ -80,7 +80,7 @@ def analyze_crypto(symbol):
     df['high'] = df['high'].astype(float)
 
     # Calculate swing lows and highs
-    window = 7  # Adjust this value to change sensitivity
+    window = 5  # Adjust this value to change sensitivity
     df['swing_low'] = df['low'].rolling(window=window, center=True).min()
     df['swing_high'] = df['high'].rolling(window=window, center=True).max()
 
@@ -183,10 +183,10 @@ def future_find_signal(timeframe):
                     print(message, flush=True)
                     if signal == 'LONG':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        future_open_position(symbol, 'BUY')
+                        #future_open_position(symbol, 'BUY')
                     if signal == 'SHORT':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        #future_open_position(symbol, 'SELL')                
+                        future_open_position(symbol, 'SELL')                
                     time.sleep(1)
                 except Exception as e:
                     print(f"Error sending LINE message: {e}", flush=True)        
