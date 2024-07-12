@@ -80,7 +80,7 @@ def analyze_crypto(symbol):
     df['high'] = df['high'].astype(float)
 
     # Calculate swing lows and highs
-    window = 5  # Adjust this value to change sensitivity
+    window = 7  # Adjust this value to change sensitivity
     df['swing_low'] = df['low'].rolling(window=window, center=True).min()
     df['swing_high'] = df['high'].rolling(window=window, center=True).max()
 
@@ -128,7 +128,6 @@ def analyze_crypto(symbol):
         plt.savefig(f'temp/{symbol}_analysis.png')
         plt.close()
     """
-
     return signal
 
 
