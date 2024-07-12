@@ -397,6 +397,7 @@ def future_find_profit_or_loss():
                 return None
             profit_percent = calculate_profit_percentage(position_info[0])
             print(f"Profit percent: {profit_percent}", flush=True)
+            
             market_type = (position_amount > 0) and 'LONG' or 'SHORT'
             if market_type == 'LONG':
                 if profit_percent > 20 or profit_percent < -10:
@@ -414,7 +415,7 @@ def future_find_profit_or_loss():
                         symbol=symbol,
                         side='BUY',
                         type='MARKET',
-                        quantity=position_amount,
+                        quantity=position_amount * -1,
                     )
         except Exception as e:
             print(f"Error: {e}", flush=True)
@@ -906,6 +907,8 @@ future_balance = future_get_balance()
 #withdraw_bnb_to_other_market()
 first_time = True
 #print(get_linear_regression_channel_signal("ACHUSDT"))
+future_find_profit_or_loss()
+exit()
 while True:
     try:
         date_time_now = datetime.now()
