@@ -11,6 +11,7 @@ import requests
 from binance.client import Client
 from datetime import datetime, timedelta
 import os
+from sklearn.linear_model import LinearRegression
 
 # ดึงค่า API key และ secret จาก environment variables
 #api_key = os.getenv('BINANCE_API_KEY')
@@ -68,67 +69,62 @@ def print_color(text, color):
 
 
 
-def analyze_crypto(symbol):
-    # Fetch the latest 144 15-minute klines
-    klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=144)
+# Constants
+WINDOW_LENGTH = 144
+DEVIATION = 2.0
+TIME_FRAME = Client.KLINE_INTERVAL_1HOUR
 
-    # Convert to DataFrame
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df['close'] = df['close'].astype(float)
-    df['low'] = df['low'].astype(float)
-    df['high'] = df['high'].astype(float)
+def get_linear_regression_channel_signal(symbol: str) -> str:
+    try:
+        # Fetch latest klines
+        klines = client.get_klines(symbol=symbol, interval=TIME_FRAME, limit=WINDOW_LENGTH + 1)
+        
+        # Prepare data
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        
+        # Calculate Linear Regression Channel
+        X = np.arange(WINDOW_LENGTH).reshape(-1, 1)
+        y = df['close'].values[-WINDOW_LENGTH:]  # Use all available data including the current candle
+        model = LinearRegression().fit(X, y)
+        
+        trend = model.predict(X)
+        residuals = y - trend
+        std_dev = np.std(residuals)
+        
+        upper = trend + std_dev * DEVIATION
+        lower = trend - std_dev * DEVIATION
+        
+        # Get the current candle
+        current_candle = df.iloc[-1]
+        current_price = current_candle['close']
+        current_low = current_candle['low']
+        current_high = current_candle['high']
+        
+        # Define a small threshold for "touching" the line (e.g., 0.1% of the current price)
+        touch_threshold = current_price * 0.001
 
-    # Calculate swing lows and highs
-    window = 5  # Adjust this value to change sensitivity
-    df['swing_low'] = df['low'].rolling(window=window, center=True).min()
-    df['swing_high'] = df['high'].rolling(window=window, center=True).max()
-
-    # Detect swing points
-    df['is_swing_low'] = (df['low'] == df['swing_low']) & (df['low'].shift(1) > df['low']) & (df['low'].shift(-1) > df['low'])
-    df['is_swing_high'] = (df['high'] == df['swing_high']) & (df['high'].shift(1) < df['high']) & (df['high'].shift(-1) < df['high'])
-
-    # Get the latest price (which is the closing price of the last candle)
-    latest_price = float(df['close'].iloc[-1])
-
-    # Determine signal based on the most recent swing
-    last_swing_low = df[df['is_swing_low']].index[-1] if not df[df['is_swing_low']].empty else None
-    last_swing_high = df[df['is_swing_high']].index[-1] if not df[df['is_swing_high']].empty else None
-
-    if last_swing_low is not None and last_swing_high is not None:
-        if last_swing_low > last_swing_high:
+        # Check for new conditions including "touching" the lines
+        if (current_high >= upper[-1] or abs(current_high - upper[-1]) <= touch_threshold) and current_price > upper[-1]:
+            #generate_graph(df, trend, upper, lower, signal, symbol)
             signal = 'LONG'
-        elif last_swing_high > last_swing_low:
+        elif (current_low <= lower[-1] or abs(current_low - lower[-1]) <= touch_threshold) and current_price < lower[-1]:
+            #generate_graph(df, trend, upper, lower, signal, symbol)
             signal = 'SHORT'
         else:
             signal = 'NORMAL'
-    else:
-        signal = 'NORMAL'
-
-    """
-    # Create chart only for LONG or SHORT signals
-    if signal in ['LONG', 'SHORT']:
-        plt.figure(figsize=(12, 6))
-        plt.plot(df['timestamp'], df['close'], label='Close Price')
-        plt.plot(df['timestamp'], df['swing_low'], label='Swing Low', color='green')
-        plt.plot(df['timestamp'], df['swing_high'], label='Swing High', color='red')
-        plt.scatter(df['timestamp'][df['is_swing_low']], df['low'][df['is_swing_low']], color='green', marker='^', s=100, label='Swing Low Point')
-        plt.scatter(df['timestamp'][df['is_swing_high']], df['high'][df['is_swing_high']], color='red', marker='v', s=100, label='Swing High Point')
-        plt.axhline(y=latest_price, color='blue', linestyle='--', label='Latest Price')
-        plt.title(f'{symbol} Analysis - Signal: {signal} - Latest Price: {latest_price:.2f}')
-        plt.xlabel('Time')
-        plt.ylabel('Price')
-        plt.legend()
-
-        # Create temp folder if it doesn't exist
-        if not os.path.exists('temp'):
-            os.makedirs('temp')
-
-        # Save chart
-        plt.savefig(f'temp/{symbol}_analysis.png')
-        plt.close()
-    """
+               
+        return signal
+        
+    except Exception as e:
+        print(f"Error processing {symbol}: {str(e)}")
+        return 'NORMAL'  # Return 'NORMAL' in case of any error
     return signal
+
+
+
 
 
 def send_line_notify(message, token):
@@ -174,7 +170,7 @@ def future_find_signal(timeframe):
             continue
 
         try:
-            signal = analyze_crypto(symbol)
+            signal = get_linear_regression_channel_signal(symbol)
 
             if signal != 'NORMAL':
                 color = '🟢' if signal == 'LONG' else '🔴'
@@ -183,10 +179,10 @@ def future_find_signal(timeframe):
                     print(message, flush=True)
                     if signal == 'LONG':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        #future_open_position(symbol, 'BUY')
+                        future_open_position(symbol, 'BUY')
                     if signal == 'SHORT':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        future_open_position(symbol, 'SELL')                
+                        #future_open_position(symbol, 'SELL')                
                     time.sleep(1)
                 except Exception as e:
                     print(f"Error sending LINE message: {e}", flush=True)        
