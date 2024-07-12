@@ -1,8 +1,5 @@
 #import matplotlib.pyplot as plt
 import sys
-import hmac
-import hashlib
-import math
 from scipy import stats
 import ccxt
 import os
@@ -13,8 +10,6 @@ import numpy as np
 import requests
 from binance.client import Client
 from datetime import datetime, timedelta
-from typing import Tuple, List
-#import matplotlib.pyplot as plt
 import os
 
 # ดึงค่า API key และ secret จาก environment variables
@@ -77,51 +72,53 @@ def analyze_crypto(symbol):
     # Initialize Binance client
     client = Client()
 
-    # Get historical klines/candlestick data
-    end_time = datetime.now()
-    start_time = end_time - timedelta(hours=144)
-    klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, start_time.strftime("%d %b %Y %H:%M:%S"), end_time.strftime("%d %b %Y %H:%M:%S"))
+    # Fetch the latest 144 15-minute klines
+    klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=144)
 
-    # Prepare DataFrame
+    # Convert to DataFrame
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df['close'] = df['close'].astype(float)
-    df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
+    df['high'] = df['high'].astype(float)
 
-    # Find swing points
-    window = 3  # Number of candles to look before and after for swing point
-    swings = []
-    
-    for i in range(window, len(df) - window):
-        # Check for swing high
-        if all(df.loc[i, 'high'] > df.loc[i-j, 'high'] for j in range(1, window+1)) and \
-           all(df.loc[i, 'high'] > df.loc[i+j, 'high'] for j in range(1, window+1)):
-            swings.append(('high', df.loc[i, 'timestamp'], df.loc[i, 'high']))
-        
-        # Check for swing low
-        elif all(df.loc[i, 'low'] < df.loc[i-j, 'low'] for j in range(1, window+1)) and \
-             all(df.loc[i, 'low'] < df.loc[i+j, 'low'] for j in range(1, window+1)):
-            swings.append(('low', df.loc[i, 'timestamp'], df.loc[i, 'low']))
+    # Calculate swing lows and highs
+    window = 5  # Adjust this value to change sensitivity
+    df['swing_low'] = df['low'].rolling(window=window, center=True).min()
+    df['swing_high'] = df['high'].rolling(window=window, center=True).max()
 
-    # Determine signal based on the last swing
-    signal = 'NORMAL'
-    if swings:
-        last_swing = swings[-1]
-        if last_swing[0] == 'low':
+    # Detect swing points
+    df['is_swing_low'] = (df['low'] == df['swing_low']) & (df['low'].shift(1) > df['low']) & (df['low'].shift(-1) > df['low'])
+    df['is_swing_high'] = (df['high'] == df['swing_high']) & (df['high'].shift(1) < df['high']) & (df['high'].shift(-1) < df['high'])
+
+    # Get the latest price (which is the closing price of the last candle)
+    latest_price = float(df['close'].iloc[-1])
+
+    # Determine signal based on the most recent swing
+    last_swing_low = df[df['is_swing_low']].index[-1] if not df[df['is_swing_low']].empty else None
+    last_swing_high = df[df['is_swing_high']].index[-1] if not df[df['is_swing_high']].empty else None
+
+    if last_swing_low is not None and last_swing_high is not None:
+        if last_swing_low > last_swing_high:
             signal = 'LONG'
-        elif last_swing[0] == 'high':
+        elif last_swing_high > last_swing_low:
             signal = 'SHORT'
+        else:
+            signal = 'NORMAL'
+    else:
+        signal = 'NORMAL'
+
     """
-    if signal != 'NORMAL':
-        # Create chart
+    # Create chart only for LONG or SHORT signals
+    if signal in ['LONG', 'SHORT']:
         plt.figure(figsize=(12, 6))
-        plt.plot(df['timestamp'], df['close'])
-        for swing in swings:
-            color = 'green' if swing[0] == 'high' else 'red'
-            label = 'Swing high' if swing[0] == 'high' else 'Swing low'
-            plt.scatter(swing[1], swing[2], color=color, s=50, label=label)
-        plt.title(f'{symbol} Analysis')
+        plt.plot(df['timestamp'], df['close'], label='Close Price')
+        plt.plot(df['timestamp'], df['swing_low'], label='Swing Low', color='green')
+        plt.plot(df['timestamp'], df['swing_high'], label='Swing High', color='red')
+        plt.scatter(df['timestamp'][df['is_swing_low']], df['low'][df['is_swing_low']], color='green', marker='^', s=100, label='Swing Low Point')
+        plt.scatter(df['timestamp'][df['is_swing_high']], df['high'][df['is_swing_high']], color='red', marker='v', s=100, label='Swing High Point')
+        plt.axhline(y=latest_price, color='blue', linestyle='--', label='Latest Price')
+        plt.title(f'{symbol} Analysis - Signal: {signal} - Latest Price: {latest_price:.2f}')
         plt.xlabel('Time')
         plt.ylabel('Price')
         plt.legend()
@@ -134,11 +131,8 @@ def analyze_crypto(symbol):
         plt.savefig(f'temp/{symbol}_analysis.png')
         plt.close()
     """
+
     return signal
-
-
-
-
 
 
 def send_line_notify(message, token):
@@ -395,6 +389,40 @@ def calculate_profit_percentage(position):
 
     profit_percent = (profit / (entry_price * position_amt)) * 100
     return profit_percent * leverage
+    
+
+def future_find_profit_or_loss():
+    positions = future_get_position()
+    for symbol in positions:        
+        try:
+            position_info = client.futures_position_information(symbol=symbol)
+            position_amount = float(position_info[0]['positionAmt'])
+            if position_amount == 0:
+                return None
+            profit_percent = calculate_profit_percentage(position_info[0])
+            print(f"Profit percent: {profit_percent}", flush=True)
+            market_type = (position_amount > 0) and 'LONG' or 'SHORT'
+            if market_type == 'LONG':
+                if profit_percent > 20 or profit_percent < -10:
+                    print(f"Profit percent > 20% : Close position {symbol}", flush=True)
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side='SELL',
+                        type='MARKET',
+                        quantity=position_amount,
+                    )
+            if market_type == 'SHORT':
+                if profit_percent > 20 or profit_percent < -10:
+                    print(f"Profit percent > 20% : Close position {symbol}", flush=True)
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side='BUY',
+                        type='MARKET',
+                        quantity=position_amount,
+                    )
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            return None
     
 
 def future_compare_stop_loss(symbol):
@@ -895,7 +923,8 @@ while True:
                 time.sleep(30)
             future_find_signal(trade_time_frame)
             future_find_order_no_position()
-            future_compare_stop_loss_all()
+            #future_compare_stop_loss_all()
+            future_find_profit_or_loss()
             future_profit_or_loss_notify()
             #transfer_usdt_to_spot()
             if line_all_message != "":
