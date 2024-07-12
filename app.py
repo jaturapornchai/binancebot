@@ -907,8 +907,6 @@ future_balance = future_get_balance()
 #withdraw_bnb_to_other_market()
 first_time = True
 #print(get_linear_regression_channel_signal("ACHUSDT"))
-future_find_profit_or_loss()
-exit()
 while True:
     try:
         date_time_now = datetime.now()
