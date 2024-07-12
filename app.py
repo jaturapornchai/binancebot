@@ -69,9 +69,6 @@ def print_color(text, color):
 
 
 def analyze_crypto(symbol):
-    # Initialize Binance client
-    client = Client()
-
     # Fetch the latest 144 15-minute klines
     klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=144)
 
