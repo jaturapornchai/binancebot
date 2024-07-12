@@ -186,7 +186,7 @@ def future_find_signal(timeframe):
                         future_open_position(symbol, 'BUY')
                     if signal == 'SHORT':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        future_open_position(symbol, 'SELL')                
+                        #future_open_position(symbol, 'SELL')                
                     time.sleep(1)
                 except Exception as e:
                     print(f"Error sending LINE message: {e}", flush=True)        
