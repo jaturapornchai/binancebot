@@ -1,4 +1,4 @@
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import sys
 from scipy import stats
 import ccxt
@@ -10,7 +10,7 @@ import numpy as np
 import requests
 from binance.client import Client
 from datetime import datetime, timedelta
-import os
+import io
 from sklearn.linear_model import LinearRegression
 
 # ดึงค่า API key และ secret จาก environment variables
@@ -56,6 +56,34 @@ if not api_key or not api_secret or not line_token:
 
 
 
+
+def send_image_to_line(message,line_token,img_byte_arr):
+    """
+    ฟังก์ชันสำหรับสร้างและส่งรูปภาพโดยใช้ LINE token
+    
+    :param line_token: LINE Notify token
+    :return: True ถ้าส่งสำเร็จ, False ถ้าส่งไม่สำเร็จ
+    """
+    line_notify_api = 'https://notify-api.line.me/api/notify'
+    
+    headers = {
+        'Authorization': f'Bearer {line_token}'
+    }
+    
+    
+    # เตรียมข้อมูลสำหรับส่ง
+    files = {'imageFile': ('image.png', img_byte_arr, 'image/png')}
+    data = {'message': message}
+    
+    try:
+        response = requests.post(line_notify_api, headers=headers, files=files, data=data)
+        response.raise_for_status()
+        print("Image sent successfully!")
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to send image. Error: {e}")
+        return False
+    
 def colorize(text, color):
     colors = {
         'green': '\033[92m',
@@ -67,67 +95,97 @@ def colorize(text, color):
 def print_color(text, color):
     print(colorize(text, color), file=sys.stderr, flush=True)
 
+def find_signal(symbol, line_token):
+    return analyze_signal(symbol, line_token)
 
+def analyze_signal(symbol, line_token):
+    # Binance API endpoint
+    url = f"https://api.binance.com/api/v3/klines"
+    
+    # Parameters for the API request
+    params = {
+        "symbol": symbol,
+        "interval": "1h",
+        "limit": 144
+    }
+    
+    # Send GET request to Binance API
+    response = requests.get(url, params=params)
+    data = response.json()
+    
+    # Convert data to DataFrame
+    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df['close'] = df['close'].astype(float)
+    df['high'] = df['high'].astype(float)
+    df['low'] = df['low'].astype(float)
+    
+    def detect_swing_points(data, window=14):
+        swing_high = np.zeros(len(data))
+        swing_low = np.zeros(len(data))
+        
+        for i in range(window, len(data)):
+            if data['high'].iloc[i] == data['high'].iloc[i-window:i+1].max():
+                swing_high[i] = 1
+            if data['low'].iloc[i] == data['low'].iloc[i-window:i+1].min():
+                swing_low[i] = 1
+        
+        return swing_high, swing_low
+    
+    # Detect swing points
+    df['swing_high'], df['swing_low'] = detect_swing_points(df)
+    
+    # Calculate LOW PRICE and HIGH PRICE
+    low_price = df['low'].iloc[-14:].min()
+    high_price = df['high'].iloc[-15:].max()
+    
+    # Get the latest price
+    latest_price = df['close'].iloc[-1]
+    
+    # Determine trading signal
+    if df['swing_low'].iloc[-1] == 1 and latest_price > low_price:
+        signal = "LONG"
+    elif df['swing_high'].iloc[-1] == 1 and latest_price < high_price:
+        signal = "SHORT"
+    else:
+        signal = "NORMAL"
 
-# Constants
-WINDOW_LENGTH = 144
-DEVIATION = 2.0
-TIME_FRAME = Client.KLINE_INTERVAL_1HOUR
-
-def get_linear_regression_channel_signal(symbol: str) -> str:
-    try:
-        # Fetch latest klines
-        klines = client.get_klines(symbol=symbol, interval=TIME_FRAME, limit=WINDOW_LENGTH + 1)
+    if signal != 'NORMAL':
+        # Create chart for all signals
+        plt.figure(figsize=(12, 6))
+        plt.plot(df.index, df['close'], label='Close Price')
+        plt.scatter(df.index[df['swing_high'] == 1], df['high'][df['swing_high'] == 1], color='red', marker='^', s=100, label='Swing High')
+        plt.scatter(df.index[df['swing_low'] == 1], df['low'][df['swing_low'] == 1], color='green', marker='v', s=100, label='Swing Low')
         
-        # Prepare data
-        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        # Add horizontal lines for LOW PRICE and HIGH PRICE
+        plt.axhline(y=low_price, color='blue', linestyle='--', label='LOW PRICE')
+        plt.axhline(y=high_price, color='orange', linestyle='--', label='HIGH PRICE')
         
-        # Calculate Linear Regression Channel
-        X = np.arange(WINDOW_LENGTH).reshape(-1, 1)
-        y = df['close'].values[-WINDOW_LENGTH:]  # Use all available data including the current candle
-        model = LinearRegression().fit(X, y)
+        plt.title(f'{symbol} - {signal} Signal (1-Hour Timeframe)')
+        plt.xlabel('Time')
+        plt.ylabel('Price')
+        plt.legend()
         
-        trend = model.predict(X)
-        residuals = y - trend
-        std_dev = np.std(residuals)
-        
-        upper = trend + std_dev * DEVIATION
-        lower = trend - std_dev * DEVIATION
-        
-        # Get the current candle
-        current_candle = df.iloc[-1]
-        current_price = current_candle['close']
-        current_low = current_candle['low']
-        current_high = current_candle['high']
-        
-        # Define a small threshold for "touching" the line (e.g., 0.1% of the current price)
-        touch_threshold = current_price * 0.001
-
-        # Check for new conditions including "touching" the lines
-        if (current_high >= upper[-1] or abs(current_high - upper[-1]) <= touch_threshold) and current_price > upper[-1]:
-            #generate_graph(df, trend, upper, lower, signal, symbol)
-            signal = 'LONG'
-        elif (current_low <= lower[-1] or abs(current_low - lower[-1]) <= touch_threshold) and current_price < lower[-1]:
-            #generate_graph(df, trend, upper, lower, signal, symbol)
-            signal = 'SHORT'
-        else:
-            signal = 'NORMAL'
-               
-        return signal
-        
-    except Exception as e:
-        print(f"Error processing {symbol}: {str(e)}")
-        return 'NORMAL'  # Return 'NORMAL' in case of any error
+        # Save the chart to a bytes buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+        chart_image = buf.getvalue()
+        plt.close()
+        send_image_to_line( f"Signal detected for {symbol}: {signal}",line_token, chart_image)
+    else:
+        print(f"Signal detected for {symbol}: {signal}")
+    
     return signal
 
 
 
 
 
-def send_line_notify(message, token):
+
+
+
+def send_line_notify_by_image(message, token):
     try:
         """Send notifications through LINE Notify."""
         headers = {
@@ -170,8 +228,8 @@ def future_find_signal(timeframe):
             continue
 
         try:
-            signal = get_linear_regression_channel_signal(symbol)
-
+            signal = find_signal(symbol,line_token)            
+            print(f"Signal detected for {symbol}: {signal}", flush=True)
             if signal != 'NORMAL':
                 color = '🟢' if signal == 'LONG' else '🔴'
                 message = f"Binance: Signal detected for {symbol}: {color} {signal}"
@@ -182,7 +240,7 @@ def future_find_signal(timeframe):
                         future_open_position(symbol, 'BUY')
                     if signal == 'SHORT':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        #future_open_position(symbol, 'SELL')                
+                        future_open_position(symbol, 'SELL')                
                     time.sleep(1)
                 except Exception as e:
                     print(f"Error sending LINE message: {e}", flush=True)        
@@ -229,6 +287,7 @@ def round_quantity(quantity, step_size):
     return (quantity // step_size) * step_size
 
 def future_open_position(symbol, side,bypass=False):   
+    return
     global line_all_message
     global future_balance
     
@@ -915,10 +974,10 @@ while True:
             else:
                 time.sleep(30)
             future_find_signal(trade_time_frame)
-            future_find_order_no_position()
+            #future_find_order_no_position()
             #future_compare_stop_loss_all()
-            future_find_profit_or_loss()
-            future_profit_or_loss_notify()
+            #future_find_profit_or_loss()
+            #future_profit_or_loss_notify()
             #transfer_usdt_to_spot()
             if line_all_message != "":
                 send_line_notify(line_all_message, line_token)
