@@ -1,7 +1,9 @@
+numpy==1.23.5
 pandas
-numpy
 requests
 python-binance
 scipy
 scikit-learn
 ccxt
+matplotlib
+TA-Lib

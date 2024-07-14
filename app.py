@@ -37,7 +37,7 @@ exchange = ccxt.binance({
 client = Client(api_key, api_secret)
 trade_time_frame = '15m'
 tread_time_frame_stop_loss = '15m'
-limit_time_frame_for_stop_loss = 14
+limit_time_frame_for_stop_loss = 28
 future_leverage = 10
 temp_folder = 'temp'
 line_all_message = ""
@@ -57,135 +57,69 @@ if not api_key or not api_secret or not line_token:
 
 
 
-def send_image_to_line(message,line_token,img_byte_arr):
-    """
-    ฟังก์ชันสำหรับสร้างและส่งรูปภาพโดยใช้ LINE token
-    
-    :param line_token: LINE Notify token
-    :return: True ถ้าส่งสำเร็จ, False ถ้าส่งไม่สำเร็จ
-    """
-    line_notify_api = 'https://notify-api.line.me/api/notify'
-    
-    headers = {
-        'Authorization': f'Bearer {line_token}'
-    }
-    
-    
-    # เตรียมข้อมูลสำหรับส่ง
-    files = {'imageFile': ('image.png', img_byte_arr, 'image/png')}
-    data = {'message': message}
-    
-    try:
-        response = requests.post(line_notify_api, headers=headers, files=files, data=data)
-        response.raise_for_status()
-        print("Image sent successfully!")
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"Failed to send image. Error: {e}")
-        return False
-    
-def colorize(text, color):
-    colors = {
-        'green': '\033[92m',
-        'red': '\033[91m',
-        'reset': '\033[0m'
-    }
-    return f"{colors[color]}{text}{colors['reset']}"
 
-def print_color(text, color):
-    print(colorize(text, color), file=sys.stderr, flush=True)
 
-def find_signal(symbol, line_token):
-    return analyze_signal(symbol, line_token)
 
-def analyze_signal(symbol, line_token):
-    # Binance API endpoint
-    url = f"https://api.binance.com/api/v3/klines"
-    
-    # Parameters for the API request
-    params = {
-        "symbol": symbol,
-        "interval": "1h",
-        "limit": 144
-    }
-    
-    # Send GET request to Binance API
-    response = requests.get(url, params=params)
-    data = response.json()
-    
-    # Convert data to DataFrame
-    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+
+
+def analyze_signal(symbol):
+
+    # Fetch historical klines data
+    klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "144 hours ago UTC")
+
+    # Convert to DataFrame
+    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     df['close'] = df['close'].astype(float)
-    df['high'] = df['high'].astype(float)
-    df['low'] = df['low'].astype(float)
-    
-    def detect_swing_points(data, window=14):
-        swing_high = np.zeros(len(data))
-        swing_low = np.zeros(len(data))
-        
-        for i in range(window, len(data)):
-            if data['high'].iloc[i] == data['high'].iloc[i-window:i+1].max():
-                swing_high[i] = 1
-            if data['low'].iloc[i] == data['low'].iloc[i-window:i+1].min():
-                swing_low[i] = 1
-        
-        return swing_high, swing_low
-    
-    # Detect swing points
-    df['swing_high'], df['swing_low'] = detect_swing_points(df)
-    
-    # Calculate LOW PRICE and HIGH PRICE
-    low_price = df['low'].iloc[-14:].min()
-    high_price = df['high'].iloc[-15:].max()
-    
-    # Get the latest price
-    latest_price = df['close'].iloc[-1]
-    
-    # Determine trading signal
-    if df['swing_low'].iloc[-1] == 1 and latest_price > low_price:
-        signal = "LONG"
-    elif df['swing_high'].iloc[-1] == 1 and latest_price < high_price:
-        signal = "SHORT"
-    else:
-        signal = "NORMAL"
 
-    if signal != 'NORMAL':
-        # Create chart for all signals
+    # Calculate Linear Regression Channel
+    df['index'] = range(len(df))
+    reg = LinearRegression().fit(df[['index']], df['close'])
+    df['mid_line'] = reg.predict(df[['index']])
+
+    std_dev = np.std(df['close'] - df['mid_line'])
+    df['upper_line'] = df['mid_line'] + 2 * std_dev
+    df['lower_line'] = df['mid_line'] - 2 * std_dev
+    df['upper_mid_line'] = (df['upper_line'] + df['mid_line']) / 2
+    df['lower_mid_line'] = (df['lower_line'] + df['mid_line']) / 2
+
+    # Get the last candle
+    last_candle = df.iloc[-1]
+
+    # Check conditions
+    if last_candle['close'] > last_candle['upper_mid_line'] and last_candle['close'] < last_candle['upper_line']:
+        status = 'LONG'
+    elif last_candle['close'] < last_candle['lower_mid_line'] and last_candle['close'] > last_candle['lower_line']:
+        status = 'SHORT'
+    else:
+        status = 'NORMAL'
+
+    if status != 'NORMAL':
+        # Create plot
         plt.figure(figsize=(12, 6))
-        plt.plot(df.index, df['close'], label='Close Price')
-        plt.scatter(df.index[df['swing_high'] == 1], df['high'][df['swing_high'] == 1], color='red', marker='^', s=100, label='Swing High')
-        plt.scatter(df.index[df['swing_low'] == 1], df['low'][df['swing_low'] == 1], color='green', marker='v', s=100, label='Swing Low')
-        
-        # Add horizontal lines for LOW PRICE and HIGH PRICE
-        plt.axhline(y=low_price, color='blue', linestyle='--', label='LOW PRICE')
-        plt.axhline(y=high_price, color='orange', linestyle='--', label='HIGH PRICE')
-        
-        plt.title(f'{symbol} - {signal} Signal (1-Hour Timeframe)')
-        plt.xlabel('Time')
-        plt.ylabel('Price')
+        plt.plot(df['close'], label='Close Price')
+        plt.plot(df['upper_line'], color='green', label='Upper Line')
+        plt.plot(df['lower_line'], color='red', label='Lower Line')
+        plt.plot(df['mid_line'], color='yellow', label='Mid Line')
+        plt.plot(df['upper_mid_line'], color='cyan', label='Upper Mid Line')
+        plt.plot(df['lower_mid_line'], color='orange', label='Lower Mid Line')
+        plt.title(f'{symbol} - {status}')
         plt.legend()
-        
-        # Save the chart to a bytes buffer
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png')
-        buf.seek(0)
-        chart_image = buf.getvalue()
+
+        # Create temp folder if it doesn't exist
+        if not os.path.exists('temp'):
+            os.makedirs('temp')
+
+        # Save plot
+        plt.savefig(f'temp/{symbol}-{status}.png')
         plt.close()
-        send_image_to_line( f"Signal detected for {symbol}: {signal}",line_token, chart_image)
-    else:
-        print(f"Signal detected for {symbol}: {signal}")
-    
-    return signal
+
+    return status
 
 
 
 
-
-
-
-
-def send_line_notify_by_image(message, token):
+def send_line_notify(message, token):
     try:
         """Send notifications through LINE Notify."""
         headers = {
@@ -201,6 +135,22 @@ def send_line_notify_by_image(message, token):
     except Exception as e:
         print(f"Error sending LINE message: {e}", flush=True)
     
+
+def colorize(text, color):
+    colors = {
+        'green': '\033[92m',
+        'red': '\033[91m',
+        'reset': '\033[0m'
+    }
+    return f"{colors[color]}{text}{colors['reset']}"
+
+def print_color(text, color):
+    print(colorize(text, color), file=sys.stderr, flush=True)
+
+def find_signal(symbol):
+    return analyze_signal(symbol)
+
+
 def fetch_future_symbols():
     exchange_info = client.futures_exchange_info()
     symbols = [s['symbol'] for s in exchange_info['symbols'] if s['symbol'].endswith('USDT') and s['status'] == 'TRADING']
@@ -222,30 +172,41 @@ def future_find_signal(timeframe):
         return None
     symbols = fetch_future_symbols()
     positions = future_get_position()
+    # ลบ file ใน temp folder ทั้งหมด
+    for file in os.listdir(temp_folder):
+        os.remove(os.path.join(temp_folder, file))
+
     for symbol in symbols:
         # ถ้า symbol มี position ให้ข้ามไป  
         if symbol in positions:
             continue
 
         try:
-            signal = find_signal(symbol,line_token)            
-            print(f"Signal detected for {symbol}: {signal}", flush=True)
-            if signal != 'NORMAL':
-                color = '🟢' if signal == 'LONG' else '🔴'
+            signal = find_signal(symbol)            
+            if signal == 'STRONG_LONG' or signal == 'STRONG_SHORT':
+                color = '🟢' if signal == 'STRONG_LONG' else '🔴'
                 message = f"Binance: Signal detected for {symbol}: {color} {signal}"
                 try:
                     print(message, flush=True)
-                    if signal == 'LONG':
+                    if signal == 'STRONG_LONG':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        future_open_position(symbol, 'BUY')
-                    if signal == 'SHORT':
+                        xresult = future_open_position(symbol, 'BUY')
+                        print(f"Open position result: {xresult}", flush=True)
+                        if xresult == "STOP":
+                            break
+
+                    if signal == 'STRONG_SHORT':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        future_open_position(symbol, 'SELL')                
+                        xresult = future_open_position(symbol, 'SELL')                
+                        print(f"Open position result: {xresult}", flush=True)
+                        if xresult == "STOP":
+                            break
+                
                     time.sleep(1)
                 except Exception as e:
-                    print(f"Error sending LINE message: {e}", flush=True)        
+                    print(f"Error: {e}", flush=True)
         except Exception as e:
-            print(f"Error: {e}", flush=True)
+            print(f"Error: {e}", flush=True)           
             
 
 def future_compare_stop_loss_all():
@@ -291,25 +252,25 @@ def future_open_position(symbol, side,bypass=False):
     global line_all_message
     global future_balance
     
-    if future_balance < 150 and bypass == False:
+    if future_balance < 15 and bypass == False:
         print("USDT balance is not enough", flush=True)
-        return None
+        return "STOP"
     
     usdt_amount = future_balance / 40.0
     if bypass == True:
         usdt_amount = usdt_amount / 2    
     print(f"USDT amount for positon : {usdt_amount}", flush=True)
 
-    diff_percent_max = 5 # จะต้องห่างจากราคาปัจจุบันไม่เกินกี่ %
+    diff_percent_max = 50 # จะต้องห่างจากราคาปัจจุบันไม่เกินกี่ %
 
     if bypass == False:
         if not future_get_last_trade(symbol):
             print(f"Skip symbol {symbol} because last trade near", flush=True)
-            return None
+            return "SKIP"
 
     if future_change_margin_type_and_leverage(symbol) == False:
         print(f"Error changing margin type and leverage for {symbol}", flush=True)
-        return None
+        return e
     
     quantity = 0
     current_price = 0
@@ -322,7 +283,7 @@ def future_open_position(symbol, side,bypass=False):
         quantity = round_quantity(quantity, step_size)
     except Exception as e:
         print(f"Error calculating quantity: {e}", flush=True)
-        return None
+        return e
     
     try:
         time.sleep(1)
@@ -398,7 +359,14 @@ def future_open_position(symbol, side,bypass=False):
 
     except Exception as e:
         print(f"Error: {e}", flush=True)
-        return None
+        # ถ้า เกิด Margin is insufficient.
+        if "Margin is insufficient" in str(e):
+            print(f"Margin is insufficient for {symbol}", flush=True)
+            return "STOP"
+
+        return e
+    
+    return "SUCCESS"
 
 def future_get_balance():
     # ดึงข้อมูล account balance
@@ -412,6 +380,7 @@ def future_get_balance():
     return balance_usdt
 
 def future_get_last_trade(symbol):
+    return True
     try:
         time_hour = 2
         trades = client.futures_account_trades(symbol=symbol)
@@ -464,7 +433,7 @@ def future_find_profit_or_loss():
                         quantity=position_amount,
                     )
             if market_type == 'SHORT':
-                if profit_percent > 20 or profit_percent < -10:
+                if profit_percent > 20 or profit_percent < -15:
                     print(f"Profit percent > 20% : Close position {symbol}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
@@ -974,10 +943,10 @@ while True:
             else:
                 time.sleep(30)
             future_find_signal(trade_time_frame)
-            #future_find_order_no_position()
-            #future_compare_stop_loss_all()
+            future_find_order_no_position()
+            future_compare_stop_loss_all()
             #future_find_profit_or_loss()
-            #future_profit_or_loss_notify()
+            future_profit_or_loss_notify()
             #transfer_usdt_to_spot()
             if line_all_message != "":
                 send_line_notify(line_all_message, line_token)
@@ -988,6 +957,5 @@ while True:
             else:                
                 time.sleep(120)
     except Exception as e:
-        send_line_notify(f"Error: {e}", line_token)
         print(f"Error: {e}", flush=True)
     time.sleep(10)
