@@ -1,46 +1,40 @@
-import ccxt
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
+import requests
+from typing import List
 
-# ตั้งค่า API key และ secret
-api_key = 'c64a07643c277d2dbd07892bd9804425'
-api_secret = '4ef7ba483b69ffcb9735e1e28ec41799ef85950e5b48783ccc47f2e21336f9a5'
+def get_high_volume_futures_symbols(min_volume_usdt: float = 10_000_000) -> List[str]:
+    def get_futures_symbols() -> List[str]:
+        url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        response = requests.get(url)
+        data = response.json()
+        return [symbol['symbol'] for symbol in data['symbols'] if symbol['status'] == 'TRADING']
 
-# สร้าง client ของ Gate.io
-exchange = ccxt.gateio({
-    'apiKey': api_key,
-    'secret': api_secret
-})
+    def get_latest_prices(symbols: List[str]) -> dict:
+        url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        response = requests.get(url)
+        data = response.json()
+        return {item['symbol']: float(item['price']) for item in data if item['symbol'] in symbols}
 
-def fetch_usdt_volume_symbols(exchange, timeframe='1h', limit=145):
-    markets = exchange.load_markets()
-    usdt_symbols = [symbol for symbol in markets if symbol.endswith('/USDT')]
+    def get_24h_volume(symbols: List[str]) -> dict:
+        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+        response = requests.get(url)
+        data = response.json()
+        return {item['symbol']: float(item['volume']) for item in data if item['symbol'] in symbols}
 
-    high_volume_symbols = []
+    symbols = get_futures_symbols()
+    prices = get_latest_prices(symbols)
+    volumes = get_24h_volume(symbols)
 
-    for symbol in usdt_symbols:
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            if len(ohlcv) < 45:
-                continue
+    filtered_symbols = []
+    for symbol in symbols:
+        if symbol in prices and symbol in volumes:
+            volume_usdt = prices[symbol] * volumes[symbol]
+            if volume_usdt > min_volume_usdt:
+                filtered_symbols.append(symbol)
 
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            current_volume = df['volume'].iloc[-1]
-            avg_volume = df['volume'].iloc[:-1].tail(144).mean()
+    return filtered_symbols
 
-            if current_volume > avg_volume * 5:
-                print(f"Symbol: {symbol}, Current Volume: {current_volume}, Average Volume: {avg_volume}")
-                high_volume_symbols.append({
-                    'symbol': symbol,
-                    'current_volume': current_volume,
-                    'average_volume': avg_volume
-                })
-        except Exception as e:
-            print(f"Error fetching data for {symbol}: {e}")
-
-    return high_volume_symbols
-
-# เรียกใช้งานฟังก์ชัน
-result = fetch_usdt_volume_symbols(exchange)
-result
+# ตัวอย่างการใช้งาน
+if __name__ == "__main__":
+    high_volume_symbols = get_high_volume_futures_symbols()
+    print(f"Symbols with 24h volume > 10,000,000 USDT: {len(high_volume_symbols)}")
+    print("Symbols:", high_volume_symbols)

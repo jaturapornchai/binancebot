@@ -12,6 +12,7 @@ from binance.client import Client
 from datetime import datetime, timedelta
 import io
 from sklearn.linear_model import LinearRegression
+from typing import List
 
 # ดึงค่า API key และ secret จาก environment variables
 #api_key = os.getenv('BINANCE_API_KEY')
@@ -152,13 +153,37 @@ def find_signal(symbol):
 
 
 def fetch_future_symbols():
-    exchange_info = client.futures_exchange_info()
-    symbols = [s['symbol'] for s in exchange_info['symbols'] if s['symbol'].endswith('USDT') and s['status'] == 'TRADING']
-    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
-    symbols.sort()
-    # random
-    random.shuffle(symbols)
-    return symbols
+    def get_futures_symbols() -> List[str]:
+        url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        response = requests.get(url)
+        data = response.json()
+        return [symbol['symbol'] for symbol in data['symbols'] if symbol['status'] == 'TRADING']
+
+    def get_latest_prices(symbols: List[str]) -> dict:
+        url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        response = requests.get(url)
+        data = response.json()
+        return {item['symbol']: float(item['price']) for item in data if item['symbol'] in symbols}
+
+    def get_24h_volume(symbols: List[str]) -> dict:
+        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+        response = requests.get(url)
+        data = response.json()
+        return {item['symbol']: float(item['volume']) for item in data if item['symbol'] in symbols}
+
+    symbols = get_futures_symbols()
+    prices = get_latest_prices(symbols)
+    volumes = get_24h_volume(symbols)
+
+    filtered_symbols = []
+    for symbol in symbols:
+        if symbol in prices and symbol in volumes:
+            volume_usdt = prices[symbol] * volumes[symbol]
+            if volume_usdt > 10000000:
+                filtered_symbols.append(symbol)
+
+    random.shuffle(filtered_symbols)
+    return filtered_symbols
 
 def future_find_signal(timeframe):
     global future_exchange_info 
