@@ -387,6 +387,8 @@ def future_open_position(symbol, side,bypass=False):
         usdt_amount = usdt_amount / 2    
     print(f"USDT amount for positon : {usdt_amount}", flush=True)
 
+    diff_percent_max = 5 # จะต้องห่างจากราคาปัจจุบันไม่เกินกี่ %
+
     if bypass == False:
         if not future_get_last_trade(symbol):
             print(f"Skip symbol {symbol} because last trade near", flush=True)
@@ -420,7 +422,10 @@ def future_open_position(symbol, side,bypass=False):
             if bypass == False:
                 df['low'] = df['low'].astype(float)
                 min_price = df['low'].min()    
-                if current_price > min_price:
+                # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน diff_percent_max
+                diff_price = (min_price - current_price) * -1
+                diff_percent = (diff_price * 100) / min_price
+                if current_price > min_price and diff_percent < diff_percent_max:
                     print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
@@ -448,7 +453,10 @@ def future_open_position(symbol, side,bypass=False):
             if bypass == False:
                 df['high'] = df['high'].astype(float)
                 max_price = df['high'].max()
-                if current_price < max_price:
+                # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน diff_percent_max
+                diff_price = max_price - current_price
+                diff_percent = (diff_price * 100) / max_price
+                if current_price < max_price  and diff_percent < diff_percent_max:
                     print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
