@@ -39,7 +39,7 @@ exchange = ccxt.binance({
 client = Client(api_key, api_secret)
 trade_time_frame = '1h'
 tread_time_frame_stop_loss = '15m'
-limit_time_frame_for_stop_loss = 12
+limit_time_frame_for_stop_loss = 14
 future_leverage = 10
 temp_folder = 'temp'
 line_all_message = ""
@@ -67,125 +67,139 @@ if not api_key or not api_secret or not line_token:
 
 
 def analyze_signal(symbol):
+    # Convert trade_time_frame to Client.KLINE_INTERVAL format
+    interval_dict = {
+        '1m': Client.KLINE_INTERVAL_1MINUTE,
+        '3m': Client.KLINE_INTERVAL_3MINUTE,
+        '5m': Client.KLINE_INTERVAL_5MINUTE,
+        '15m': Client.KLINE_INTERVAL_15MINUTE,
+        '30m': Client.KLINE_INTERVAL_30MINUTE,
+        '1h': Client.KLINE_INTERVAL_1HOUR,
+        '2h': Client.KLINE_INTERVAL_2HOUR,
+        '4h': Client.KLINE_INTERVAL_4HOUR,
+        '6h': Client.KLINE_INTERVAL_6HOUR,
+        '8h': Client.KLINE_INTERVAL_8HOUR,
+        '12h': Client.KLINE_INTERVAL_12HOUR,
+        '1d': Client.KLINE_INTERVAL_1DAY,
+        '3d': Client.KLINE_INTERVAL_3DAY,
+        '1w': Client.KLINE_INTERVAL_1WEEK,
+        '1M': Client.KLINE_INTERVAL_1MONTH,
+    }
+    interval = interval_dict.get(trade_time_frame, Client.KLINE_INTERVAL_15MINUTE)
 
-    # Get the latest 144 15-minute klines
-    #klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_15MINUTE, "36 hours ago UTC")
-    klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "144 hours ago UTC")
+    # Fetch historical klines data
+    client = Client()  # Assuming you've set up your API keys in environment variables
+    klines = client.get_historical_klines(symbol, interval, "144 hours ago UTC")
 
     # Convert to DataFrame
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    for col in ['open', 'high', 'low', 'close']:
-        df[col] = df[col].astype(float)
+    df['close'] = df['close'].astype(float)
+    df['high'] = df['high'].astype(float)
+    df['low'] = df['low'].astype(float)
 
-    length = 21
-    df['o'] = df['open'].shift(length)
-    df['h'] = df['high'].shift(length)
-    df['l'] = df['low'].shift(length)
-    df['c'] = df['close'].shift(length)
+    # Calculate RSI
+    df['rsi'] = talib.RSI(df['close'])
 
-    df['d'] = abs(df['c'] - df['o'])
+    # Calculate MACD
+    df['macd'], df['signal'], _ = talib.MACD(df['close'])
 
-    # Function to calculate pivot high and low
-    def pivot_high_low(data, length):
-        pivot_high = np.where((data.high > data.high.shift(1)) & (data.high > data.high.shift(-1)) & 
-                              (data.high.shift(1) > data.high.shift(2)) & (data.high.shift(-1) > data.high.shift(-2)), data.high, np.nan)
-        pivot_low = np.where((data.low < data.low.shift(1)) & (data.low < data.low.shift(-1)) & 
-                             (data.low.shift(1) < data.low.shift(2)) & (data.low.shift(-1) < data.low.shift(-2)), data.low, np.nan)
-        return pd.Series(pivot_high), pd.Series(pivot_low)
-
-    df['ph'], df['pl'] = pivot_high_low(df, length)
-
-    # Define patterns
-    df['hammer'] = (df['pl'].notna() & 
-                    (np.minimum(df['o'], df['c']) - df['l'] > df['d']) & 
-                    (df['h'] - np.maximum(df['c'], df['o']) < df['d']))
-
-    df['ihammer'] = (df['pl'].notna() & 
-                     (df['h'] - np.maximum(df['c'], df['o']) > df['d']) & 
-                     (np.minimum(df['c'], df['o']) - df['l'] < df['d']))
-
-    df['bulleng'] = ((df['c'] > df['o']) & 
-                     (df['c'].shift(1) < df['o'].shift(1)) & 
-                     (df['c'] > df['o'].shift(1)) & 
-                     (df['o'] < df['c'].shift(1)))
-
-    df['hanging'] = (df['ph'].notna() & 
-                     (np.minimum(df['c'], df['o']) - df['l'] > df['d']) & 
-                     (df['h'] - np.maximum(df['o'], df['c']) < df['d']))
-
-    df['shooting'] = (df['ph'].notna() & 
-                      (df['h'] - np.maximum(df['o'], df['c']) > df['d']) & 
-                      (np.minimum(df['c'], df['o']) - df['l'] < df['d']))
-
-    df['beareng'] = ((df['c'] < df['o']) & 
-                     (df['c'].shift(1) > df['o'].shift(1)) & 
-                     (df['c'] < df['o'].shift(1)) & 
-                     (df['o'] > df['c'].shift(1)))
-
-    # Determine signal
-    df['signal'] = 'NORMAL'
-    
-    # Check for signals in the last 4 time frames
-    for i in range(5):  # 0 to 4
-        long_condition = df['bulleng'].iloc[-i-1] | df['hammer'].iloc[-i-1] | df['ihammer'].iloc[-i-1]
-        short_condition = df['hanging'].iloc[-i-1] | df['shooting'].iloc[-i-1] | df['beareng'].iloc[-i-1]
+    # Function to detect divergence
+    def detect_divergence(price, indicator, window=14):
+        price_highs = []
+        indicator_highs = []
+        price_lows = []
+        indicator_lows = []
         
-        if long_condition:
-            df.loc[df.index[-1], 'signal'] = 'LONG'
-            break
-        elif short_condition:
-            df.loc[df.index[-1], 'signal'] = 'SHORT'
-            break
+        for i in range(len(price) - window, len(price)):
+            if price[i] == max(price[i-window:i+1]):
+                price_highs.append((i, price[i]))
+                indicator_highs.append((i, indicator[i]))
+            if price[i] == min(price[i-window:i+1]):
+                price_lows.append((i, price[i]))
+                indicator_lows.append((i, indicator[i]))
+        
+        divergences = []
+        if len(price_highs) >= 2 and len(price_lows) >= 2:
+            price_high_trend = price_highs[-1][1] > price_highs[-2][1]
+            indicator_high_trend = indicator_highs[-1][1] > indicator_highs[-2][1]
+            price_low_trend = price_lows[-1][1] < price_lows[-2][1]
+            indicator_low_trend = indicator_lows[-1][1] < indicator_lows[-2][1]
+            
+            if price_high_trend != indicator_high_trend:
+                divergences.append(('bearish', price_highs[-2][0], price_highs[-1][0], indicator_highs[-2][0], indicator_highs[-1][0]))
+            if price_low_trend != indicator_low_trend:
+                divergences.append(('bullish', price_lows[-2][0], price_lows[-1][0], indicator_lows[-2][0], indicator_lows[-1][0]))
+        
+        return divergences
 
-    current_signal = df['signal'].iloc[-1]
+    # Detect RSI divergence
+    rsi_div = detect_divergence(df['close'].values, df['rsi'].values)
 
-    if current_signal != 'NORMAL':
+    # Detect MACD divergence
+    macd_div = detect_divergence(df['close'].values, df['macd'].values)
 
-        # Create graph
-        plt.figure(figsize=(20, 10))
-        plt.plot(df['timestamp'], df['close'], label='Close Price')
+    # Filter divergences to only include those within the last 5 time frames
+    current_index = len(df) - 1
+    recent_rsi_div = [div for div in rsi_div if div[2] > current_index - 14]
+    recent_macd_div = [div for div in macd_div if div[2] > current_index - 14]
 
-        # Plot LONG and SHORT signals
-        plt.scatter(df.loc[df['signal'] == 'LONG', 'timestamp'], df.loc[df['signal'] == 'LONG', 'close'], 
-                    color='green', marker='^', s=100, label='LONG')
-        plt.scatter(df.loc[df['signal'] == 'SHORT', 'timestamp'], df.loc[df['signal'] == 'SHORT', 'close'], 
-                    color='red', marker='v', s=100, label='SHORT')
+    # Determine status based on divergence signals
+    if any(div[0] == 'bullish' for div in recent_rsi_div + recent_macd_div):
+        status = 'LONG'
+    elif any(div[0] == 'bearish' for div in recent_rsi_div + recent_macd_div):
+        status = 'SHORT'
+    else:
+        status = 'NORMAL'
 
-        # Plot individual patterns
-        patterns = {
-            'hammer': ('Hammer', 'limegreen', '^'),
-            'ihammer': ('Inverted Hammer', 'green', '^'),
-            'bulleng': ('Bullish Engulfing', 'darkgreen', '^'),
-            'hanging': ('Hanging Man', 'salmon', 'v'),
-            'shooting': ('Shooting Star', 'red', 'v'),
-            'beareng': ('Bearish Engulfing', 'darkred', 'v')
-        }
+    if status != 'NORMAL':
+        # Create plot
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 18), sharex=True)
+        
+        # Price
+        ax1.plot(df['close'], label='Close Price')
+        ax1.set_title(f'{symbol} - {status} - Time Frame: {trade_time_frame}', fontsize=16)
+        ax1.legend()
+        
+        # Add large status text
+        ax1.text(0.5, 0.9, status, transform=ax1.transAxes, fontsize=40, color='red' if status == 'SHORT' else 'green',
+                 ha='center', va='center', alpha=0.3)
+        
+        # RSI
+        ax2.plot(df['rsi'], label='RSI')
+        ax2.axhline(y=70, color='r', linestyle='--')
+        ax2.axhline(y=30, color='g', linestyle='--')
+        ax2.set_title('RSI')
+        ax2.legend()
+        
+        # MACD
+        ax3.plot(df['macd'], label='MACD')
+        ax3.plot(df['signal'], label='Signal Line')
+        ax3.bar(df.index, df['macd'] - df['signal'], label='MACD Histogram')
+        ax3.set_title('MACD')
+        ax3.legend()
 
-        for pattern, (name, color, marker) in patterns.items():
-            plt.scatter(df.loc[df[pattern], 'timestamp'], df.loc[df[pattern], 'close'], 
-                        color=color, marker=marker, s=50, label=name)
+        # Plot divergences
+        for div_type, start_price, end_price, start_indicator, end_indicator in recent_rsi_div:
+            color = 'g' if div_type == 'bullish' else 'r'
+            ax1.plot([start_price, end_price], [df['close'].iloc[start_price], df['close'].iloc[end_price]], color=color, linestyle='--')
+            ax2.plot([start_indicator, end_indicator], [df['rsi'].iloc[start_indicator], df['rsi'].iloc[end_indicator]], color=color, linestyle='--')
+            ax1.text(end_price, df['close'].iloc[end_price], f'RSI {div_type.capitalize()}', color=color, ha='right', va='bottom')
 
-        plt.title(f"{symbol} - Current Signal: {current_signal}")
-        plt.xlabel('Time')
-        plt.ylabel('Price')
-        plt.legend()
+        for div_type, start_price, end_price, start_indicator, end_indicator in recent_macd_div:
+            color = 'g' if div_type == 'bullish' else 'r'
+            ax1.plot([start_price, end_price], [df['close'].iloc[start_price], df['close'].iloc[end_price]], color=color, linestyle=':')
+            ax3.plot([start_indicator, end_indicator], [df['macd'].iloc[start_indicator], df['macd'].iloc[end_indicator]], color=color, linestyle=':')
+            ax1.text(end_price, df['close'].iloc[end_price], f'MACD {div_type.capitalize()}', color=color, ha='right', va='top')
 
         # Create temp folder if it doesn't exist
         if not os.path.exists('temp'):
             os.makedirs('temp')
 
-        # Save graph
-        plt.savefig(f'temp/{symbol}-{current_signal}.png')
+        # Save plot
+        plt.savefig(f'temp/{symbol}-{status}-{trade_time_frame}.png')
         plt.close()
 
-    return current_signal
-
-
-
-
-
-
+    return status
 
 
 
@@ -255,7 +269,7 @@ def fetch_future_symbols():
     for symbol in symbols:
         if symbol in prices and symbol in volumes:
             volume_usdt = prices[symbol] * volumes[symbol]
-            if volume_usdt > 10000000:
+            if volume_usdt > 1000000:
                 filtered_symbols.append(symbol)
 
     random.shuffle(filtered_symbols)
@@ -278,39 +292,13 @@ def future_find_signal(timeframe):
         os.remove(os.path.join(temp_folder, file))
 
     for symbol in symbols:
+        # ถ้า symbol มี position ให้ข้ามไป  
+        if symbol in positions:
+            continue
+
         try:
             signal = find_signal(symbol)            
-            open_new_position = True
-            # ถ้า symbol มี position ให้ตรวจสอบว่าอยู่ข้างเดิมหรือไม่ ถ้าไม่ให้ปิด position แล้วค่อยเปิดใหม่
-            if symbol in positions:
-                try:
-                    position_info = client.futures_position_information(symbol=symbol)
-                    position_amount = float(position_info[0]['positionAmt'])
-                    if position_amount != 0:
-                        open_new_position = False
-                        position_side = (position_amount > 0) and 'BUY' or 'SELL'
-                        if signal == 'LONG' and position_side == 'SELL':
-                            print(f"Close position {symbol} {position_side}", flush=True)
-                            client.futures_create_order(
-                                symbol=symbol,
-                                side='BUY',
-                                type='MARKET',
-                                quantity=position_amount
-                            )
-                            open_new_position = True
-                        if signal == 'SHORT' and position_side == 'BUY':
-                            print(f"Close position {symbol} {position_side}", flush=True)
-                            client.futures_create_order(
-                                symbol=symbol,
-                                side='SELL',
-                                type='MARKET',
-                                quantity=position_amount
-                            )
-                            open_new_position = True
-                except Exception as e:
-                    print(f"Error: {e}", flush=True)
-
-            if open_new_position and (signal == 'LONG' or signal == 'SHORT'):
+            if signal == 'LONG' or signal == 'SHORT':
                 color = '🟢' if signal == 'LONG' else '🔴'
                 message = f"Binance: Signal detected for {symbol}: {color} {signal}"
                 try:
@@ -375,6 +363,7 @@ def round_quantity(quantity, step_size):
     return (quantity // step_size) * step_size
 
 def future_open_position(symbol, side,bypass=False):   
+    return
     global line_all_message
     global future_balance
     
@@ -382,7 +371,7 @@ def future_open_position(symbol, side,bypass=False):
         print("USDT balance is not enough", flush=True)
         return "STOP"
     
-    usdt_amount = future_balance / 40.0
+    usdt_amount = future_balance / 10.0
     if bypass == True:
         usdt_amount = usdt_amount / 2    
     print(f"USDT amount for positon : {usdt_amount}", flush=True)
@@ -496,7 +485,6 @@ def future_get_balance():
     return balance_usdt
 
 def future_get_last_trade(symbol):
-    return True
     try:
         time_hour = 4
         trades = client.futures_account_trades(symbol=symbol)
@@ -614,16 +602,15 @@ def future_compare_stop_loss(symbol):
         else:
             limit_time_stop_loss = limit_time_frame_for_stop_loss
             # ดึงกำไรล่าสุด คำนวณเป็น % ของกำไร ถ้ากำไรมากกว่าที่กำหนด ให้ stop loss ใกล้ขึ้น
-            #profit_percent = calculate_profit_percentage(position_info[0])
-            #print(f"Profit percent: {profit_percent}", flush=True)
-            """if profit_percent > 20:
+            profit_percent = calculate_profit_percentage(position_info[0])
+            print(f"Profit percent: {profit_percent}", flush=True)
+            if profit_percent > 20:
                 # ถ้ากำไรมากกว่า 20% ให้ลดเวลาในการเปรียบเทียบ stop loss เป็น step 
                 limit_time_stop_loss = limit_time_frame_for_stop_loss - ((profit_percent) % 10)
                 limit_time_stop_loss = round(limit_time_stop_loss)
                 if limit_time_stop_loss < 4:
                     limit_time_stop_loss = 4
                 print(f"Change limit time frame for stop loss to {limit_time_stop_loss}", flush=True)
-            """
             """
             if profit_percent > 50:
                 # ถ้ากำไรมากกว่า 50% ให้ซื้อเพิ่ม เพราะถือว่าถูกทาง
@@ -1053,14 +1040,13 @@ while True:
         date_time_now = datetime.now()
         print(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
         last_minute = date_time_now.minute
-        if first_time == True or last_minute == 0 or last_minute % 15 == 0:
+        if first_time == True or last_minute == 0:
             line_all_message = ""
             if first_time == True:                
                 first_time = False
             else:
                 time.sleep(30)
-            if last_minute == 0:
-                future_find_signal(trade_time_frame)
+            future_find_signal(trade_time_frame)
             future_find_order_no_position()
             future_compare_stop_loss_all()
             #future_find_profit_or_loss()
