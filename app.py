@@ -1,3 +1,4 @@
+import math
 import matplotlib.pyplot as plt
 import sys
 from scipy import stats
@@ -39,8 +40,8 @@ exchange = ccxt.binance({
 client = Client(api_key, api_secret)
 trade_time_frame = '1h'
 tread_time_frame_stop_loss = '15m'
-limit_time_frame_for_stop_loss = 12
-future_leverage = 10
+limit_time_frame_for_stop_loss = 28
+future_leverage = 15
 temp_folder = 'temp'
 line_all_message = ""
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
@@ -65,126 +66,107 @@ if not api_key or not api_secret or not line_token:
 
 
 
-
 def analyze_signal(symbol):
+    try:
+        # Get the latest 144 15-minute klines
+        klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=144)
 
-    # Get the latest 144 15-minute klines
-    #klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_15MINUTE, "36 hours ago UTC")
-    klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "144 hours ago UTC")
+        # Convert to DataFrame
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
 
-    # Convert to DataFrame
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    for col in ['open', 'high', 'low', 'close']:
-        df[col] = df[col].astype(float)
+        # Calculate necessary values
+        df['body'] = abs(df['close'] - df['open'])
+        df['wick_high'] = df['high'] - df[['open', 'close']].max(axis=1)
+        df['wick_low'] = df[['open', 'close']].min(axis=1) - df['low']
 
-    length = 21
-    df['o'] = df['open'].shift(length)
-    df['h'] = df['high'].shift(length)
-    df['l'] = df['low'].shift(length)
-    df['c'] = df['close'].shift(length)
+        # Calculate additional indicators
+        df['sma20'] = df['close'].rolling(window=20).mean()
+        df['sma50'] = df['close'].rolling(window=50).mean()
 
-    df['d'] = abs(df['c'] - df['o'])
+        # Function to identify Inverted Hammer with confirmation
+        def is_inverted_hammer(row, df, i):
+            basic_condition = (
+                row['wick_high'] > 2 * row['body'] and
+                row['wick_low'] < 0.1 * row['body'] and
+                row['close'] > row['open'] and
+                (row['high'] - max(row['open'], row['close'])) > (min(row['open'], row['close']) - row['low'])
+            )
+            
+            # Confirmation conditions
+            trend_condition = df['close'].iloc[i] < df['sma20'].iloc[i] < df['sma50'].iloc[i]  # Downtrend
+            
+            return basic_condition and trend_condition
 
-    # Function to calculate pivot high and low
-    def pivot_high_low(data, length):
-        pivot_high = np.where((data.high > data.high.shift(1)) & (data.high > data.high.shift(-1)) & 
-                              (data.high.shift(1) > data.high.shift(2)) & (data.high.shift(-1) > data.high.shift(-2)), data.high, np.nan)
-        pivot_low = np.where((data.low < data.low.shift(1)) & (data.low < data.low.shift(-1)) & 
-                             (data.low.shift(1) < data.low.shift(2)) & (data.low.shift(-1) < data.low.shift(-2)), data.low, np.nan)
-        return pd.Series(pivot_high), pd.Series(pivot_low)
+        # Function to identify Shooting Star with confirmation
+        def is_shooting_star(row, df, i):
+            basic_condition = (
+                row['wick_high'] > 2 * row['body'] and
+                row['wick_low'] < 0.1 * row['body'] and
+                row['close'] < row['open'] and
+                (row['high'] - max(row['open'], row['close'])) > (min(row['open'], row['close']) - row['low'])
+            )
+            
+            # Confirmation conditions
+            trend_condition = df['close'].iloc[i] > df['sma20'].iloc[i] > df['sma50'].iloc[i]  # Uptrend
+            
+            return basic_condition and trend_condition
 
-    df['ph'], df['pl'] = pivot_high_low(df, length)
+        # Apply pattern recognition
+        df['inverted_hammer'] = df.apply(lambda row: is_inverted_hammer(row, df, df.index.get_loc(row.name)), axis=1)
+        df['shooting_star'] = df.apply(lambda row: is_shooting_star(row, df, df.index.get_loc(row.name)), axis=1)
 
-    # Define patterns
-    df['hammer'] = (df['pl'].notna() & 
-                    (np.minimum(df['o'], df['c']) - df['l'] > df['d']) & 
-                    (df['h'] - np.maximum(df['c'], df['o']) < df['d']))
-
-    df['ihammer'] = (df['pl'].notna() & 
-                     (df['h'] - np.maximum(df['c'], df['o']) > df['d']) & 
-                     (np.minimum(df['c'], df['o']) - df['l'] < df['d']))
-
-    df['bulleng'] = ((df['c'] > df['o']) & 
-                     (df['c'].shift(1) < df['o'].shift(1)) & 
-                     (df['c'] > df['o'].shift(1)) & 
-                     (df['o'] < df['c'].shift(1)))
-
-    df['hanging'] = (df['ph'].notna() & 
-                     (np.minimum(df['c'], df['o']) - df['l'] > df['d']) & 
-                     (df['h'] - np.maximum(df['o'], df['c']) < df['d']))
-
-    df['shooting'] = (df['ph'].notna() & 
-                      (df['h'] - np.maximum(df['o'], df['c']) > df['d']) & 
-                      (np.minimum(df['c'], df['o']) - df['l'] < df['d']))
-
-    df['beareng'] = ((df['c'] < df['o']) & 
-                     (df['c'].shift(1) > df['o'].shift(1)) & 
-                     (df['c'] < df['o'].shift(1)) & 
-                     (df['o'] > df['c'].shift(1)))
-
-    # Determine signal
-    df['signal'] = 'NORMAL'
-    
-    # Check for signals in the last 4 time frames
-    for i in range(5):  # 0 to 4
-        long_condition = df['bulleng'].iloc[-i-1] | df['hammer'].iloc[-i-1] | df['ihammer'].iloc[-i-1]
-        short_condition = df['hanging'].iloc[-i-1] | df['shooting'].iloc[-i-1] | df['beareng'].iloc[-i-1]
+        # Determine signal
+        df['signal'] = 'NORMAL'
         
-        if long_condition:
-            df.loc[df.index[-1], 'signal'] = 'LONG'
-            break
-        elif short_condition:
-            df.loc[df.index[-1], 'signal'] = 'SHORT'
-            break
+        # Check for signals in the last 4 time frames
+        for i in range(4):
+            if df['inverted_hammer'].iloc[-i-1]:
+                df.loc[df.index[-1], 'signal'] = 'LONG'
+                break
+            elif df['shooting_star'].iloc[-i-1]:
+                df.loc[df.index[-1], 'signal'] = 'SHORT'
+                break
 
-    current_signal = df['signal'].iloc[-1]
+        current_signal = df['signal'].iloc[-1]
 
-    if current_signal != 'NORMAL':
+        if current_signal != 'NORMAL':
+            # Create graph
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(20, 12), sharex=True)
+            
+            # Price and SMA plot
+            ax1.plot(df['timestamp'], df['close'], label='Close Price')
+            ax1.plot(df['timestamp'], df['sma20'], label='SMA20', alpha=0.7)
+            ax1.plot(df['timestamp'], df['sma50'], label='SMA50', alpha=0.7)
+            ax1.scatter(df.loc[df['inverted_hammer'], 'timestamp'], df.loc[df['inverted_hammer'], 'low'],
+                        color='lime', marker='^', s=100, label='Inverted Hammer')
+            ax1.scatter(df.loc[df['shooting_star'], 'timestamp'], df.loc[df['shooting_star'], 'high'],
+                        color='red', marker='v', s=100, label='Shooting Star')
+            ax1.set_ylabel('Price')
+            ax1.legend()
 
-        # Create graph
-        plt.figure(figsize=(20, 10))
-        plt.plot(df['timestamp'], df['close'], label='Close Price')
+            # Volume plot
+            ax2.bar(df['timestamp'], df['volume'], label='Volume', alpha=0.7)
+            ax2.set_ylabel('Volume')
+            ax2.legend()
 
-        # Plot LONG and SHORT signals
-        plt.scatter(df.loc[df['signal'] == 'LONG', 'timestamp'], df.loc[df['signal'] == 'LONG', 'close'], 
-                    color='green', marker='^', s=100, label='LONG')
-        plt.scatter(df.loc[df['signal'] == 'SHORT', 'timestamp'], df.loc[df['signal'] == 'SHORT', 'close'], 
-                    color='red', marker='v', s=100, label='SHORT')
+            plt.title(f"{symbol} - Current Signal: {current_signal}")
+            plt.xlabel('Time')
+            
+            # Create temp folder if it doesn't exist
+            if not os.path.exists('temp'):
+                os.makedirs('temp')
 
-        # Plot individual patterns
-        patterns = {
-            'hammer': ('Hammer', 'limegreen', '^'),
-            'ihammer': ('Inverted Hammer', 'green', '^'),
-            'bulleng': ('Bullish Engulfing', 'darkgreen', '^'),
-            'hanging': ('Hanging Man', 'salmon', 'v'),
-            'shooting': ('Shooting Star', 'red', 'v'),
-            'beareng': ('Bearish Engulfing', 'darkred', 'v')
-        }
-
-        for pattern, (name, color, marker) in patterns.items():
-            plt.scatter(df.loc[df[pattern], 'timestamp'], df.loc[df[pattern], 'close'], 
-                        color=color, marker=marker, s=50, label=name)
-
-        plt.title(f"{symbol} - Current Signal: {current_signal}")
-        plt.xlabel('Time')
-        plt.ylabel('Price')
-        plt.legend()
-
-        # Create temp folder if it doesn't exist
-        if not os.path.exists('temp'):
-            os.makedirs('temp')
-
-        # Save graph
-        plt.savefig(f'temp/{symbol}-{current_signal}.png')
-        plt.close()
+            # Save graph
+            plt.savefig(f'temp/{symbol}-{current_signal}.png')
+            plt.close()
+    except Exception as e:
+        print(f"analyze_signal {symbol}: Error: {e}", flush=True)
+        current_signal = 'NORMAL'
 
     return current_signal
-
-
-
-
-
 
 
 
@@ -259,6 +241,11 @@ def fetch_future_symbols():
                 filtered_symbols.append(symbol)
 
     random.shuffle(filtered_symbols)
+    # ลบที่ไม่ได้ต่อท้ายด้วย USDT
+    filtered_symbols = [x for x in filtered_symbols if x.endswith('USDT')]
+    # ลบที่มีตัวเลขนำหน้า 
+    filtered_symbols = [x for x in filtered_symbols if not x[0].isdigit()]
+
     return filtered_symbols
 
 def future_find_signal(timeframe):
@@ -308,7 +295,7 @@ def future_find_signal(timeframe):
                             )
                             open_new_position = True
                 except Exception as e:
-                    print(f"Error: {e}", flush=True)
+                    print(f"future_find_signal 1 : Error: {e}", flush=True)
 
             if open_new_position and (signal == 'LONG' or signal == 'SHORT'):
                 color = '🟢' if signal == 'LONG' else '🔴'
@@ -333,7 +320,7 @@ def future_find_signal(timeframe):
                 except Exception as e:
                     print(f"Error: {e}", flush=True)
         except Exception as e:
-            print(f"Error: {e}", flush=True)           
+            print(f"future_find_signal 2 : {symbol} Error: {e}", flush=True)           
             
 
 def future_compare_stop_loss_all():
@@ -351,7 +338,7 @@ def future_compare_stop_loss_all():
             try:
                 line_all_message += f"Position {symbol} without order\n"
             except Exception as e:
-                print(f"Error: {e}", flush=True)
+                print(f"future_compare_stop_loss_all : Error: {e}", flush=True)
 
 def get_step_size(symbol):
     exchange_info = client.futures_exchange_info()
@@ -387,7 +374,7 @@ def future_open_position(symbol, side,bypass=False):
         usdt_amount = usdt_amount / 2    
     print(f"USDT amount for positon : {usdt_amount}", flush=True)
 
-    diff_percent_max = 5 # จะต้องห่างจากราคาปัจจุบันไม่เกินกี่ %
+    diff_percent_max = 10 # จะต้องห่างจากราคาปัจจุบันไม่เกินกี่ %
 
     if bypass == False:
         if not future_get_last_trade(symbol):
@@ -434,6 +421,8 @@ def future_open_position(symbol, side,bypass=False):
                         quantity=quantity                
                     )
                     line_all_message += f"Open position {symbol} {side}\n"
+                else:
+                    print(f"Ignore Open position {symbol} {side} {quantity}", flush=True)
             else:
                 print(f"Open position {symbol} {side} {quantity}", flush=True)
                 # cancel all order before open position
@@ -448,7 +437,7 @@ def future_open_position(symbol, side,bypass=False):
                     type='MARKET',
                     quantity=quantity                
                 )
-                line_all_message += f"Open position {symbol} {side}\n"
+                line_all_message += f"Open position {symbol} {side}\n"            
         if side == 'SELL':
             if bypass == False:
                 df['high'] = df['high'].astype(float)
@@ -456,7 +445,7 @@ def future_open_position(symbol, side,bypass=False):
                 # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน diff_percent_max
                 diff_price = max_price - current_price
                 diff_percent = (diff_price * 100) / max_price
-                if current_price < max_price  and diff_percent < diff_percent_max:
+                if current_price < max_price and diff_percent < diff_percent_max:
                     print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
                     client.futures_create_order(
                         symbol=symbol,
@@ -465,6 +454,9 @@ def future_open_position(symbol, side,bypass=False):
                         quantity=quantity
                     )
                     line_all_message += f"Open position {symbol} {side}\n"
+                else:
+                    print(f"Ignore Open position {symbol} {side} {quantity}", flush=True)
+                    
             else:
                 print(f"Open position {symbol} {side} {quantity}", flush=True)
                 # cancel all order before open position
@@ -482,7 +474,7 @@ def future_open_position(symbol, side,bypass=False):
                 line_all_message += f"Open position {symbol} {side}\n"
 
     except Exception as e:
-        print(f"Error: {e}", flush=True)
+        print(f"future_open_position : Error: {e}", flush=True)
         # ถ้า เกิด Margin is insufficient.
         if "Margin is insufficient" in str(e):
             print(f"Margin is insufficient for {symbol}", flush=True)
@@ -535,7 +527,14 @@ def calculate_profit_percentage(position):
     return profit_percent * leverage
     
 
+def round_step_size(quantity, step_size):
+    return round(quantity / step_size) * step_size
+
+def format_number(number, max_decimals):
+    return '{:0.{precision}f}'.format(number, precision=max_decimals)
+
 def future_find_profit_or_loss():
+    all_symbol_info = client.futures_exchange_info()
     positions = future_get_position()
     for symbol in positions:        
         try:
@@ -544,29 +543,53 @@ def future_find_profit_or_loss():
             if position_amount == 0:
                 return None
             profit_percent = calculate_profit_percentage(position_info[0])
-            print(f"Profit percent: {profit_percent}", flush=True)
-            
-            market_type = (position_amount > 0) and 'LONG' or 'SHORT'
-            if market_type == 'LONG':
-                if profit_percent > 20 or profit_percent < -10:
-                    print(f"Profit percent > 20% : Close position {symbol}", flush=True)
+            if profit_percent > 25:
+                print(f"Profit percent: {profit_percent}", flush=True)               
+                market_type = (position_amount > 0) and 'LONG' or 'SHORT'
+                take_profit_percent = 0.1
+                if market_type == 'LONG':
+                    print(f"LONG : Profit percent > {profit_percent}% : Close position {symbol}", flush=True)                    
+                    # สร้าง Take profit order ทันที (ราคามากกว่าราคาปัจจุบัน take_profit_percent)
+                    symbol_info = next(filter(lambda x: x['symbol'] == symbol, all_symbol_info['symbols']))
+                    # หา tick size และ price precision
+                    tick_size = float(next(filter(lambda x: x['filterType'] == 'PRICE_FILTER', symbol_info['filters']))['tickSize'])
+                    price_precision = int(round(-math.log(tick_size, 10), 0))
+                    # คำนวณราคา take profit
+                    take_profit_price = float(client.futures_symbol_ticker(symbol=symbol)['price']) * (1 + take_profit_percent / 100)
+                    take_profit_price = round_step_size(take_profit_price, tick_size)
+                    take_profit_price = float(format_number(take_profit_price, price_precision))
+                    # สร้าง order
                     client.futures_create_order(
                         symbol=symbol,
-                        side='SELL',
-                        type='MARKET',
+                        side="SELL",
+                        type='TAKE_PROFIT_MARKET',
                         quantity=position_amount,
+                        stopPrice=take_profit_price,
+                        closePosition=True
                     )
-            if market_type == 'SHORT':
-                if profit_percent > 20 or profit_percent < -15:
-                    print(f"Profit percent > 20% : Close position {symbol}", flush=True)
+                if market_type == 'SHORT':
+                    print(f"SHORT : Profit percent > {profit_percent}% : Close position {symbol}", flush=True)
+                    # สร้าง Take profit order ทันที (ราคาน้อยกว่าราคาปัจจุบัน take_profit_percent)
+                    symbol_info = next(filter(lambda x: x['symbol'] == symbol, all_symbol_info['symbols']))
+                    # หา tick size และ price precision
+                    tick_size = float(next(filter(lambda x: x['filterType'] == 'PRICE_FILTER', symbol_info['filters']))['tickSize'])
+                    price_precision = int(round(-math.log(tick_size, 10), 0))
+                    # คำนวณราคา take profit
+                    take_profit_price = float(client.futures_symbol_ticker(symbol=symbol)['price']) * (1 - take_profit_percent / 100)
+                    take_profit_price = round_step_size(take_profit_price, tick_size)
+                    take_profit_price = float(format_number(take_profit_price, price_precision))
+                    # สร้าง order
                     client.futures_create_order(
                         symbol=symbol,
-                        side='BUY',
-                        type='MARKET',
-                        quantity=position_amount * -1,
+                        side="BUY",
+                        type='TAKE_PROFIT_MARKET',
+                        quantity=position_amount,
+                        stopPrice=take_profit_price,
+                        closePosition=True
                     )
+
         except Exception as e:
-            print(f"Error: {e}", flush=True)
+            print(f"future_find_profit_or_loss Error: {e}", flush=True)
             return None
     
 
@@ -622,16 +645,16 @@ def future_compare_stop_loss(symbol):
         else:
             limit_time_stop_loss = limit_time_frame_for_stop_loss
             # ดึงกำไรล่าสุด คำนวณเป็น % ของกำไร ถ้ากำไรมากกว่าที่กำหนด ให้ stop loss ใกล้ขึ้น
-            #profit_percent = calculate_profit_percentage(position_info[0])
-            #print(f"Profit percent: {profit_percent}", flush=True)
-            """if profit_percent > 20:
+            profit_percent = calculate_profit_percentage(position_info[0])
+            print(f"Profit percent: {profit_percent}", flush=True)
+            if profit_percent > 20:
                 # ถ้ากำไรมากกว่า 20% ให้ลดเวลาในการเปรียบเทียบ stop loss เป็น step 
-                limit_time_stop_loss = limit_time_frame_for_stop_loss - ((profit_percent) % 10)
+                limit_time_stop_loss = limit_time_frame_for_stop_loss - ((profit_percent * 4) % 10)
                 limit_time_stop_loss = round(limit_time_stop_loss)
-                if limit_time_stop_loss < 4:
-                    limit_time_stop_loss = 4
+                if limit_time_stop_loss < 2:
+                    limit_time_stop_loss = 2
                 print(f"Change limit time frame for stop loss to {limit_time_stop_loss}", flush=True)
-            """
+            
             """
             if profit_percent > 50:
                 # ถ้ากำไรมากกว่า 50% ให้ซื้อเพิ่ม เพราะถือว่าถูกทาง
@@ -723,6 +746,17 @@ def future_change_margin_type_and_leverage(symbol):
 
 def future_find_order_no_position():
     print("Start check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+
+    # ปิด order สถานะ TAKE_PROFIT ทั้งหมด
+    orders = client.futures_get_open_orders()
+    for order in orders:
+        try:
+            if order['type'] == 'TAKE_PROFIT_MARKET':
+                print(f"TAKE_PROFIT Cancel order {order['orderId']} {order['symbol']}", flush=True)
+                client.futures_cancel_order(symbol=order['symbol'], orderId=order['orderId'])
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+
     # หา order ที่ไม่มี position ให้ยกเลิก order
     orders = client.futures_get_open_orders()
     for order in orders:
@@ -1063,15 +1097,11 @@ while True:
         last_minute = date_time_now.minute
         if first_time == True or last_minute == 0 or last_minute % 15 == 0:
             line_all_message = ""
-            if first_time == True:                
-                first_time = False
-            else:
-                time.sleep(30)
-            if last_minute == 0:
+            if last_minute == 0 or first_time == True:
                 future_find_signal(trade_time_frame)
             future_find_order_no_position()
             future_compare_stop_loss_all()
-            #future_find_profit_or_loss()
+            future_find_profit_or_loss()
             future_profit_or_loss_notify()
             #transfer_usdt_to_spot()
             if line_all_message != "":
@@ -1082,6 +1112,10 @@ while True:
                 #spot_main()
             else:                
                 time.sleep(120)
+            if first_time == True:                
+                first_time = False
+            else:
+                time.sleep(30)
     except Exception as e:
         print(f"Error: {e}", flush=True)
     time.sleep(10)
