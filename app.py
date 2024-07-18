@@ -38,7 +38,7 @@ exchange = ccxt.binance({
 })
 
 client = Client(api_key, api_secret)
-trade_time_frame = '1h'
+trade_time_frame = '15m'
 tread_time_frame_stop_loss = '15m'
 limit_time_frame_for_stop_loss = 28
 future_leverage = 15
@@ -121,8 +121,8 @@ def analyze_signal(symbol):
         # Determine signal
         df['signal'] = 'NORMAL'
         
-        # Check for signals in the last 4 time frames
-        for i in range(4):
+        # Check for signals in the last 3 time frames
+        for i in range(3):
             if df['inverted_hammer'].iloc[-i-1]:
                 df.loc[df.index[-1], 'signal'] = 'LONG'
                 break
@@ -543,7 +543,7 @@ def future_find_profit_or_loss():
             if position_amount == 0:
                 return None
             profit_percent = calculate_profit_percentage(position_info[0])
-            if profit_percent > 25:
+            if profit_percent > 10:
                 print(f"Profit percent: {profit_percent}", flush=True)               
                 market_type = (position_amount > 0) and 'LONG' or 'SHORT'
                 take_profit_percent = 0.1
@@ -1095,13 +1095,12 @@ while True:
         date_time_now = datetime.now()
         print(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
         last_minute = date_time_now.minute
-        if first_time == True or last_minute == 0 or last_minute % 15 == 0:
+        if first_time == True or last_minute == 0 or last_minute % 5 == 0:
             line_all_message = ""
-            if last_minute == 0 or first_time == True:
-                future_find_signal(trade_time_frame)
+            #future_find_signal(trade_time_frame)
             future_find_order_no_position()
             future_compare_stop_loss_all()
-            future_find_profit_or_loss()
+            #future_find_profit_or_loss()
             future_profit_or_loss_notify()
             #transfer_usdt_to_spot()
             if line_all_message != "":
@@ -1111,7 +1110,7 @@ while True:
                 print("Scan spot market", flush=True)
                 #spot_main()
             else:                
-                time.sleep(120)
+                time.sleep(60)
             if first_time == True:                
                 first_time = False
             else:
