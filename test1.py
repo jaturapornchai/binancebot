@@ -79,7 +79,7 @@ class Pattern:
     title: str
     description: str
 
-def analyze_swing_highs_lows_patterns(symbol, timeframes=['1h', '4h'], days_back=30, length=21, recent_hours=44):
+def analyze_swing_highs_lows_patterns(symbol, timeframes=['1h', '4h'], days_back=60, length=21, recent_hours=44):
     # Initialize Binance client
     client = Client()
 
@@ -286,6 +286,15 @@ def fetch_future_symbols():
 
 
 # start
+# ลบ file ใน sub folder temp ทิ้ง
+for filename in os.listdir(temp_folder):
+    file_path = os.path.join(temp_folder, filename)
+    try:
+        if os.path.isfile(file_path):
+            os.unlink(file_path)
+    except Exception as e:
+        print(f"Error deleting {file_path}: {e}")
+
 print("Start", flush=True)
 future_exchange_info = client.futures_exchange_info()
 symbols = fetch_future_symbols()
