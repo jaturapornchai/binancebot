@@ -49,8 +49,8 @@ def calculate_atr(highs, lows, closes, atr_period=10):
 
 # ฟังก์ชันสำหรับการดึงข้อมูลและคำนวณสัญญาณ BUY/SELL
 def get_buy_sell_signal(symbol, atr_period=10, key_value=1):
-    # ดึงข้อมูลแท่งเทียนจาก Binance Futures (time frame 5 นาที)
-    interval = Client.KLINE_INTERVAL_5MINUTE
+    # ดึงข้อมูลแท่งเทียนจาก Binance Futures (time frame 1 นาที)
+    interval = Client.KLINE_INTERVAL_1MINUTE
     klines = client.futures_klines(symbol=symbol, interval=interval, limit=500)
 
     # เตรียมข้อมูลราคาจากแท่งเทียน
@@ -171,7 +171,7 @@ def future_create_position(symbol, side):
     elif side == 'SELL':
         order = client.futures_create_order(symbol=symbol, side='SELL', type='MARKET', quantity=quantity)
 
-# วนลูปทำงานทุก ๆ 5 นาที
+# วนลูปทำงานทุก ๆ วินาทีแรกของแต่ละนาที
 symbol = 'NEIROETHUSDT'
 last_signal = ""
 future_close_all_position()
@@ -179,8 +179,8 @@ while True:
     # ตรวจสอบเวลาปัจจุบัน
     now = datetime.datetime.now()
 
-    # ทุก 5 นาที
-    if now.minute % 5 == 0 and now.second == 0:
+    # ทุก 1 นาที
+    if now.second == 0:
         signal = get_buy_sell_signal(symbol)
         print(f"Check Signal for {symbol} at {now}: {signal}")
         if signal != last_signal:
