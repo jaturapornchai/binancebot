@@ -50,7 +50,7 @@ def calculate_atr(highs, lows, closes, atr_period=10):
 # ฟังก์ชันสำหรับการดึงข้อมูลและคำนวณสัญญาณ BUY/SELL
 def get_buy_sell_signal(symbol, atr_period=10, key_value=1):
     # ดึงข้อมูลแท่งเทียนจาก Binance Futures (time frame 1 นาที)
-    interval = Client.KLINE_INTERVAL_1MINUTE
+    interval = Client.KLINE_INTERVAL_5MINUTE
     klines = client.futures_klines(symbol=symbol, interval=interval, limit=500)
 
     # เตรียมข้อมูลราคาจากแท่งเทียน
@@ -179,8 +179,8 @@ while True:
     # ตรวจสอบเวลาปัจจุบัน
     now = datetime.datetime.now()
 
-    # ถ้าเป็นวินาทีที่ 0 ของนาที
-    if now.second == 0:
+    # ทุก 5 นาที
+    if now.minute % 5 == 0 and now.second == 0:
         signal = get_buy_sell_signal(symbol)
         if signal != last_signal:
             last_signal = signal
