@@ -3,7 +3,4 @@ pandas
 requests
 python-binance
 scipy
-scikit-learn
 ccxt
-matplotlib
-TA-Lib

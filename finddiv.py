@@ -10,10 +10,10 @@ import time
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
 api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
-tread_time_frame = '30m'
+tread_time_frame = '15m'
 exchange = ccxt.binance()
 ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
-line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+line_token = "aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
 
 def send_line_notify(message):
     """Send notifications through LINE Notify."""
@@ -129,7 +129,7 @@ def future_find_signal():
                 print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
                 send_line_notify(f"Short : Symbol: {symbol}, Signal: {signal}")
 
-            if signal == 'longx':
+            if signal == 'long':
                 print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
                 send_line_notify(f"Long : Symbol: {symbol}, Signal: {signal}")
 

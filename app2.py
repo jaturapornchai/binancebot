@@ -127,21 +127,25 @@ def future_find_signal(timeframe, window=100, devlen=2.0):
         # ถ้า symbol มี position ให้ข้ามไป  
         if symbol in positions:
             continue
-        signal = check_signal(symbol, timeframe, window, devlen)
-        if signal != 'normal':
-            color = '🟢' if signal == 'LONG' else '🔴'
-            message = f"Binance: Signal detected for {symbol}: {color} {signal}"
-            try:
-                print(message, flush=True)
-                if signal == 'LONG':
-                    print(f"Open position {symbol} {signal}", flush=True)
-                    future_open_position(symbol, 'BUY')
-                if signal == 'SHORT':
-                    print(f"Open position {symbol} {signal}", flush=True)
-                    future_open_position(symbol, 'SELL')                
-                time.sleep(1)
-            except Exception as e:
-                print(f"Error sending LINE message: {e}", flush=True)        
+        try:
+            signal = check_signal(symbol, timeframe, window, devlen)
+            if signal != 'normal':
+                color = '🟢' if signal == 'LONG' else '🔴'
+                message = f"Binance: Signal detected for {symbol}: {color} {signal}"
+                try:
+                    print(message, flush=True)
+                    if signal == 'LONG':
+                        print(f"Open position {symbol} {signal}", flush=True)
+                        #future_open_position(symbol, 'BUY')
+                    if signal == 'SHORT':
+                        print(f"Open position {symbol} {signal}", flush=True)
+                        future_open_position(symbol, 'SELL')                
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"Error sending LINE message: {e}", flush=True)        
+        except Exception as e:
+            print(f"Error checking signal for {symbol}: {e}", flush=True)
+            continue
 
 def future_compare_stop_loss_all():
     positions = future_get_position()

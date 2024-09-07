@@ -8,9 +8,9 @@ from binance.client import Client
 import requests
 from scipy.stats import linregress
 
-api_key = 'FpwthNz84887fuWpz9lEIsLm1zwZB9YV8ZO2FjVQ6v2k6lmR8nv1oKZZOoJSY0il'
-api_secret = 'nszlVyvoFAZPVIXdWnJyhaxgiujMTTUmFN4Ncix3rKBtLhF2kO8hhCZhnwIeu3gt'
-line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
+api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
+line_token = "aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
 ignore_symbols = ['DONUSDT','USDCUSDT','SRMUSDT','MOVRUSDT']
 save_symbols = []
 exchange = ccxt.binance({
@@ -86,7 +86,7 @@ if __name__ == "__main__":
             for symbol in future_symbols:
                 try:        
                     timeframe = '1h'     
-                    length = 100         
+                    length = 144         
                     data = fetch_data(symbol, timeframe, length)
                     data = linear_regression_channel(data, length)
                     signal = trading_signal(data)
