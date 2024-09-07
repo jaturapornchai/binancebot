@@ -11,9 +11,9 @@ line_token = "aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
 client = Client(api_key, api_secret)
 future_leverage = 5
 
+# Function to send LINE notification
 def send_line_notify_thread(message, token):
     try:
-        """Send notifications through LINE Notify."""
         headers = {
             'Authorization': f'Bearer {token}',
             'Content-Type': 'application/x-www-form-urlencoded'
@@ -21,116 +21,83 @@ def send_line_notify_thread(message, token):
         payload = {'message': message}
         response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
         if response.status_code == 200:
-            print("LINE notification sent successfully", flush=True)
+            print("LINE notification sent successfully")
         else:
-            print(f"Failed to send LINE notification. Status code: {response.status_code}", flush=True)
+            print(f"Failed to send LINE notification. Status code: {response.status_code}")
     except Exception as e:
-        print(f"Error sending LINE message: {e}", flush=True)
+        print(f"Error sending LINE message: {e}")
 
 def send_line_notify(message):
     send_line_notify_thread(message, line_token)
-    print("Send line notify", flush=True)
+    print("Send line notify")
 
-# ฟังก์ชันสำหรับการคำนวณ True Range
-def true_range(highs, lows, closes):
-    tr = np.zeros(len(closes))
-    for i in range(1, len(closes)):
-        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-    return tr
+# Function to calculate Heikin Ashi candles
+def calculate_heikin_ashi(klines):
+    heikin_ashi_closes = np.zeros(len(klines))
+    heikin_ashi_opens = np.zeros(len(klines))
+    heikin_ashi_highs = np.zeros(len(klines))
+    heikin_ashi_lows = np.zeros(len(klines))
 
-# ฟังก์ชันสำหรับการคำนวณ ATR
-def calculate_atr(highs, lows, closes, atr_period=10):
-    tr = true_range(highs, lows, closes)
-    atr = np.zeros(len(closes))
-    atr[atr_period-1] = np.mean(tr[:atr_period])  # คำนวณ ATR เริ่มต้นจากค่าเฉลี่ย TR
-    for i in range(atr_period, len(closes)):
-        atr[i] = (atr[i-1] * (atr_period - 1) + tr[i]) / atr_period  # คำนวณ ATR ต่อเนื่อง
-    return atr
+    for i in range(len(klines)):
+        open_price = float(klines[i][1])
+        high_price = float(klines[i][2])
+        low_price = float(klines[i][3])
+        close_price = float(klines[i][4])
 
-# ฟังก์ชันสำหรับการดึงข้อมูลและคำนวณสัญญาณ BUY/SELL
+        # Calculate Heikin Ashi Close
+        heikin_ashi_closes[i] = (open_price + high_price + low_price + close_price) / 4
+
+        if i == 0:
+            heikin_ashi_opens[i] = (open_price + close_price) / 2
+        else:
+            heikin_ashi_opens[i] = (heikin_ashi_opens[i-1] + heikin_ashi_closes[i-1]) / 2
+
+        heikin_ashi_highs[i] = max(high_price, heikin_ashi_opens[i], heikin_ashi_closes[i])
+        heikin_ashi_lows[i] = min(low_price, heikin_ashi_opens[i], heikin_ashi_closes[i])
+
+    return heikin_ashi_opens, heikin_ashi_highs, heikin_ashi_lows, heikin_ashi_closes
+
+# Function to generate buy/sell signal using Heikin Ashi
 def get_buy_sell_signal(symbol, atr_period=10, key_value=1):
-    # ดึงข้อมูลแท่งเทียนจาก Binance Futures (time frame 1 นาที)
-    interval = Client.KLINE_INTERVAL_1MINUTE
+    interval = Client.KLINE_INTERVAL_5MINUTE  # Using 5-minute interval
     klines = client.futures_klines(symbol=symbol, interval=interval, limit=500)
 
-    # เตรียมข้อมูลราคาจากแท่งเทียน
-    highs = np.array([float(kline[2]) for kline in klines])
-    lows = np.array([float(kline[3]) for kline in klines])
-    closes = np.array([float(kline[4]) for kline in klines])
+    # Calculate Heikin Ashi candles
+    heikin_ashi_opens, heikin_ashi_highs, heikin_ashi_lows, heikin_ashi_closes = calculate_heikin_ashi(klines)
 
-    # คำนวณ ATR โดยไม่ใช้ TA-Lib
-    atr = calculate_atr(highs, lows, closes, atr_period)
-
-    # ค่าตัวแปร a (Key Value)
-    n_loss = key_value * atr
-
-    # คำนวณค่าของ ATR Trailing Stop
-    atr_trailing_stop = np.zeros(len(closes))
-    for i in range(1, len(closes)):
-        if closes[i] > atr_trailing_stop[i-1] and closes[i-1] > atr_trailing_stop[i-1]:
-            atr_trailing_stop[i] = max(atr_trailing_stop[i-1], closes[i] - n_loss[i])
-        elif closes[i] < atr_trailing_stop[i-1] and closes[i-1] < atr_trailing_stop[i-1]:
-            atr_trailing_stop[i] = min(atr_trailing_stop[i-1], closes[i] + n_loss[i])
-        elif closes[i] > atr_trailing_stop[i-1]:
-            atr_trailing_stop[i] = closes[i] - n_loss[i]
-        else:
-            atr_trailing_stop[i] = closes[i] + n_loss[i]
-
-    # สร้างสถานะซื้อขาย
-    pos = np.zeros(len(closes))
-    for i in range(1, len(closes)):
-        if closes[i-1] < atr_trailing_stop[i-1] and closes[i] > atr_trailing_stop[i]:
-            pos[i] = 1  # Buy
-        elif closes[i-1] > atr_trailing_stop[i-1] and closes[i] < atr_trailing_stop[i]:
-            pos[i] = -1  # Sell
-        else:
-            pos[i] = pos[i-1]
-
-    # คืนค่าสัญญาณ BUY หรือ SELL
-    if pos[-1] == 1:
+    # Generate buy/sell signals based on Heikin Ashi color
+    if heikin_ashi_closes[-1] > heikin_ashi_opens[-1]:  # Green candle (bullish)
         return "BUY"
-    elif pos[-1] == -1:
+    elif heikin_ashi_closes[-1] < heikin_ashi_opens[-1]:  # Red candle (bearish)
         return "SELL"
     else:
-        return "HOLD"
+        return None
 
 def future_get_usdt_balance():
-    # ดึงข้อมูล account balance
     balance = client.futures_account_balance()
     balance_usdt = 0
     for item in balance:
         if item['asset'] == 'USDT':
             balance_usdt = float(item['balance'])
             break
-    # ถ้ามากกว่า $50 ให้เหลือ $50
     if balance_usdt > 50:
         balance_usdt = 50
-    print(f"USDT balance: {balance_usdt}", flush=True)
+    print(f"USDT balance: {balance_usdt}")
     balance_usdt = balance_usdt / 1.5
     return balance_usdt
 
-def future_get_position():
-    positions_open = []
-    positions = client.futures_position_information()
-    for position in positions:
-        position_amount = float(position['positionAmt'])
-        if position_amount != 0:
-            positions_open.append(position['symbol'])
-    return positions_open
-
 def future_close_all_position():
-    # ปิดทุก position ที่เปิดอยู่
     positions = client.futures_position_information()
     for position in positions:
         position_amount = float(position['positionAmt'])
         if position_amount != 0:
             symbol = position['symbol']
             side = 'SELL' if position_amount > 0 else 'BUY'
-            print(f"Closing position for {symbol} ({side})", flush=True)
+            print(f"Closing position for {symbol} ({side})")
             try:
                 client.futures_create_order(symbol=symbol, side=side, type='MARKET', quantity=abs(position_amount))
             except Exception as e:
-                print(f"Error closing position for {symbol}: {e}", flush=True)
+                print(f"Error closing position for {symbol}: {e}")
 
 def get_step_size(symbol):
     exchange_info = client.futures_exchange_info()
@@ -141,56 +108,41 @@ def get_step_size(symbol):
                     return float(filt['stepSize'])
     return None
 
-def get_tick_size(symbol):
-    exchange_info = client.futures_exchange_info()
-    for item in exchange_info['symbols']:
-        if item['symbol'] == symbol:
-            for filt in item['filters']:
-                if filt['filterType'] == 'PRICE_FILTER':
-                    return float(filt['tickSize'])
-    return None
-
-def round_quantity(quantity, step_size):
-    return (quantity // step_size) * step_size
-
 def future_create_position(symbol, side):
     future_close_all_position()
     time.sleep(5)
     usdt_amount = future_get_usdt_balance()
     if usdt_amount <= 10:
-        print("Not enough balance to open position", flush=True)
+        print("Not enough balance to open position")
         return
-    print(f"Opening position for {symbol} ({side})", flush=True)
+    print(f"Opening position for {symbol} ({side})")
     ticker = client.futures_symbol_ticker(symbol=symbol)
     current_price = float(ticker['price'])
     step_size = get_step_size(symbol)
     quantity = usdt_amount / current_price * future_leverage
-    quantity = round_quantity(quantity, step_size)
+    quantity = (quantity // step_size) * step_size
     if side == 'BUY':
-        order = client.futures_create_order(symbol=symbol, side='BUY', type='MARKET', quantity=quantity)
+        client.futures_create_order(symbol=symbol, side='BUY', type='MARKET', quantity=quantity)
     elif side == 'SELL':
-        order = client.futures_create_order(symbol=symbol, side='SELL', type='MARKET', quantity=quantity)
+        client.futures_create_order(symbol=symbol, side='SELL', type='MARKET', quantity=quantity)
 
-# วนลูปทำงานทุก ๆ วินาทีแรกของแต่ละนาที
-symbol = 'NEIROETHUSDT'
+# Main loop to check signals and take actions
+symbol = 'IOSTUSDT'
 last_signal = ""
 future_close_all_position()
+signal = get_buy_sell_signal(symbol)
+print(f"Initial signal for {symbol}: {signal}")
 while True:
-    # ตรวจสอบเวลาปัจจุบัน
     now = datetime.datetime.now()
 
-    # ทุก 1 นาที
-    if now.second == 0:
+    if now.minute % 5 == 0 and now.second == 0:
         signal = get_buy_sell_signal(symbol)
-        print(f"Check Signal for {symbol} at {now}: {signal}")
-        if signal != last_signal:
+        if signal and signal != last_signal:
             last_signal = signal
             print(f"Signal for {symbol} at {now}: {signal}")
             future_create_position(symbol, signal)
             send_line_notify(f"Signal for {symbol} at {now}: {signal}")
 
-        # รอจนถึงวินาทีถัดไปเพื่อหลีกเลี่ยงการรันซ้ำในวินาทีแรกของนาทีเดียวกัน
         time.sleep(1)
 
-    # หน่วงเวลาเล็กน้อยเพื่อหลีกเลี่ยงการใช้ CPU มากเกินไป
     time.sleep(0.5)
