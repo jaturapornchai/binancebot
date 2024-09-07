@@ -172,7 +172,7 @@ def future_create_position(symbol, side):
         order = client.futures_create_order(symbol=symbol, side='SELL', type='MARKET', quantity=quantity)
 
 # วนลูปทำงานทุก ๆ วินาทีแรกของแต่ละนาที
-symbol = 'BTCUSDT'
+symbol = 'NEIROETHUSDT'
 last_signal = ""
 future_close_all_position()
 while True:
