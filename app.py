@@ -15,60 +15,57 @@ future_leverage = 5
 def send_line_notify_thread(message, token):
     try:
         headers = {
-            'Authorization': f'Bearer {token}',
+            'Authorization': f'Bearer ' + token,
             'Content-Type': 'application/x-www-form-urlencoded'
         }
         payload = {'message': message}
         response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
         if response.status_code == 200:
-            print("LINE notification sent successfully")
+            print("LINE notification sent successfully", flush=True)
         else:
-            print(f"Failed to send LINE notification. Status code: {response.status_code}")
+            print(f"Failed to send LINE notification. Status code: {response.status_code}", flush=True)
     except Exception as e:
-        print(f"Error sending LINE message: {e}")
+        print(f"Error sending LINE message: {e}", flush=True)
 
 def send_line_notify(message):
     send_line_notify_thread(message, line_token)
-    print("Send line notify")
+    print("Send line notify", flush=True)
 
-# Function to calculate Heikin Ashi candles
-def calculate_heikin_ashi(klines):
-    heikin_ashi_closes = np.zeros(len(klines))
-    heikin_ashi_opens = np.zeros(len(klines))
-    heikin_ashi_highs = np.zeros(len(klines))
-    heikin_ashi_lows = np.zeros(len(klines))
+# Function to calculate EMA
+def calculate_ema(prices, period):
+    ema = np.zeros(len(prices))
+    multiplier = 2 / (period + 1)
+    ema[0] = prices[0]
+    for i in range(1, len(prices)):
+        ema[i] = (prices[i] - ema[i - 1]) * multiplier + ema[i - 1]
+    return ema
 
-    for i in range(len(klines)):
-        open_price = float(klines[i][1])
-        high_price = float(klines[i][2])
-        low_price = float(klines[i][3])
-        close_price = float(klines[i][4])
+# Function to generate buy/sell signal based on EMA 7, 25, and 99
+def get_buy_sell_signal(symbol):
+    try:
+        interval = Client.KLINE_INTERVAL_1MINUTE  # Using 1-minute interval
+        klines = client.futures_klines(symbol=symbol, interval=interval, limit=500)
+    except Exception as e:
+        print(f"Error fetching klines: {e}", flush=True)
+        return None
 
-        # Calculate Heikin Ashi Close
-        heikin_ashi_closes[i] = (open_price + high_price + low_price + close_price) / 4
+    # Prepare price data
+    closes = np.array([float(kline[4]) for kline in klines])
 
-        if i == 0:
-            heikin_ashi_opens[i] = (open_price + close_price) / 2
-        else:
-            heikin_ashi_opens[i] = (heikin_ashi_opens[i-1] + heikin_ashi_closes[i-1]) / 2
+    # Calculate EMAs
+    ema_7 = calculate_ema(closes, 7)
+    ema_25 = calculate_ema(closes, 25)
+    ema_99 = calculate_ema(closes, 99)
 
-        heikin_ashi_highs[i] = max(high_price, heikin_ashi_opens[i], heikin_ashi_closes[i])
-        heikin_ashi_lows[i] = min(low_price, heikin_ashi_opens[i], heikin_ashi_closes[i])
+    # Generate buy signal: EMA 7 > EMA 25 and EMA 25 crosses above EMA 99
+    buy_signal = ema_7[-1] > ema_25[-1] and ema_25[-2] < ema_99[-2] and ema_25[-1] > ema_99[-1]
 
-    return heikin_ashi_opens, heikin_ashi_highs, heikin_ashi_lows, heikin_ashi_closes
+    # Generate sell signal: EMA 7 < EMA 25 and EMA 25 crosses below EMA 99
+    sell_signal = ema_7[-1] < ema_25[-1] and ema_25[-2] > ema_99[-2] and ema_25[-1] < ema_99[-1]
 
-# Function to generate buy/sell signal using Heikin Ashi
-def get_buy_sell_signal(symbol, atr_period=10, key_value=1):
-    interval = Client.KLINE_INTERVAL_5MINUTE  # Using 5-minute interval
-    klines = client.futures_klines(symbol=symbol, interval=interval, limit=500)
-
-    # Calculate Heikin Ashi candles
-    heikin_ashi_opens, heikin_ashi_highs, heikin_ashi_lows, heikin_ashi_closes = calculate_heikin_ashi(klines)
-
-    # Generate buy/sell signals based on Heikin Ashi color
-    if heikin_ashi_closes[-1] > heikin_ashi_opens[-1]:  # Green candle (bullish)
+    if buy_signal:
         return "BUY"
-    elif heikin_ashi_closes[-1] < heikin_ashi_opens[-1]:  # Red candle (bearish)
+    elif sell_signal:
         return "SELL"
     else:
         return None
@@ -82,7 +79,7 @@ def future_get_usdt_balance():
             break
     if balance_usdt > 50:
         balance_usdt = 50
-    print(f"USDT balance: {balance_usdt}")
+    print(f"USDT balance: {balance_usdt}", flush=True)
     balance_usdt = balance_usdt / 1.5
     return balance_usdt
 
@@ -93,11 +90,11 @@ def future_close_all_position():
         if position_amount != 0:
             symbol = position['symbol']
             side = 'SELL' if position_amount > 0 else 'BUY'
-            print(f"Closing position for {symbol} ({side})")
+            print(f"Closing position for {symbol} ({side})", flush=True)
             try:
                 client.futures_create_order(symbol=symbol, side=side, type='MARKET', quantity=abs(position_amount))
             except Exception as e:
-                print(f"Error closing position for {symbol}: {e}")
+                print(f"Error closing position for {symbol}: {e}", flush=True)
 
 def get_step_size(symbol):
     exchange_info = client.futures_exchange_info()
@@ -113,9 +110,9 @@ def future_create_position(symbol, side):
     time.sleep(5)
     usdt_amount = future_get_usdt_balance()
     if usdt_amount <= 10:
-        print("Not enough balance to open position")
+        print("Not enough balance to open position", flush=True)
         return
-    print(f"Opening position for {symbol} ({side})")
+    print(f"Opening position for {symbol} ({side})", flush=True)
     ticker = client.futures_symbol_ticker(symbol=symbol)
     current_price = float(ticker['price'])
     step_size = get_step_size(symbol)
@@ -127,19 +124,20 @@ def future_create_position(symbol, side):
         client.futures_create_order(symbol=symbol, side='SELL', type='MARKET', quantity=quantity)
 
 # Main loop to check signals and take actions
-symbol = 'IOSTUSDT'
+symbol = 'NEIROETHUSDT'
 last_signal = ""
-future_close_all_position()
-signal = get_buy_sell_signal(symbol)
-print(f"Initial signal for {symbol}: {signal}")
+#future_close_all_position()
+#signal = get_buy_sell_signal(symbol)
+#print(f"Initial signal for {symbol}: {signal}", flush=True)
 while True:
     now = datetime.datetime.now()
 
-    if now.minute % 5 == 0 and now.second == 0:
-        signal = get_buy_sell_signal(symbol)
+    if now.second == 0:  # Check every 1 minute
+        signal = get_buy_sell_signal(symbol)        
+        print(f"Signal for {symbol} at {now}: {signal}", flush=True)
         if signal and signal != last_signal:
             last_signal = signal
-            print(f"Signal for {symbol} at {now}: {signal}")
+            print(f"Signal for {symbol} at {now}: {signal}", flush=True)
             future_create_position(symbol, signal)
             send_line_notify(f"Signal for {symbol} at {now}: {signal}")
 
