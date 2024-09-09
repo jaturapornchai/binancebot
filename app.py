@@ -143,7 +143,7 @@ def check_position():
                 print(f"Error cancelling orders for {symbol}: {e}", flush=True)
             # ดึงราคาต่ำสุดและสูงสุด ย้อนหลังไป 28 time frame (tread_time_frame)
             try:
-                klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=72)
+                klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
             except Exception as e:
                 print(f"Error fetching klines: {e}", flush=True)
                 return None
@@ -171,28 +171,33 @@ while True:
 
     if now.second == 0 or first_run:
         first_run = False 
-        check_position()
-        for symbol in symbols:
-            signal = get_buy_sell_signal(symbol)
-            if signal:
-                last_signal = None
-                # ค้นหา BUY,SELL จาก position เดิม
-                positions = client.futures_position_information()
-                for position in positions:
-                    if position['symbol'] == symbol:
-                        if float(position['positionAmt']) > 0:
-                            last_signal = 'BUY'
-                        elif float(position['positionAmt']) < 0:
-                            last_signal = 'SELL'
-                        break
+        try:
+            check_position()
+            for symbol in symbols:
+                signal = get_buy_sell_signal(symbol)
+                if signal:
+                    last_signal = None
+                    # ค้นหา BUY,SELL จาก position เดิม
+                    positions = client.futures_position_information()
+                    for position in positions:
+                        if position['symbol'] == symbol:
+                            if float(position['positionAmt']) > 0:
+                                last_signal = 'BUY'
+                            elif float(position['positionAmt']) < 0:
+                                last_signal = 'SELL'
+                            break
 
-                print(f"Signal for {symbol} at {now}: {signal}", flush=True)
-                if signal != last_signal:
-                    last_signal = signal
                     print(f"Signal for {symbol} at {now}: {signal}", flush=True)
-                    future_create_position(symbol, signal)
-                    send_line_notify(f"Signal for {symbol} at {now}: {signal}")
+                    if signal != last_signal:
+                        last_signal = signal
+                        print(f"Signal for {symbol} at {now}: {signal}", flush=True)
+                        future_create_position(symbol, signal)
+                        send_line_notify(f"Signal for {symbol} at {now}: {signal}")
 
             time.sleep(1)
+            
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            send_line_notify(f"Error: {e}") 
 
     time.sleep(0.5)
