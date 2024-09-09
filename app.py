@@ -10,6 +10,8 @@ api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 line_token = "aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
 client = Client(api_key, api_secret)
 future_leverage = 5
+symbols = ['NEIROETHUSDT']
+tread_time_frame = '1m'
 
 # Function to send LINE notification
 def send_line_notify_thread(message, token):
@@ -43,7 +45,7 @@ def calculate_ema(prices, period):
 # Function to generate buy/sell signal based on EMA 7, 25, and 99
 def get_buy_sell_signal(symbol):
     try:
-        interval = Client.KLINE_INTERVAL_1MINUTE  # Using 1-minute interval
+        interval = tread_time_frame
         klines = client.futures_klines(symbol=symbol, interval=interval, limit=500)
     except Exception as e:
         print(f"Error fetching klines: {e}", flush=True)
@@ -123,24 +125,70 @@ def future_create_position(symbol, side):
     elif side == 'SELL':
         client.futures_create_order(symbol=symbol, side='SELL', type='MARKET', quantity=quantity)
 
-# Main loop to check signals and take actions
-symbol = 'NEIROETHUSDT'
-last_signal = ""
-#future_close_all_position()
-#signal = get_buy_sell_signal(symbol)
-#print(f"Initial signal for {symbol}: {signal}", flush=True)
+# ตรวจสอบ position ที่ไม่มี stop loss และ take profit แล้วปิดทิ้ง เพิ่มจะสร้างใหม่
+def check_position():
+    positions = client.futures_position_information()
+    for position in positions:
+        position_amount = float(position['positionAmt'])
+        if position['positionSide'] == 'BOTH' and position_amount != 0:            
+            symbol = position['symbol']
+            print(f"Checking position for {symbol}", flush=True)
+
+            # ลบ order stop loss และ take profit ทิ้ง
+            try:
+                client.futures_cancel_all_open_orders(symbol=symbol)
+            except Exception as e:
+                print(f"Error cancelling orders for {symbol}: {e}", flush=True)
+            # ดึงราคาต่ำสุดและสูงสุด ย้อนหลังไป 14 time frame (tread_time_frame)
+            try:
+                klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
+            except Exception as e:
+                print(f"Error fetching klines: {e}", flush=True)
+                return None
+            lows = np.array([float(kline[3]) for kline in klines])
+            highs = np.array([float(kline[2]) for kline in klines])
+            low_min = np.min(lows[:-1])
+            high_max = np.max(highs[:-1])
+            print(f"Lowest low: {low_min}, Highest high: {high_max}", flush=True)
+            # ถ้า BUY position ให้สร้าง stop loss โดยใช้ low_min
+            if position_amount > 0:
+                try:
+                    client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', quantity=abs(position_amount), stopPrice=low_min)
+                except Exception as e:
+                    print(f"Error setting stop loss for {symbol}: {e}", flush=True)
+            # ถ้า SELL position ให้สร้าง stop loss โดยใช้ high_max
+            elif position_amount < 0:
+                try:
+                    client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', quantity=abs(position_amount), stopPrice=high_max)
+                except Exception as e:
+                    print(f"Error setting stop loss for {symbol}: {e}", flush=True)
+
 while True:
     now = datetime.datetime.now()
 
     if now.second == 0:  # Check every 1 minute
-        signal = get_buy_sell_signal(symbol)        
-        print(f"Signal for {symbol} at {now}: {signal}", flush=True)
-        if signal and signal != last_signal:
-            last_signal = signal
-            print(f"Signal for {symbol} at {now}: {signal}", flush=True)
-            future_create_position(symbol, signal)
-            send_line_notify(f"Signal for {symbol} at {now}: {signal}")
+        check_position()
+        for symbol in symbols:
+            signal = get_buy_sell_signal(symbol)
+            if signal:
+                last_signal = None
+                # ค้นหา BUY,SELL จาก position เดิม
+                positions = client.futures_position_information()
+                for position in positions:
+                    if position['symbol'] == symbol:
+                        if float(position['positionAmt']) > 0:
+                            last_signal = 'BUY'
+                        elif float(position['positionAmt']) < 0:
+                            last_signal = 'SELL'
+                        break
 
-        time.sleep(1)
+                print(f"Signal for {symbol} at {now}: {signal}", flush=True)
+                if signal != last_signal:
+                    last_signal = signal
+                    print(f"Signal for {symbol} at {now}: {signal}", flush=True)
+                    future_create_position(symbol, signal)
+                    send_line_notify(f"Signal for {symbol} at {now}: {signal}")
+
+            time.sleep(1)
 
     time.sleep(0.5)
