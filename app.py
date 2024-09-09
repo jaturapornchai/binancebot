@@ -132,16 +132,18 @@ def check_position():
         position_amount = float(position['positionAmt'])
         if position['positionSide'] == 'BOTH' and position_amount != 0:            
             symbol = position['symbol']
+            # ดึง order id
             print(f"Checking position for {symbol}", flush=True)
 
             # ลบ order stop loss และ take profit ทิ้ง
             try:
                 client.futures_cancel_all_open_orders(symbol=symbol)
+                time.sleep(1)
             except Exception as e:
                 print(f"Error cancelling orders for {symbol}: {e}", flush=True)
-            # ดึงราคาต่ำสุดและสูงสุด ย้อนหลังไป 14 time frame (tread_time_frame)
+            # ดึงราคาต่ำสุดและสูงสุด ย้อนหลังไป 28 time frame (tread_time_frame)
             try:
-                klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
+                klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=72)
             except Exception as e:
                 print(f"Error fetching klines: {e}", flush=True)
                 return None
@@ -153,13 +155,13 @@ def check_position():
             # ถ้า BUY position ให้สร้าง stop loss โดยใช้ low_min
             if position_amount > 0:
                 try:
-                    client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', quantity=abs(position_amount), stopPrice=low_min)
+                    client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', quantity=abs(position_amount), stopPrice=low_min,closePosition=True)
                 except Exception as e:
                     print(f"Error setting stop loss for {symbol}: {e}", flush=True)
             # ถ้า SELL position ให้สร้าง stop loss โดยใช้ high_max
             elif position_amount < 0:
                 try:
-                    client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', quantity=abs(position_amount), stopPrice=high_max)
+                    client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', quantity=abs(position_amount), stopPrice=high_max,closePosition=True)
                 except Exception as e:
                     print(f"Error setting stop loss for {symbol}: {e}", flush=True)
 
