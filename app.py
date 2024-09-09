@@ -163,10 +163,12 @@ def check_position():
                 except Exception as e:
                     print(f"Error setting stop loss for {symbol}: {e}", flush=True)
 
+first_run = True
 while True:
     now = datetime.datetime.now()
 
-    if now.second == 0:  # Check every 1 minute
+    if now.second == 0 or first_run:
+        first_run = False 
         check_position()
         for symbol in symbols:
             signal = get_buy_sell_signal(symbol)
