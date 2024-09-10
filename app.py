@@ -12,6 +12,7 @@ client = Client(api_key, api_secret)
 future_leverage = 5
 symbols = ['NEIROETHUSDT']
 tread_time_frame = '1m'
+ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
 
 # Function to send LINE notification
 def send_line_notify_thread(message, token):
@@ -165,34 +166,73 @@ def check_position():
                 except Exception as e:
                     print(f"Error setting stop loss for {symbol}: {e}", flush=True)
 
+def future_change_margin_type_and_leverage(symbol):
+    print(f"Change margin type and leverage for {symbol}", flush=True)
+    try:
+        # เปลี่ยนเป็น isolated margin ถ้าเป็น cross margin
+        positions = client.futures_position_information(symbol=symbol)
+        if positions[0]['marginType'] == 'cross':
+            print(f"Change margin type to ISOLATED for {symbol}", flush=True)
+            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
+    except Exception as e:
+        print(f"Error: {e}", flush=True)
+    
+    try:
+        positions = client.futures_position_information(symbol=symbol)
+        current_leverage = positions[0]['leverage']
+        if int(current_leverage) != future_leverage:
+            print(f"Change leverage to {future_leverage} for {symbol}", flush=True)
+            client.futures_change_leverage(symbol=symbol, leverage=future_leverage)
+    except Exception as e:
+        print(f"Error checking or setting leverage: {e}", flush=True)
+
+def future_change_margin_type_and_leverage_all():
+    symbols = fetch_future_symbols()
+    for symbol in symbols:
+        future_change_margin_type_and_leverage(symbol)        
+
+def fetch_future_symbols():
+    info = client.futures_exchange_info()
+    symbols = [item['symbol'] for item in info['symbols'] if 'USDT' in item['symbol'] and item['status'] == 'TRADING']
+    symbols = [symbol for symbol in symbols if not any(char.isdigit() for char in symbol)]
+    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
+    symbols.sort()    
+    # random 
+    np.random.shuffle(symbols)
+    return symbols
+
+def find_symbol_action():
+    symbols = fetch_future_symbols()
+    for symbol in symbols:
+        signal = get_buy_sell_signal(symbol)
+        if signal:
+            return symbol, signal
+    return None, None
+
+#future_change_margin_type_and_leverage_all()
 first_run = True
+symbol_action = ""
 while True:
     now = datetime.datetime.now()
 
     if now.second == 0 or first_run:
+        print(f"Current time: {now}", flush=True)
         first_run = False 
         try:
-            check_position()
-            for symbol in symbols:
-                signal = get_buy_sell_signal(symbol)
-                if signal:
-                    last_signal = None
-                    # ค้นหา BUY,SELL จาก position เดิม
-                    positions = client.futures_position_information()
-                    for position in positions:
-                        if position['symbol'] == symbol:
-                            if float(position['positionAmt']) > 0:
-                                last_signal = 'BUY'
-                            elif float(position['positionAmt']) < 0:
-                                last_signal = 'SELL'
-                            break
-
-                    print(f"Signal for {symbol} at {now}: {signal}", flush=True)
-                    if signal != last_signal:
-                        last_signal = signal
-                        print(f"Signal for {symbol} at {now}: {signal}", flush=True)
-                        future_create_position(symbol, signal)
-                        send_line_notify(f"Signal for {symbol} at {now}: {signal}")
+            # หา position ที่เปิดอยู่
+            positions = client.futures_position_information()
+            have_position = False
+            for position in positions:
+                if float(position['positionAmt']) != 0:
+                    have_position = True
+                    break
+            if not have_position:
+                symbol_action,signal = find_symbol_action()
+                if symbol_action and signal:
+                    future_create_position(symbol_action, signal)
+                    send_line_notify(f"Open Order Signal for {symbol_action} at {now}: {signal}")
+            else:
+                check_position()
 
             time.sleep(1)
 
