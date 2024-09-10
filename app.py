@@ -80,8 +80,8 @@ def future_get_usdt_balance():
         if item['asset'] == 'USDT':
             balance_usdt = float(item['balance'])
             break
-    if balance_usdt > 50:
-        balance_usdt = 50
+    if balance_usdt > 100:
+        balance_usdt = 100
     print(f"USDT balance: {balance_usdt}", flush=True)
     balance_usdt = balance_usdt / 1.5
     return balance_usdt
