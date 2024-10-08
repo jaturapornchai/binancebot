@@ -15,7 +15,6 @@ from sklearn.linear_model import LinearRegression
 api_key="wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN"
 api_secret="8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU"
 line_token="aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
-line_token_group="u63d6tjQyeDimyWKB8p2a4uecdtZ7DkKuhTSFNfJoGO"
 
 # สร้างอินสแตนซ์ของ Binance Futures
 client = Client(api_key, api_secret)
@@ -48,10 +47,6 @@ def send_line_notify(message):
     send_line_notify_thread(message, line_token)
     print("Send line notify", flush=True)
     
-def send_line_notify_group(message):
-    #send_line_notify_thread(message, line_token_group)
-    print("Send line notify group", flush=True)
-
 def fetch_future_symbols():
     exchange_info = client.futures_exchange_info()
     symbols = [s['symbol'] for s in exchange_info['symbols'] if s['symbol'].endswith('USDT') and s['status'] == 'TRADING']
@@ -79,13 +74,15 @@ def linear_regression_channel(data, window=100, devlen=2.0):
     return middle, upper_bound, lower_bound
 
 def check_breakout(data, upper_bound, lower_bound):
-    if data[-1] > upper_bound[-1]:
+    if len(data) < 2 or len(upper_bound) < 1 or len(lower_bound) < 1:
+        return 'normal'
+    if data[-1] > upper_bound[-1] and data[-2] <= upper_bound[-1]:
         return 'LONG'
-    elif data[-1] < lower_bound[-1]:
+    elif data[-1] < lower_bound[-1] and data[-2] >= lower_bound[-1]:
         return 'SHORT'
     else:
         return 'normal'
-
+    
 def check_signal(symbol, timeframe='1h', window=144, devlen=2.0):
     try:
         ohlcv = client.futures_klines(symbol=symbol, interval=timeframe, limit=window)
@@ -139,7 +136,7 @@ def future_find_signal(timeframe, window=100, devlen=2.0):
                         #future_open_position(symbol, 'BUY')
                     if signal == 'SHORT':
                         print(f"Open position {symbol} {signal}", flush=True)
-                        future_open_position(symbol, 'SELL')                
+                        #future_open_position(symbol, 'SELL')                
                     time.sleep(1)
                 except Exception as e:
                     print(f"Error sending LINE message: {e}", flush=True)        
@@ -545,7 +542,6 @@ def future_profit_or_loss_notify():
         )
 
     send_line_notify(message)
-    send_line_notify_group(message)
 
 def format_message(label, value, unit, width=15):
     return f"{label:<{width}} {value:>{width},.2f} {unit}"
@@ -588,7 +584,7 @@ while True:
             future_find_order_no_position()
             future_compare_stop_loss_all()
             future_profit_or_loss_notify()
-            transfer_usdt_to_future()
+            #transfer_usdt_to_future()
             time.sleep(120)
     except Exception as e:
         send_line_notify(f"Error: {e}")
