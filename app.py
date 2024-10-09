@@ -10,6 +10,7 @@ import requests
 import pandas as pd
 import numpy as np
 import math
+import ta
 
 # สร้าง client สำหรับการเชื่อมต่อ Binance API
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
@@ -20,6 +21,7 @@ symbols = []
 tread_time_frame = '1h'
 ignore_symbols = ['USDCUSDT']
 usdt_open_position = 25
+timeframe = Client.KLINE_INTERVAL_1HOUR
 
 def sync_time_with_server(client):
     try:
@@ -357,6 +359,59 @@ def get_all_future_position_and_save_to_file():
                 f.write(f"{position['symbol']}.p\n")
     print("Done", flush=True)        
     
+def future_create_position2(symbol, side,stop_loss,take_profit):
+    result = ""
+    try:
+        print(f"Opening position for {symbol} ({side})", flush=True)
+        
+        # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
+        offset = sync_time_with_server(client)
+        
+        # คำนวณ timestamp โดยใช้เวลาในเครื่องบวกกับ offset
+        timestamp = int(time.time() * 1000) + offset
+        
+        # เปลี่ยน leverage และ margin type
+        future_change_margin_type_and_leverage(symbol)
+        
+        # ดึงราคาปัจจุบัน
+        ticker = client.futures_symbol_ticker(symbol=symbol)
+        current_price = float(ticker['price'])
+        step_size = get_step_size(symbol)
+        
+        # คำนวณปริมาณการซื้อขาย (quantity)
+        quantity = usdt_open_position / current_price * future_leverage
+        quantity = (quantity // step_size) * step_size
+        
+        get_price_step_size = price_step_size(symbol)
+        stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
+        take_profit = math.floor(take_profit / get_price_step_size) * get_price_step_size
+        stop_loss = round(stop_loss, 8)
+        take_profit = round(take_profit, 8)
+
+        if side == 'BUY':
+            # สร้าง order ซื้อ
+            client.futures_create_order(
+                symbol=symbol, side='BUY', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=10000
+            )
+            # stop loss
+            client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
+            # take profit
+            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
+        elif side == 'SELL':
+            # สร้าง order ขาย
+            client.futures_create_order(
+                symbol=symbol, side='SELL', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=10000
+            )
+            # stop loss
+            client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
+            # take profit
+            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
+        result = "Success"
+    except Exception as e:
+        print(f"Error creating position for {symbol}: {e}", flush=True) 
+        result = str(e)
+
+    return result
 
 
 
@@ -364,64 +419,44 @@ def get_all_future_position_and_save_to_file():
 
 
 
-# ฟังก์ชันดึงข้อมูลจาก Binance API
-def get_klines(symbol, interval, limit=500):
-    klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-    return klines
-
-# ฟังก์ชันคำนวณ Linear Regression Channel
-def calculate_linear_regression_channel(df, period):
-    x = np.arange(period)
-    y = df['close'].values[-period:].astype(float)  # แปลงค่าเป็น float
-    slope, intercept = np.polyfit(x, y, 1)
-    reg_channel = intercept + slope * x
-    std_dev = np.std(y - reg_channel)
-    
-    upper_channel = reg_channel + std_dev * 2
-    lower_channel = reg_channel - std_dev * 2
-    
-    return reg_channel, upper_channel, lower_channel, slope
-
-# ฟังก์ชันตรวจสอบสัญญาณ Linear Regression Channel
-def check_lrc_signal(symbol, tread_time_frame):
-    interval = tread_time_frame
-    data = get_klines(symbol, interval)
-
-    # สร้าง DataFrame
-    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                     'close_time', 'quote_asset_volume', 'trades', 
-                                     'taker_buy_base', 'taker_buy_quote', 'ignore'])
-    
-    # แปลงคอลัมน์ที่ต้องการให้เป็น float
+# ฟังก์ชันดึงข้อมูลราคา
+def get_data(symbol, timeframe, limit=100):
+    klines = client.get_klines(symbol=symbol, interval=timeframe, limit=limit)
+    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                                       'close_time', 'quote_asset_volume', 'number_of_trades', 
+                                       'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df['close'] = df['close'].astype(float)
     df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
-    
-    # คำนวณ Linear Regression Channel
-    period = 100  # กำหนด period ที่ต้องการ
-    _, upper_channel, lower_channel, slope = calculate_linear_regression_channel(df, period)
+    return df
 
-    # ตรวจสอบสัญญาณจากแท่งก่อนหน้า
-    previous_high = float(df['high'].iloc[-2])
-    previous_low = float(df['low'].iloc[-2])
-    previous_close = float(df['close'].iloc[-2])
-    current_close = float(df['close'].iloc[-1])
+# ฟังก์ชันคำนวณ RSI
+def calculate_rsi(df):
+    df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+    return df
 
-    # เงื่อนไขการ return BUY และ SELL เมื่อแท่งเทียนทับเส้นพอดีและราคาปิดตามเงื่อนไข
-    if (previous_high >= upper_channel[-2] and 
-        previous_low <= upper_channel[-2] and 
-        slope < 0 and 
-        current_close < upper_channel[-1]):  
-        # ราคาสูงสุดและต่ำสุดทับเส้นบนพอดี, แนวโน้มลง และราคาปิดอยู่ใต้เส้นบน
-        return "XSELL"
-    elif (previous_high >= lower_channel[-2] and 
-          previous_low <= lower_channel[-2] and 
-          slope > 0 and 
-          current_close > lower_channel[-1]):  
-        # ราคาสูงสุดและต่ำสุดทับเส้นล่างพอดี, แนวโน้มขึ้น และราคาปิดอยู่เหนือเส้นล่าง
-        return "XBUY"
-    else:
-        return "HOLD"
+# ฟังก์ชันหาสัญญาณซื้อขาย
+def get_rsi_signals(df):
+    buy_signal = df['rsi'].iloc[-1] < 30
+    sell_signal = df['rsi'].iloc[-1] > 70
+    return buy_signal, sell_signal
+
+# ฟังก์ชันคำนวณ Stop Loss และ Take Profit
+def calculate_stop_loss_take_profit(df, entry_price, risk_ratio=1.5):
+    recent_low = df['low'].iloc[-10:].min()  # หาค่า low ต่ำสุดใน 10 แท่งเทียนล่าสุด
+    recent_high = df['high'].iloc[-10:].max()  # หาค่า high สูงสุดใน 10 แท่งเทียนล่าสุด
+
+    if entry_price > recent_high:  # กรณีเป็นจุดซื้อ
+        stop_loss = recent_low
+        take_profit = entry_price + (entry_price - stop_loss) * risk_ratio
+    else:  # กรณีเป็นจุดขาย
+        stop_loss = recent_high
+        take_profit = entry_price - (stop_loss - entry_price) * risk_ratio
+
+    return stop_loss, take_profit
+
+
 
 
 
@@ -433,9 +468,7 @@ while True:
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
         remove_order_stop_loss_or_take_profit()                
-        check_position_stop_loss_take_profit()
         first_run = False 
-        """
         try:
             # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
             offset = sync_time_with_server(client)
@@ -453,11 +486,18 @@ while True:
                             have_position = True
                             break
                     if not have_position:
-                        orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=10000)
-                        for order in orders:
-                            client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                        signal = check_lrc_signal(symbol, tread_time_frame)
-                        if signal == "BUY":
+                        data = get_data(symbol, timeframe)
+                        data = calculate_rsi(data)
+                        buy, sell = get_rsi_signals(data)
+
+                        if buy:
+                            result = future_create_position(symbol, 'BUY')
+                        elif sell:
+                            result = future_create_position(symbol, 'SELL')
+                            # เพิ่มคำสั่งขายที่นี่
+                            # 
+
+                        """if signal == "BUY":
                             print(f"Signal: {signal} for {symbol}", flush=True)
                             result = future_create_position(symbol, 'BUY')
                             if "Margin" in result:
@@ -466,7 +506,8 @@ while True:
                             print(f"Signal: {signal} for {symbol}", flush=True)
                             result = future_create_position(symbol, 'SELL')
                             if "Margin" in result:
-                                break
+                                break"""
+
                 except Exception as e:
                     print(f"Error: {e}", flush=True)
 
@@ -478,7 +519,6 @@ while True:
             print(f"Main Error: {e}", flush=True)
         
         check_position_stop_loss_take_profit()
-        """
         time.sleep(60)
 
     time.sleep(1)
