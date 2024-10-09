@@ -126,6 +126,8 @@ def check_position_stop_loss_take_profit():
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
+                        # ลบลงอีก 1 %
+                        stop_loss = stop_loss - (stop_loss * 0.01)
                         stop_loss = math.floor(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
                         # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss คูณ 1.5 + stop loss
                         take_profit = ((price - stop_loss) * 1.5) + price
@@ -152,6 +154,7 @@ def check_position_stop_loss_take_profit():
                             print(f"Stop loss for {symbol}: {stop_loss}, Take profit for {symbol}: {take_profit}", flush=True)
                             client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
+                        """
                         is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
@@ -159,11 +162,14 @@ def check_position_stop_loss_take_profit():
                                 break
                         if not is_take_profit:
                             client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
+                        """
                     else:
                         # หาราคาสูงสุด ย้อนไป 14 time frame
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
+                        # เพิ่มขึ้นอีก 1 %
+                        stop_loss = stop_loss + (stop_loss * 0.01)
                         stop_loss = math.ceil(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
                         # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss หาร 2 + stop loss * 1.5
                         take_profit = price - ((stop_loss - price) * 1.5) 
@@ -191,6 +197,7 @@ def check_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
 
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
+                        """
                         is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
@@ -198,6 +205,7 @@ def check_position_stop_loss_take_profit():
                                 break
                         if not is_take_profit:
                             client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
+                        """
             except Exception as e:
                 print(f"Error checking position: {e}", flush=True)
 
@@ -290,6 +298,7 @@ def remove_order_stop_loss_or_take_profit():
         
         # ตรวจสอบทุกคำสั่งที่เปิดอยู่
         for order in orders:
+            print(f"Cancel order {order['orderId']} {order['symbol']}", flush=True)
             try:
                 symbol = order['symbol']
                 # ลบ stop loss เท่านั้น
@@ -404,7 +413,7 @@ def check_lrc_signal(symbol, tread_time_frame):
         slope < 0 and 
         current_close < upper_channel[-1]):  
         # ราคาสูงสุดและต่ำสุดทับเส้นบนพอดี, แนวโน้มลง และราคาปิดอยู่ใต้เส้นบน
-        return "SELL"
+        return "XSELL"
     elif (previous_high >= lower_channel[-2] and 
           previous_low <= lower_channel[-2] and 
           slope > 0 and 
@@ -424,7 +433,9 @@ while True:
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
         remove_order_stop_loss_or_take_profit()                
+        check_position_stop_loss_take_profit()
         first_run = False 
+        """
         try:
             # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
             offset = sync_time_with_server(client)
@@ -467,6 +478,7 @@ while True:
             print(f"Main Error: {e}", flush=True)
         
         check_position_stop_loss_take_profit()
+        """
         time.sleep(60)
 
     time.sleep(1)
