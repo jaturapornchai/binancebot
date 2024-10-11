@@ -1,3 +1,6 @@
+import numpy as np
+import pandas as pd
+from scipy import stats
 #import matplotlib.pyplot as plt
 from scipy import stats
 import pandas as pd
@@ -10,7 +13,6 @@ import requests
 import pandas as pd
 import numpy as np
 import math
-import ta
 
 # สร้าง client สำหรับการเชื่อมต่อ Binance API
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
@@ -18,23 +20,18 @@ api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
 future_leverage = 5
 symbols = []
-tread_time_frame = '1h'
+tread_time_frame = '15m'
 ignore_symbols = ['USDCUSDT']
 usdt_open_position = 25
-timeframe = Client.KLINE_INTERVAL_1HOUR
+myRecvWindow = 20000  
 
 def sync_time_with_server(client):
-    try:
-        # ดึงเวลาเซิร์ฟเวอร์ Binance
-        server_time = client.get_server_time()
-        # ดึงเวลาในเครื่องของคุณ (หน่วย: milliseconds)
+    for _ in range(10):  # ลองหลายครั้งเพื่อลดผลกระทบจาก network latency
+        server_time = client.futures_time()['serverTime']
         local_time = int(time.time() * 1000)
-        # หาค่าคลาดเคลื่อนระหว่างเวลาของเครื่องและเซิร์ฟเวอร์
-        offset = server_time['serverTime'] - local_time
-        return offset  # คืนค่า offset สำหรับนำไปใช้ในคำสั่ง API
-    except Exception as e:
-        print(f"Error syncing time with server: {e}")
-        return 0
+        time_offset = server_time - local_time
+        return time_offset
+    raise Exception("ไม่สามารถซิงโครไนซ์เวลากับเซิร์ฟเวอร์ได้")
 
 def price_step_size(symbol):
     exchange_info = client.futures_exchange_info()
@@ -89,12 +86,12 @@ def future_create_position(symbol, side):
         if side == 'BUY':
             # สร้าง order ซื้อ
             client.futures_create_order(
-                symbol=symbol, side='BUY', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=10000
+                symbol=symbol, side='BUY', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=myRecvWindow
             )
         elif side == 'SELL':
             # สร้าง order ขาย
             client.futures_create_order(
-                symbol=symbol, side='SELL', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=10000
+                symbol=symbol, side='SELL', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=myRecvWindow
             )
         result = "Success"
     except Exception as e:
@@ -113,7 +110,7 @@ def check_position_stop_loss_take_profit():
         timestamp = int(time.time() * 1000) + offset
         
         positions = client.futures_position_information(
-            timestamp=timestamp, recvWindow=10000)  # ใช้ timestamp และ recvWindow
+            timestamp=timestamp, recvWindow=myRecvWindow)  # ใช้ timestamp และ recvWindow
         
         for position in positions:
             try:
@@ -128,8 +125,6 @@ def check_position_stop_loss_take_profit():
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
-                        # ลบลงอีก 1 %
-                        stop_loss = stop_loss - (stop_loss * 0.01)
                         stop_loss = math.floor(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
                         # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss คูณ 1.5 + stop loss
                         take_profit = ((price - stop_loss) * 1.5) + price
@@ -145,7 +140,7 @@ def check_position_stop_loss_take_profit():
                             take_profit = take_profit - price_step_size(symbol)
                         take_profit = round(take_profit, 8)
                         stop_loss = round(stop_loss, 8)
-                        find_order = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=10000)
+                        find_order = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
                         # ตรวจสอบว่ามี stop loss ถ้าไม่มีให้สร้างใหม่
                         is_stop_loss = False
                         for order in find_order:
@@ -154,24 +149,20 @@ def check_position_stop_loss_take_profit():
                                 break
                         if not is_stop_loss:
                             print(f"Stop loss for {symbol}: {stop_loss}, Take profit for {symbol}: {take_profit}", flush=True)
-                            client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
+                            client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        """
-                        is_take_profit = False
+                        """is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
-                        """
+                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
                     else:
                         # หาราคาสูงสุด ย้อนไป 14 time frame
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
-                        # เพิ่มขึ้นอีก 1 %
-                        stop_loss = stop_loss + (stop_loss * 0.01)
                         stop_loss = math.ceil(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
                         # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss หาร 2 + stop loss * 1.5
                         take_profit = price - ((stop_loss - price) * 1.5) 
@@ -187,7 +178,7 @@ def check_position_stop_loss_take_profit():
                             take_profit = take_profit + price_step_size(symbol)
                         stop_loss = round(stop_loss, 8)
                         take_profit = round(take_profit, 8)
-                        find_order = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=10000)
+                        find_order = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
                         # ตรวจสอบว่ามี stop loss ถ้าไม่มีให้สร้างใหม่
                         is_stop_loss = False
                         for order in find_order:
@@ -196,18 +187,16 @@ def check_position_stop_loss_take_profit():
                                 break
                         if not is_stop_loss:
                             print(f"Stop loss for {symbol}: {stop_loss}, Take profit for {symbol}: {take_profit}", flush=True)
-                            client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
+                            client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
 
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        """
-                        is_take_profit = False
+                        """is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=10000,closePosition=True)
-                        """
+                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
             except Exception as e:
                 print(f"Error checking position: {e}", flush=True)
 
@@ -225,12 +214,12 @@ def future_change_margin_type_and_leverage(symbol):
         timestamp = int(time.time() * 1000) + offset
         
         # ตรวจสอบตำแหน่งปัจจุบัน
-        positions = client.futures_position_information(symbol=symbol, timestamp=timestamp, recvWindow=10000)  # ใช้ timestamp และ recvWindow
+        positions = client.futures_position_information(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)  # ใช้ timestamp และ recvWindow
         
         # เปลี่ยนจาก isolated margin เป็น cross margin ถ้าจำเป็น
         if positions[0]['marginType'] == 'isolated':
             print(f"Change margin type to CROSS for {symbol}", flush=True)
-            client.futures_change_margin_type(symbol=symbol, marginType='CROSSED', timestamp=timestamp, recvWindow=10000)  # ใช้ timestamp และ recvWindow
+            client.futures_change_margin_type(symbol=symbol, marginType='CROSSED', timestamp=timestamp, recvWindow=myRecvWindow)  # ใช้ timestamp และ recvWindow
             time.sleep(2)
     
     except Exception as e:
@@ -238,13 +227,13 @@ def future_change_margin_type_and_leverage(symbol):
     
     try:
         # ตรวจสอบ leverage ปัจจุบัน
-        positions = client.futures_position_information(symbol=symbol, timestamp=timestamp, recvWindow=10000)  # ใช้ timestamp และ recvWindow
+        positions = client.futures_position_information(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)  # ใช้ timestamp และ recvWindow
         current_leverage = positions[0]['leverage']
         
         # เปลี่ยน leverage ถ้าจำเป็น
         if int(current_leverage) != future_leverage:
             print(f"Change leverage to {future_leverage} for {symbol}", flush=True)
-            client.futures_change_leverage(symbol=symbol, leverage=future_leverage, timestamp=timestamp, recvWindow=10000)  # ใช้ timestamp และ recvWindow
+            client.futures_change_leverage(symbol=symbol, leverage=future_leverage, timestamp=timestamp, recvWindow=myRecvWindow)  # ใช้ timestamp และ recvWindow
     
     except Exception as e:
         print(f"Error checking or setting leverage for {symbol}: {e}", flush=True)
@@ -289,23 +278,19 @@ def fetch_future_symbols():
 
 def remove_order_stop_loss_or_take_profit():
     try:
-        # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
-        offset = sync_time_with_server(client)
-        
-        # คำนวณ timestamp โดยใช้เวลาในเครื่องบวกกับ offset
-        timestamp = int(time.time() * 1000) + offset
+        time_offset = sync_time_with_server(client)
+        timestamp = int(time.time() * 1000 + time_offset)
         
         # ดึงข้อมูล open orders
-        orders = client.futures_get_open_orders(timestamp=timestamp, recvWindow=10000)  # เพิ่ม recvWindow
+        orders = client.futures_get_open_orders(timestamp=timestamp, recvWindow=myRecvWindow)  # เพิ่ม recvWindow
         
         # ตรวจสอบทุกคำสั่งที่เปิดอยู่
         for order in orders:
-            print(f"Cancel order {order['orderId']} {order['symbol']}", flush=True)
             try:
                 symbol = order['symbol']
                 # ลบ stop loss เท่านั้น
                 if order['type'] == 'STOP_MARKET' or order['type'] == 'TAKE_PROFIT_MARKET':
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'], timestamp=timestamp, recvWindow=10000)  # เพิ่ม recvWindow
+                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'], timestamp=timestamp, recvWindow=myRecvWindow)  # เพิ่ม recvWindow
             
             except Exception as e:
                 print(f"Error canceling order for {symbol}: {e}", flush=True)
@@ -315,23 +300,22 @@ def remove_order_stop_loss_or_take_profit():
 
 def remove_order_no_position():
     try:
-        # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
-        offset = sync_time_with_server(client)
-        
-        # คำนวณ timestamp โดยใช้เวลาในเครื่องบวกกับ offset
-        timestamp = int(time.time() * 1000) + offset
-        
+        time_offset = sync_time_with_server(client)
+        timestamp = int(time.time() * 1000 + time_offset)
+
         # ดึงข้อมูล open orders
-        orders = client.futures_get_open_orders(timestamp=timestamp, recvWindow=10000)  # เพิ่ม recvWindow
-        
+        orders = client.futures_get_open_orders(
+            timestamp=timestamp,
+            recvWindow=myRecvWindow) 
         # ตรวจสอบทุกคำสั่งที่เปิดอยู่
         for order in orders:
+            print(f"Checking order {order['orderId']} {order['symbol']}", flush=True)
             try:
                 symbol = order['symbol']
                 is_position = False
                 
                 # ดึงข้อมูล position
-                position_info = client.futures_position_information(symbol=symbol, timestamp=timestamp, recvWindow=10000)  # เพิ่ม recvWindow
+                position_info = client.futures_position_information(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)  
                 position_amount = float(position_info[0]['positionAmt'])
                 
                 # ตรวจสอบว่ามี position อยู่หรือไม่
@@ -341,11 +325,10 @@ def remove_order_no_position():
                 # ถ้าไม่มี position ให้ยกเลิก order
                 if not is_position:
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'], timestamp=timestamp, recvWindow=10000)  # เพิ่ม recvWindow
+                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'], timestamp=timestamp, recvWindow=myRecvWindow) 
             
             except Exception as e:
                 print(f"remove_order_no_position Error canceling order for {symbol}: {e}", flush=True)
-    
     except Exception as e:
         print(f"remove_order_no_position Error: {e}", flush=True)
 
@@ -359,102 +342,89 @@ def get_all_future_position_and_save_to_file():
                 f.write(f"{position['symbol']}.p\n")
     print("Done", flush=True)        
     
-def future_create_position2(symbol, side,stop_loss,take_profit):
-    result = ""
-    try:
-        print(f"Opening position for {symbol} ({side})", flush=True)
+
+
+
+
+
+
+
+
+
+
+# ฟังก์ชันดึงข้อมูลจาก Binance API
+def get_klines(symbol, interval, limit=500):
+    klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+    return klines
+
+# ฟังก์ชันหาจุด Higher High (HH), Higher Low (HL), Lower High (LH), Lower Low (LL)
+def find_structure_points(df, n=5):
+    df['HH'] = df['high'].rolling(window=2*n+1, center=True).apply(lambda x: x[n] == max(x), raw=True)
+    df['LL'] = df['low'].rolling(window=2*n+1, center=True).apply(lambda x: x[n] == min(x), raw=True)
+    
+    # แก้ไขเพื่อใช้ == False แทนการใช้ ~
+    df['HL'] = (df['low'] > df['low'].shift(1)) & (df['low'] > df['low'].shift(-1)) & (df['HH'] == False)
+    df['LH'] = (df['high'] < df['high'].shift(1)) & (df['high'] < df['high'].shift(-1)) & (df['LL'] == False)
+    
+    return df
+    
+# ฟังก์ชันตรวจจับ Break of Structure (BOS)
+def detect_bos(df):
+    df['Uptrend'] = 0
+    df['Downtrend'] = 0
+    df['BOS_Up'] = False
+    df['BOS_Down'] = False
+
+    current_trend = 'Unknown'
+    last_LL = np.nan
+    last_HH = np.nan
+
+    for i in range(1, len(df)):
+        if df['HH'].iloc[i]:
+            if current_trend == 'Down' and df['high'].iloc[i] > last_HH:
+                df.loc[i, 'BOS_Up'] = True
+                current_trend = 'Up'
+            last_HH = df['high'].iloc[i]
+        elif df['LL'].iloc[i]:
+            if current_trend == 'Up' and df['low'].iloc[i] < last_LL:
+                df.loc[i, 'BOS_Down'] = True
+                current_trend = 'Down'
+            last_LL = df['low'].iloc[i]
         
-        # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
-        offset = sync_time_with_server(client)
-        
-        # คำนวณ timestamp โดยใช้เวลาในเครื่องบวกกับ offset
-        timestamp = int(time.time() * 1000) + offset
-        
-        # เปลี่ยน leverage และ margin type
-        future_change_margin_type_and_leverage(symbol)
-        
-        # ดึงราคาปัจจุบัน
-        ticker = client.futures_symbol_ticker(symbol=symbol)
-        current_price = float(ticker['price'])
-        step_size = get_step_size(symbol)
-        
-        # คำนวณปริมาณการซื้อขาย (quantity)
-        quantity = usdt_open_position / current_price * future_leverage
-        quantity = (quantity // step_size) * step_size
-        
-        get_price_step_size = price_step_size(symbol)
-        stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
-        take_profit = math.floor(take_profit / get_price_step_size) * get_price_step_size
-        stop_loss = round(stop_loss, 8)
-        take_profit = round(take_profit, 8)
+        df.loc[i, 'Uptrend'] = 1 if current_trend == 'Up' else 0
+        df.loc[i, 'Downtrend'] = 1 if current_trend == 'Down' else 0
 
-        if side == 'BUY':
-            # สร้าง order ซื้อ
-            client.futures_create_order(
-                symbol=symbol, side='BUY', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=10000
-            )
-            # stop loss
-            client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
-            # take profit
-            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
-        elif side == 'SELL':
-            # สร้าง order ขาย
-            client.futures_create_order(
-                symbol=symbol, side='SELL', type='MARKET', quantity=quantity, timestamp=timestamp, recvWindow=10000
-            )
-            # stop loss
-            client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
-            # take profit
-            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(quantity), timestamp=timestamp, recvWindow=10000,closePosition=True)
-        result = "Success"
-    except Exception as e:
-        print(f"Error creating position for {symbol}: {e}", flush=True) 
-        result = str(e)
+    return df
 
-    return result
+# ฟังก์ชันตรวจสอบสัญญาณ Market Structure
+def check_market_structure_signal(symbol, trend_time_frame):
+    interval = trend_time_frame
+    data = get_klines(symbol, interval, limit=500)
 
-
-
-
-
-
-
-# ฟังก์ชันดึงข้อมูลราคา
-def get_data(symbol, timeframe, limit=100):
-    klines = client.get_klines(symbol=symbol, interval=timeframe, limit=limit)
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                       'close_time', 'quote_asset_volume', 'number_of_trades', 
-                                       'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                                     'close_time', 'quote_asset_volume', 'trades', 
+                                     'taker_buy_base', 'taker_buy_quote', 'ignore'])
+    
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df['close'] = df['close'].astype(float)
+    df['open'] = df['open'].astype(float)
     df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
-    return df
+    df['close'] = df['close'].astype(float)
+    
+    # หาจุด Structure และ BOS
+    df = find_structure_points(df)
+    df = detect_bos(df)
+    
+    current_price = float(df['close'].iloc[-1])
 
-# ฟังก์ชันคำนวณ RSI
-def calculate_rsi(df):
-    df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
-    return df
+    if df['BOS_Up'].iloc[-1]:
+        return "BUY", current_price
+    elif df['BOS_Down'].iloc[-1]:
+        return "SELL", current_price
+    
+    return "HOLD", current_price
 
-# ฟังก์ชันหาสัญญาณซื้อขาย
-def get_rsi_signals(df):
-    buy_signal = df['rsi'].iloc[-1] < 30
-    sell_signal = df['rsi'].iloc[-1] > 70
-    return buy_signal, sell_signal
 
-# ฟังก์ชันคำนวณ Stop Loss และ Take Profit
-def calculate_stop_loss_take_profit(df, entry_price, risk_ratio=1.5):
-    recent_low = df['low'].iloc[-10:].min()  # หาค่า low ต่ำสุดใน 10 แท่งเทียนล่าสุด
-    recent_high = df['high'].iloc[-10:].max()  # หาค่า high สูงสุดใน 10 แท่งเทียนล่าสุด
-
-    if entry_price > recent_high:  # กรณีเป็นจุดซื้อ
-        stop_loss = recent_low
-        take_profit = entry_price + (entry_price - stop_loss) * risk_ratio
-    else:  # กรณีเป็นจุดขาย
-        stop_loss = recent_high
-        take_profit = entry_price - (stop_loss - entry_price) * risk_ratio
-
-    return stop_loss, take_profit
 
 
 
@@ -464,7 +434,7 @@ def calculate_stop_loss_take_profit(df, entry_price, risk_ratio=1.5):
 first_run = True
 while True:
     now = datetime.datetime.now()
-    if now.minute == 0 or first_run:
+    if now.minute % 15 == 0 or first_run:
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
         remove_order_stop_loss_or_take_profit()                
@@ -476,7 +446,7 @@ while True:
             # คำนวณ timestamp โดยใช้เวลาในเครื่องบวกกับ offset
             timestamp = int(time.time() * 1000) + offset
             
-            positions = client.futures_position_information(timestamp=timestamp, recvWindow=10000)          
+            positions = client.futures_position_information(timestamp=timestamp, recvWindow=myRecvWindow)  
             symbols = fetch_future_symbols()
             for symbol in symbols:
                 try:
@@ -486,18 +456,12 @@ while True:
                             have_position = True
                             break
                     if not have_position:
-                        data = get_data(symbol, timeframe)
-                        data = calculate_rsi(data)
-                        buy, sell = get_rsi_signals(data)
-
-                        if buy:
-                            result = future_create_position(symbol, 'BUY')
-                        elif sell:
-                            result = future_create_position(symbol, 'SELL')
-                            # เพิ่มคำสั่งขายที่นี่
-                            # 
-
-                        """if signal == "BUY":
+                        orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
+                        for order in orders:
+                            client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
+                        signal,current_close = check_market_structure_signal(symbol, tread_time_frame)
+                        print(f"Signal: {signal} for {symbol}", flush=True)
+                        if signal == "BUY":
                             print(f"Signal: {signal} for {symbol}", flush=True)
                             result = future_create_position(symbol, 'BUY')
                             if "Margin" in result:
@@ -506,8 +470,7 @@ while True:
                             print(f"Signal: {signal} for {symbol}", flush=True)
                             result = future_create_position(symbol, 'SELL')
                             if "Margin" in result:
-                                break"""
-
+                                break
                 except Exception as e:
                     print(f"Error: {e}", flush=True)
 
