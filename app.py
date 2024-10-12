@@ -1,9 +1,5 @@
 import numpy as np
 import pandas as pd
-from scipy import stats
-#import matplotlib.pyplot as plt
-from scipy import stats
-import pandas as pd
 from typing import List
 import numpy as np
 from binance.client import Client
@@ -20,7 +16,7 @@ api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
 future_leverage = 5
 symbols = []
-tread_time_frame = '15m'
+tread_time_frame = '1h'
 ignore_symbols = ['USDCUSDT']
 usdt_open_position = 25
 myRecvWindow = 20000  
@@ -126,8 +122,8 @@ def check_position_stop_loss_take_profit():
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
                         stop_loss = math.floor(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
-                        # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss คูณ 1.5 + stop loss
-                        take_profit = ((price - stop_loss) * 1.5) + price
+                        # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss คูณ 1.25 + stop loss
+                        take_profit = ((price - stop_loss) * 1.25) + price
                         if take_profit < position_entry_price:
                             take_profit = position_entry_price
                         take_profit = math.ceil(take_profit / price_step_size(symbol)) * price_step_size(symbol)
@@ -151,21 +147,21 @@ def check_position_stop_loss_take_profit():
                             print(f"Stop loss for {symbol}: {stop_loss}, Take profit for {symbol}: {take_profit}", flush=True)
                             client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        """is_take_profit = False
+                        is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
+                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                     else:
                         # หาราคาสูงสุด ย้อนไป 14 time frame
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
                         stop_loss = math.ceil(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
-                        # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss หาร 2 + stop loss * 1.5
-                        take_profit = price - ((stop_loss - price) * 1.5) 
+                        # take profit = ช่องว่างระหว่าง ราคาปัจจุบัน - stop loss หาร 2 + stop loss * 1.25
+                        take_profit = price - ((stop_loss - price) * 1.25) 
                         if take_profit > position_entry_price:
                             take_profit = position_entry_price
                         take_profit = math.floor(take_profit / price_step_size(symbol)) * price_step_size(symbol)
@@ -190,13 +186,13 @@ def check_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
 
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        """is_take_profit = False
+                        is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
+                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
             except Exception as e:
                 print(f"Error checking position: {e}", flush=True)
 
@@ -347,82 +343,30 @@ def get_all_future_position_and_save_to_file():
 
 
 
-
-
-
-
-
-# ฟังก์ชันดึงข้อมูลจาก Binance API
-def get_klines(symbol, interval, limit=500):
-    klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-    return klines
-
-# ฟังก์ชันหาจุด Higher High (HH), Higher Low (HL), Lower High (LH), Lower Low (LL)
-def find_structure_points(df, n=5):
-    df['HH'] = df['high'].rolling(window=2*n+1, center=True).apply(lambda x: x[n] == max(x), raw=True)
-    df['LL'] = df['low'].rolling(window=2*n+1, center=True).apply(lambda x: x[n] == min(x), raw=True)
+# ฟังก์ชันดึงข้อมูลและตรวจสอบสัญญาณการซื้อขาย
+def check_signal(symbol):
     
-    # แก้ไขเพื่อใช้ == False แทนการใช้ ~
-    df['HL'] = (df['low'] > df['low'].shift(1)) & (df['low'] > df['low'].shift(-1)) & (df['HH'] == False)
-    df['LH'] = (df['high'] < df['high'].shift(1)) & (df['high'] < df['high'].shift(-1)) & (df['LL'] == False)
+    # ดึงข้อมูลใน time frame 1 ชั่วโมง (1h)
+    klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=50)
     
-    return df
-    
-# ฟังก์ชันตรวจจับ Break of Structure (BOS)
-def detect_bos(df):
-    df['Uptrend'] = 0
-    df['Downtrend'] = 0
-    df['BOS_Up'] = False
-    df['BOS_Down'] = False
-
-    current_trend = 'Unknown'
-    last_LL = np.nan
-    last_HH = np.nan
-
-    for i in range(1, len(df)):
-        if df['HH'].iloc[i]:
-            if current_trend == 'Down' and df['high'].iloc[i] > last_HH:
-                df.loc[i, 'BOS_Up'] = True
-                current_trend = 'Up'
-            last_HH = df['high'].iloc[i]
-        elif df['LL'].iloc[i]:
-            if current_trend == 'Up' and df['low'].iloc[i] < last_LL:
-                df.loc[i, 'BOS_Down'] = True
-                current_trend = 'Down'
-            last_LL = df['low'].iloc[i]
-        
-        df.loc[i, 'Uptrend'] = 1 if current_trend == 'Up' else 0
-        df.loc[i, 'Downtrend'] = 1 if current_trend == 'Down' else 0
-
-    return df
-
-# ฟังก์ชันตรวจสอบสัญญาณ Market Structure
-def check_market_structure_signal(symbol, trend_time_frame):
-    interval = trend_time_frame
-    data = get_klines(symbol, interval, limit=500)
-
-    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                     'close_time', 'quote_asset_volume', 'trades', 
-                                     'taker_buy_base', 'taker_buy_quote', 'ignore'])
-    
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df['open'] = df['open'].astype(float)
-    df['high'] = df['high'].astype(float)
-    df['low'] = df['low'].astype(float)
+    # แปลงข้อมูลเป็น DataFrame เพื่อความสะดวกในการประมวลผล
+    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     df['close'] = df['close'].astype(float)
     
-    # หาจุด Structure และ BOS
-    df = find_structure_points(df)
-    df = detect_bos(df)
+    # คำนวณ SMA (ค่าเฉลี่ยเคลื่อนที่)
+    sma1 = df['close'].rolling(window=5).mean()
+    sma2 = df['close'].rolling(window=35).mean()
     
-    current_price = float(df['close'].iloc[-1])
-
-    if df['BOS_Up'].iloc[-1]:
-        return "BUY", current_price
-    elif df['BOS_Down'].iloc[-1]:
-        return "SELL", current_price
+    # คำนวณความแตกต่างระหว่าง SMA สองค่า
+    sma_diff = sma1 - sma2
     
-    return "HOLD", current_price
+    # ตรวจสอบเงื่อนไขการตัด 0 ขึ้นหรือลงในช่วงข้อมูลล่าสุด
+    if sma_diff.iloc[-1] > 0 and sma_diff.iloc[-2] <= 0:
+        return "BUY"
+    elif sma_diff.iloc[-1] < 0 and sma_diff.iloc[-2] >= 0:
+        return "SELL"
+    else:
+        return "HOLD"
 
 
 
@@ -434,7 +378,7 @@ def check_market_structure_signal(symbol, trend_time_frame):
 first_run = True
 while True:
     now = datetime.datetime.now()
-    if now.minute % 15 == 0 or first_run:
+    if now.minute == 0 or first_run:
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
         remove_order_stop_loss_or_take_profit()                
@@ -459,8 +403,14 @@ while True:
                         orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
                         for order in orders:
                             client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                        signal,current_close = check_market_structure_signal(symbol, tread_time_frame)
-                        print(f"Signal: {signal} for {symbol}", flush=True)
+
+
+                        signal = check_signal(symbol )
+                        
+                        print(f"{symbol} Latest Signal: {signal}", flush=True)
+
+
+
                         if signal == "BUY":
                             print(f"Signal: {signal} for {symbol}", flush=True)
                             result = future_create_position(symbol, 'BUY')
