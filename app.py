@@ -365,7 +365,6 @@ def get_all_future_position_and_save_to_file():
 
 
 
-
 # ดึงข้อมูลจาก Binance
 def get_binance_data(symbol, interval, limit=1000):
     klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
@@ -380,18 +379,19 @@ def get_binance_data(symbol, interval, limit=1000):
     return df
 
 # คำนวณค่า EMA
-def calculate_ema(df, span):
-    return df['close'].ewm(span=span, adjust=False).mean()
+def calculate_ema(df, short_span=25, long_span=99):
+    df['ema25'] = df['close'].ewm(span=short_span, adjust=False).mean()
+    df['ema99'] = df['close'].ewm(span=long_span, adjust=False).mean()
+    return df
 
-# ตรวจสอบสัญญาณจาก EMA ที่ time frame ล่าสุด -1
-def check_ema_signal(df):
-    df['EMA25'] = calculate_ema(df, 25)
-    df['EMA99'] = calculate_ema(df, 99)
+# ตรวจสอบสัญญาณจาก EMA ที่ time frame ก่อนหน้า
+def check_ema_signal_previous(df):
+    df = calculate_ema(df)
     
-    # ตรวจสอบการตัดกันของ EMA25 และ EMA99 ที่ time frame ล่าสุด -1
-    if df['EMA25'].iloc[-2] <= df['EMA99'].iloc[-2] and df['EMA25'].iloc[-1] > df['EMA99'].iloc[-1]:
+    # ตรวจสอบการตัดกันของ EMA25 และ EMA99 ที่ time frame - 1
+    if df['ema25'].iloc[-3] < df['ema99'].iloc[-3] and df['ema25'].iloc[-2] > df['ema99'].iloc[-2]:
         return "BUY"
-    elif df['EMA25'].iloc[-2] >= df['EMA99'].iloc[-2] and df['EMA25'].iloc[-1] < df['EMA99'].iloc[-1]:
+    elif df['ema25'].iloc[-3] > df['ema99'].iloc[-3] and df['ema25'].iloc[-2] < df['ema99'].iloc[-2]:
         return "SELL"
     else:
         return "HOLD"
@@ -400,8 +400,8 @@ def check_ema_signal(df):
 def check_signal(symbol, interval):
     df = get_binance_data(symbol, interval)
     
-    # ตรวจสอบสัญญาณ EMA ที่ time frame ล่าสุด -1
-    signal = check_ema_signal(df)
+    # ตรวจสอบสัญญาณ EMA ที่ time frame - 1
+    signal = check_ema_signal_previous(df)
     
     return signal
 
