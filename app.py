@@ -140,8 +140,8 @@ def check_position_stop_loss_take_profit():
                     side = 'LONG' if position_amount > 0 else 'SHORT'
                     current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
                     if side == 'LONG':
-                        # หาราคาต่ำสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
+                        # หาราคาต่ำสุด ย้อนไป 144 time frame
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=144)
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
                         stop_loss = math.floor(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
@@ -171,15 +171,15 @@ def check_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
                         is_take_profit = False
-                        for order in find_order:
+                        """for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
+                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
                     else:
-                        # หาราคาสูงสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
+                        # หาราคาสูงสุด ย้อนไป 144 time frame
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=144)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
                         stop_loss = math.ceil(stop_loss / price_step_size(symbol)) * price_step_size(symbol)
@@ -209,13 +209,13 @@ def check_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
 
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        is_take_profit = False
+                        """is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
+                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
             except Exception as e:
                 print(f"Error checking position: {e}", flush=True)
 
@@ -364,6 +364,8 @@ def get_all_future_position_and_save_to_file():
 
 
 
+
+
 # ดึงข้อมูลจาก Binance
 def get_binance_data(symbol, interval, limit=1000):
     klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
@@ -377,20 +379,19 @@ def get_binance_data(symbol, interval, limit=1000):
     
     return df
 
-# คำนวณค่า MACD
-def calculate_macd(df, short_span=12, long_span=26, signal_span=9):
-    df['macd_line'] = df['close'].ewm(span=short_span, adjust=False).mean() - df['close'].ewm(span=long_span, adjust=False).mean()
-    df['signal_line'] = df['macd_line'].ewm(span=signal_span, adjust=False).mean()
-    return df
+# คำนวณค่า EMA
+def calculate_ema(df, span):
+    return df['close'].ewm(span=span, adjust=False).mean()
 
-# ตรวจสอบสัญญาณจาก MACD ที่ time frame ก่อนหน้า
-def check_macd_signal_previous(df):
-    df = calculate_macd(df)
+# ตรวจสอบสัญญาณจาก EMA ที่ time frame ล่าสุด -1
+def check_ema_signal(df):
+    df['EMA25'] = calculate_ema(df, 25)
+    df['EMA99'] = calculate_ema(df, 99)
     
-    # ตรวจสอบการตัดกันของ MACD Line และ Signal Line ที่ time frame - 1
-    if df['macd_line'].iloc[-3] < df['signal_line'].iloc[-3] and df['macd_line'].iloc[-2] > df['signal_line'].iloc[-2]:
+    # ตรวจสอบการตัดกันของ EMA25 และ EMA99 ที่ time frame ล่าสุด -1
+    if df['EMA25'].iloc[-2] <= df['EMA99'].iloc[-2] and df['EMA25'].iloc[-1] > df['EMA99'].iloc[-1]:
         return "BUY"
-    elif df['macd_line'].iloc[-3] > df['signal_line'].iloc[-3] and df['macd_line'].iloc[-2] < df['signal_line'].iloc[-2]:
+    elif df['EMA25'].iloc[-2] >= df['EMA99'].iloc[-2] and df['EMA25'].iloc[-1] < df['EMA99'].iloc[-1]:
         return "SELL"
     else:
         return "HOLD"
@@ -399,10 +400,14 @@ def check_macd_signal_previous(df):
 def check_signal(symbol, interval):
     df = get_binance_data(symbol, interval)
     
-    # ตรวจสอบสัญญาณ MACD ที่ time frame - 1
-    signal = check_macd_signal_previous(df)
+    # ตรวจสอบสัญญาณ EMA ที่ time frame ล่าสุด -1
+    signal = check_ema_signal(df)
     
     return signal
+
+
+
+
 
 
 
