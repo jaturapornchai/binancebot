@@ -122,8 +122,6 @@ def check_position_stop_loss_take_profit():
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
-                        # เพิ่ม stop loss อีก 0.5%
-                        stop_loss = stop_loss - (stop_loss * 0.005)
                         stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
                         take_profit = ((current_price - stop_loss) * 1.0) + current_price
                         if take_profit < current_price:
@@ -161,8 +159,6 @@ def check_position_stop_loss_take_profit():
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=14)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
-                        # เพิ่ม stop loss อีก 0.5%
-                        stop_loss = stop_loss + (stop_loss * 0.005)
                         stop_loss = math.ceil(stop_loss / get_price_step_size) * get_price_step_size
                         take_profit = current_price - ((stop_loss - current_price) * 2.0) 
                         if take_profit > current_price:
