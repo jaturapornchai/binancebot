@@ -159,7 +159,7 @@ def xcheck_position_stop_loss_take_profit():
                     get_price_step_size = price_step_size(symbol)
                     if side == 'LONG':
                         # หาราคาต่ำสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=8)
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=3)
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
                         stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
@@ -187,16 +187,16 @@ def xcheck_position_stop_loss_take_profit():
                             print(f"Stop loss for {symbol}: {stop_loss}, Take profit for {symbol}: {take_profit}", flush=True)
                             client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        is_take_profit = False
+                        """is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
+                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
                     else:
                         # หาราคาสูงสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=8)
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=3)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
                         stop_loss = math.ceil(stop_loss / get_price_step_size) * get_price_step_size
@@ -225,13 +225,13 @@ def xcheck_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
 
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        is_take_profit = False
+                        """is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
+                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
             except Exception as e:
                 print(f"Error checking position: {e}", flush=True)
 
@@ -448,22 +448,28 @@ def linear_regression_channel(df, period=100, dev_multiplier=1):
     df['upper_channel'] = df['regression_line'] + std_dev * dev_multiplier
     df['lower_channel'] = df['regression_line'] - std_dev * dev_multiplier
     
+    # เพิ่มการคำนวณทิศทางเทรนด์
+    df['trend'] = np.where(slope > 0, 'UP', 'DOWN')
+    
     return df
 
 def check_buy_sell_signal(df):
     X0 = df.iloc[-1]  # แท่งล่าสุด
     X1 = df.iloc[-2]  # แท่งก่อนหน้า
+    current_trend = X0['trend']
     
     buy_conditions = [
         X1['high'] >= X1['upper_channel'] and X1['low'] <= X1['upper_channel'],  # X1 ทับเส้นบน
         X0['high'] >= X0['upper_channel'] and X0['low'] <= X0['upper_channel'],  # X0 ทับเส้นบน
-        X0['close'] < X0['upper_channel']  # Close อยู่ด้านบน
+        X0['close'] > X0['upper_channel'],  # Close อยู่ด้านบน
+        current_trend == 'DOWN'  # เพิ่มเงื่อนไขเทรนด์ลง
     ]
     
     sell_conditions = [
         X1['high'] >= X1['lower_channel'] and X1['low'] <= X1['lower_channel'],  # X1 ทับเส้นล่าง
         X0['high'] >= X0['lower_channel'] and X0['low'] <= X0['lower_channel'],  # X0 ทับเส้นล่าง
-        X0['close'] > X0['lower_channel']  # Close อยู่ด้านล่าง
+        X0['close'] < X0['lower_channel'],  # Close อยู่ด้านล่าง
+        current_trend == 'UP'  # เพิ่มเงื่อนไขเทรนด์ขึ้น
     ]
     
     if all(buy_conditions):
@@ -479,7 +485,6 @@ def check_signal(symbol, interval):
         return check_buy_sell_signal(df)
     except:
         return "HOLD"  # Return HOLD in case of any errors
-
 
 
 
@@ -526,12 +531,12 @@ while True:
                         
                         if signal == "BUY":
                             print(f"Signal: {signal} for {symbol}", flush=True)
-                            result = future_create_position(symbol, 'SELL')
+                            result = future_create_position(symbol, 'BUY')
                             if "Margin" in result:
                                 break
                         elif signal == "SELL":
                             print(f"Signal: {signal} for {symbol}", flush=True)
-                            result = future_create_position(symbol, 'BUY')
+                            result = future_create_position(symbol, 'SELL')
                             if "Margin" in result:
                                 break
                     except Exception as e:
