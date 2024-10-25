@@ -434,7 +434,7 @@ def get_binance_data(symbol, interval, limit=100):
         df[col] = df[col].astype(float)
     return df
 
-def linear_regression_channel(df, period=100, dev_multiplier=1):
+def linear_regression_channel(df, period=100, dev_multiplier=2):
     x = np.arange(len(df))
     y = df['close'].values
     slope, intercept = np.polyfit(x[-period:], y[-period:], 1)
@@ -454,16 +454,22 @@ def check_buy_sell_signal(df):
     X0 = df.iloc[-1]  # แท่งล่าสุด
     X1 = df.iloc[-2]  # แท่งก่อนหน้า
     
+    # ตรวจสอบ BUY Signal:
+    # 1. แท่ง X0 และ X1 ต้องทับเส้นบน (high ต้องสูงกว่าหรือเท่ากับเส้นบน และ low ต้องต่ำกว่าหรือเท่ากับเส้นบน)
+    # 2. ราคาปิดล่าสุด (X0.close) ต้องอยู่เหนือเส้นบน
     buy_conditions = [
-        X1['high'] >= X1['upper_channel'] and X1['low'] <= X1['upper_channel'],  # X1 ทับเส้นบน
         X0['high'] >= X0['upper_channel'] and X0['low'] <= X0['upper_channel'],  # X0 ทับเส้นบน
-        X0['close'] < X0['upper_channel']  # Close อยู่ด้านบน
+        X1['high'] >= X1['upper_channel'] and X1['low'] <= X1['upper_channel'],  # X1 ทับเส้นบน
+        X0['close'] > X0['upper_channel']  # ราคาปิดล่าสุดอยู่เหนือเส้นบน
     ]
     
+    # ตรวจสอบ SELL Signal:
+    # 1. แท่ง X0 และ X1 ต้องทับเส้นล่าง (high ต้องสูงกว่าหรือเท่ากับเส้นล่าง และ low ต้องต่ำกว่าหรือเท่ากับเส้นล่าง)
+    # 2. ราคาปิดล่าสุด (X0.close) ต้องอยู่ต่ำกว่าเส้นล่าง
     sell_conditions = [
-        X1['high'] >= X1['lower_channel'] and X1['low'] <= X1['lower_channel'],  # X1 ทับเส้นล่าง
         X0['high'] >= X0['lower_channel'] and X0['low'] <= X0['lower_channel'],  # X0 ทับเส้นล่าง
-        X0['close'] > X0['lower_channel']  # Close อยู่ด้านล่าง
+        X1['high'] >= X1['lower_channel'] and X1['low'] <= X1['lower_channel'],  # X1 ทับเส้นล่าง
+        X0['close'] < X0['lower_channel']  # ราคาปิดล่าสุดอยู่ต่ำกว่าเส้นล่าง
     ]
     
     if all(buy_conditions):
@@ -526,12 +532,12 @@ while True:
                         
                         if signal == "BUY":
                             print(f"Signal: {signal} for {symbol}", flush=True)
-                            result = future_create_position(symbol, 'SELL')
+                            result = future_create_position(symbol, 'BUY')
                             if "Margin" in result:
                                 break
                         elif signal == "SELL":
                             print(f"Signal: {signal} for {symbol}", flush=True)
-                            result = future_create_position(symbol, 'BUY')
+                            result = future_create_position(symbol, 'SELL')
                             if "Margin" in result:
                                 break
                     except Exception as e:

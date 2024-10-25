@@ -15,11 +15,11 @@ from binance.exceptions import BinanceAPIException
 api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
 api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
-future_leverage = 10
+future_leverage = 5
 symbols = []
-tread_time_frame = '1h'
+tread_time_frame = '15m'
 ignore_symbols = ['USDCUSDT']
-usdt_open_position = 25
+usdt_open_position = 30
 myRecvWindow = 60000  
 
 def sync_time_with_server(client):
@@ -86,7 +86,7 @@ def future_create_position(symbol, side):
             )
             print(f"Created new position for {symbol}: {order}", flush=True)
             #time.sleep(2)
-            #create_position_stop_loss_take_profit(symbol, side, quantity)
+            create_position_stop_loss_take_profit(symbol, side, quantity)
             result = "Success"
         except BinanceAPIException as e:
             print(f"Error creating new position for {symbol}: {e}", flush=True)
@@ -159,11 +159,11 @@ def xcheck_position_stop_loss_take_profit():
                     get_price_step_size = price_step_size(symbol)
                     if side == 'LONG':
                         # หาราคาต่ำสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=8)
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=7)
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
                         stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
-                        take_profit = ((current_price - stop_loss) * 1.25) + current_price
+                        take_profit = ((current_price - stop_loss) * 1.0) + current_price
                         if take_profit < current_price:
                             take_profit = current_price
                         take_profit = math.ceil(take_profit / get_price_step_size) * get_price_step_size
@@ -196,11 +196,11 @@ def xcheck_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                     else:
                         # หาราคาสูงสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=8)
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=7)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
                         stop_loss = math.ceil(stop_loss / get_price_step_size) * get_price_step_size
-                        take_profit = current_price - ((stop_loss - current_price) * 1.25) 
+                        take_profit = current_price - ((stop_loss - current_price) * 1.0) 
                         if take_profit > current_price:
                             take_profit = current_price
                         take_profit = math.floor(take_profit / get_price_step_size) * get_price_step_size
@@ -299,7 +299,7 @@ def fetch_future_symbols():
         if symbol.endswith('USDT') and symbol not in ignore_symbols:
             if symbol in prices and symbol in volumes:
                 volume_usdt = prices[symbol] * volumes[symbol]
-                if volume_usdt > 1000000:
+                if volume_usdt > 100000:
                     filtered_symbols.append(symbol)
 
     filtered_symbols = [x for x in filtered_symbols if not any(c.isdigit() for c in x)]
@@ -417,68 +417,63 @@ def remove_position_no_order():
 
 
 
-
-
-
-
-
-
+# ดึงข้อมูลจาก Binance
 def get_binance_data(symbol, interval, limit=100):
     klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                     'close_time', 'quote_asset_volume', 'number_of_trades', 
-                                     'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    
+    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
+    
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = df[col].astype(float)
-    return df
-
-def linear_regression_channel(df, period=100, dev_multiplier=1):
-    x = np.arange(len(df))
-    y = df['close'].values
-    slope, intercept = np.polyfit(x[-period:], y[-period:], 1)
-    
-    # คำนวณเส้น Regression
-    df['regression_line'] = intercept + slope * x
-    
-    # คำนวณ Channel
-    deviations = df['close'] - df['regression_line']
-    std_dev = deviations.std()
-    df['upper_channel'] = df['regression_line'] + std_dev * dev_multiplier
-    df['lower_channel'] = df['regression_line'] - std_dev * dev_multiplier
     
     return df
 
+# ฟังก์ชันตรวจสอบสัญญาณ Buy และ Sell
 def check_buy_sell_signal(df):
-    X0 = df.iloc[-1]  # แท่งล่าสุด
-    X1 = df.iloc[-2]  # แท่งก่อนหน้า
-    
-    buy_conditions = [
-        X1['high'] >= X1['upper_channel'] and X1['low'] <= X1['upper_channel'],  # X1 ทับเส้นบน
-        X0['high'] >= X0['upper_channel'] and X0['low'] <= X0['upper_channel'],  # X0 ทับเส้นบน
-        X0['close'] < X0['upper_channel']  # Close อยู่ด้านบน
-    ]
-    
-    sell_conditions = [
-        X1['high'] >= X1['lower_channel'] and X1['low'] <= X1['lower_channel'],  # X1 ทับเส้นล่าง
-        X0['high'] >= X0['lower_channel'] and X0['low'] <= X0['lower_channel'],  # X0 ทับเส้นล่าง
-        X0['close'] > X0['lower_channel']  # Close อยู่ด้านล่าง
-    ]
-    
-    if all(buy_conditions):
+    # ข้อมูลย้อนหลัง 5 แท่งเทียน
+    previous_five = df.tail(5)
+
+    # ตรวจสอบรูปแบบ Engulfing ขาขึ้น
+    if (previous_five['close'].iloc[-2] < previous_five['open'].iloc[-2] and  # แท่งที่ 2 เป็นแท่งแดง
+        previous_five['close'].iloc[-1] > previous_five['open'].iloc[-1] and  # แท่งที่ 1 เป็นแท่งเขียว
+        previous_five['close'].iloc[-1] > previous_five['open'].iloc[-2] and  # แท่งที่ 1 ครอบแท่งที่ 2
+        previous_five['open'].iloc[-1] < previous_five['close'].iloc[-2]):    # แท่งที่ 1 ครอบแท่งที่ 2
         return "BUY"
-    elif all(sell_conditions):
+
+    # ตรวจสอบรูปแบบ Engulfing ขาลง
+    if (previous_five['close'].iloc[-2] > previous_five['open'].iloc[-2] and  # แท่งที่ 2 เป็นแท่งเขียว
+        previous_five['close'].iloc[-1] < previous_five['open'].iloc[-1] and  # แท่งที่ 1 เป็นแท่งแดง
+        previous_five['close'].iloc[-1] < previous_five['open'].iloc[-2] and  # แท่งที่ 1 ครอบแท่งที่ 2
+        previous_five['open'].iloc[-1] > previous_five['close'].iloc[-2]):    # แท่งที่ 1 ครอบแท่งที่ 2
         return "SELL"
+    
+    # ตรวจสอบรูปแบบ Morning Star
+    if (previous_five['close'].iloc[-3] < previous_five['open'].iloc[-3] and  # แท่งที่ 3 เป็นแท่งแดง
+        abs(previous_five['close'].iloc[-2] - previous_five['open'].iloc[-2]) < (0.1 * abs(previous_five['high'].iloc[-2] - previous_five['low'].iloc[-2])) and  # แท่งที่ 2 เป็น Doji หรือแท่งขนาดเล็ก
+        previous_five['close'].iloc[-1] > previous_five['open'].iloc[-1] and  # แท่งที่ 1 เป็นแท่งเขียว
+        previous_five['close'].iloc[-1] > previous_five['high'].iloc[-2]):    # แท่งที่ 1 ราคาปิดสูงกว่าแท่งที่ 2
+        return "BUY"
+
+    # ตรวจสอบรูปแบบ Evening Star
+    if (previous_five['close'].iloc[-3] > previous_five['open'].iloc[-3] and  # แท่งที่ 3 เป็นแท่งเขียว
+        abs(previous_five['close'].iloc[-2] - previous_five['open'].iloc[-2]) < (0.1 * abs(previous_five['high'].iloc[-2] - previous_five['low'].iloc[-2])) and  # แท่งที่ 2 เป็น Doji หรือแท่งขนาดเล็ก
+        previous_five['close'].iloc[-1] < previous_five['open'].iloc[-1] and  # แท่งที่ 1 เป็นแท่งแดง
+        previous_five['close'].iloc[-1] < previous_five['low'].iloc[-2]):     # แท่งที่ 1 ราคาปิดต่ำกว่าแท่งที่ 2
+        return "SELL"
+    
     return "HOLD"
 
+
+# ตรวจสอบสัญญาณ
 def check_signal(symbol, interval):
-    try:
-        df = get_binance_data(symbol, interval)
-        df = linear_regression_channel(df)
-        return check_buy_sell_signal(df)
-    except:
-        return "HOLD"  # Return HOLD in case of any errors
+    df = get_binance_data(symbol, interval)
+    
+    # ตรวจสอบสัญญาณ
+    signal = check_buy_sell_signal(df)
+    
+    return signal
 
 
 
@@ -490,12 +485,10 @@ def check_signal(symbol, interval):
 first_run = True
 while True:
     now = datetime.datetime.now()
-    if now.minute == 0 or first_run:
-        if first_run == False:
-            time.sleep(60)
+    if now.minute % 15 == 0 or first_run:
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
-        remove_order_stop_loss_or_take_profit()         
+        #remove_order_stop_loss_or_take_profit()         
         first_run = False 
         try:
             # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
@@ -526,11 +519,13 @@ while True:
                         
                         if signal == "BUY":
                             print(f"Signal: {signal} for {symbol}", flush=True)
+                            #result = future_create_position(symbol, 'BUY')
                             result = future_create_position(symbol, 'SELL')
                             if "Margin" in result:
                                 break
                         elif signal == "SELL":
                             print(f"Signal: {signal} for {symbol}", flush=True)
+                            #result = future_create_position(symbol, 'SELL')
                             result = future_create_position(symbol, 'BUY')
                             if "Margin" in result:
                                 break
@@ -542,7 +537,7 @@ while True:
 
         except Exception as e:            
             print(f"Main Error: {e}", flush=True)
-        xcheck_position_stop_loss_take_profit()
+        #xcheck_position_stop_loss_take_profit()
         time.sleep(60)
 
     time.sleep(1)
