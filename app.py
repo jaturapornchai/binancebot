@@ -1,3 +1,4 @@
+from typing import List, Tuple
 import numpy as np
 import pandas as pd
 from typing import List
@@ -17,9 +18,9 @@ api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
 future_leverage = 10
 symbols = []
-tread_time_frame = '1h'
+tread_time_frame = '15m'
 ignore_symbols = ['USDCUSDT']
-usdt_open_position = 25
+usdt_open_position = 30
 myRecvWindow = 60000  
 
 def sync_time_with_server(client):
@@ -60,6 +61,19 @@ def future_create_position(symbol, side):
     result = ""
     try:
         print(f"Opening position for {symbol} ({side})", flush=True)
+
+        # ตรวจสอบว่ามี position อยู่หรือไม่ ถ้ามี และเป็นสัญญาณกลับกัน ให้ปิดก่อน
+        positions = client.futures_position_information(symbol=symbol)
+        for position in positions:
+            if float(position['positionAmt']) != 0:
+                current_side = 'BUY' if float(position['positionAmt']) > 0 else 'SELL'
+                if current_side != side:
+                    print(f"Closing position for {symbol} ({current_side})", flush=True)
+                    client.futures_create_order(symbol=symbol, side='SELL' if current_side == 'BUY' else 'BUY', type='MARKET', quantity=abs(float(position['positionAmt'])))
+                    time.sleep(2)                
+                else:
+                    return ""
+
         
         # เปลี่ยน leverage และ margin type
         future_change_margin_type_and_leverage(symbol)
@@ -141,6 +155,7 @@ def create_position_stop_loss_take_profit(symbol, side, quantity):
 
 
 def xcheck_position_stop_loss_take_profit():
+    data_limit = 7
     time.sleep(1)
     try:
         # คำนวณ timestamp โดยใช้เวลาในเครื่องบวกกับ offset
@@ -159,7 +174,7 @@ def xcheck_position_stop_loss_take_profit():
                     get_price_step_size = price_step_size(symbol)
                     if side == 'LONG':
                         # หาราคาต่ำสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=3)
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=data_limit)
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
                         stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
@@ -196,7 +211,7 @@ def xcheck_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
                     else:
                         # หาราคาสูงสุด ย้อนไป 14 time frame
-                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=3)
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=data_limit)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
                         stop_loss = math.ceil(stop_loss / get_price_step_size) * get_price_step_size
@@ -419,72 +434,141 @@ def remove_position_no_order():
 
 
 
-
-
-
-
-def get_binance_data(symbol, interval, limit=100):
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                     'close_time', 'quote_asset_volume', 'number_of_trades', 
-                                     'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        df[col] = df[col].astype(float)
-    return df
-
-def linear_regression_channel(df, period=100, dev_multiplier=1):
-    x = np.arange(len(df))
-    y = df['close'].values
-    slope, intercept = np.polyfit(x[-period:], y[-period:], 1)
-    
-    # คำนวณเส้น Regression
-    df['regression_line'] = intercept + slope * x
-    
-    # คำนวณ Channel
-    deviations = df['close'] - df['regression_line']
-    std_dev = deviations.std()
-    df['upper_channel'] = df['regression_line'] + std_dev * dev_multiplier
-    df['lower_channel'] = df['regression_line'] - std_dev * dev_multiplier
-    
-    # เพิ่มการคำนวณทิศทางเทรนด์
-    df['trend'] = np.where(slope > 0, 'UP', 'DOWN')
-    
-    return df
-
-def check_buy_sell_signal(df):
-    X0 = df.iloc[-1]  # แท่งล่าสุด
-    X1 = df.iloc[-2]  # แท่งก่อนหน้า
-    current_trend = X0['trend']
-    
-    buy_conditions = [
-        X1['high'] >= X1['upper_channel'] and X1['low'] <= X1['upper_channel'],  # X1 ทับเส้นบน
-        X0['high'] >= X0['upper_channel'] and X0['low'] <= X0['upper_channel'],  # X0 ทับเส้นบน
-        X0['close'] > X0['upper_channel'],  # Close อยู่ด้านบน
-        current_trend == 'DOWN'  # เพิ่มเงื่อนไขเทรนด์ลง
-    ]
-    
-    sell_conditions = [
-        X1['high'] >= X1['lower_channel'] and X1['low'] <= X1['lower_channel'],  # X1 ทับเส้นล่าง
-        X0['high'] >= X0['lower_channel'] and X0['low'] <= X0['lower_channel'],  # X0 ทับเส้นล่าง
-        X0['close'] < X0['lower_channel'],  # Close อยู่ด้านล่าง
-        current_trend == 'UP'  # เพิ่มเงื่อนไขเทรนด์ขึ้น
-    ]
-    
-    if all(buy_conditions):
-        return "BUY"
-    elif all(sell_conditions):
-        return "SELL"
-    return "HOLD"
-
-def check_signal(symbol, interval):
+def get_binance_data(client: Client, symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
+    """
+    ดึงข้อมูลจาก Binance API
+    """
     try:
-        df = get_binance_data(symbol, interval)
-        df = linear_regression_channel(df)
-        return check_buy_sell_signal(df)
-    except:
-        return "HOLD"  # Return HOLD in case of any errors
+        klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                                         'close_time', 'quote_asset_volume', 'number_of_trades', 
+                                         'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
+            
+        return df
+    except Exception as e:
+        print(f"Error fetching data: {str(e)}")
+        return pd.DataFrame()
+
+def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """
+    คำนวณ RSI
+    """
+    delta = df['close'].diff()
+    
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    return df
+
+def find_pivot_points(series: pd.Series, left_bars: int = 5, right_bars: int = 5) -> Tuple[List[int], List[int]]:
+    """
+    หาจุด Pivot High และ Pivot Low
+    """
+    highs = []
+    lows = []
+    
+    for i in range(left_bars, len(series) - right_bars):
+        # ตรวจสอบ Pivot High
+        left_range = series.iloc[i-left_bars:i]
+        right_range = series.iloc[i+1:i+right_bars+1]
+        current = series.iloc[i]
+        
+        if current > max(left_range) and current > max(right_range):
+            highs.append(i)
+            
+        # ตรวจสอบ Pivot Low
+        if current < min(left_range) and current < min(right_range):
+            lows.append(i)
+            
+    return highs, lows
+
+def check_divergence(df: pd.DataFrame, left_bars: int = 5, right_bars: int = 5, 
+                    recent_bars: int = 7, plot_hidden: bool = True) -> str:
+    """
+    ตรวจจับ Regular และ Hidden Divergences
+    """
+    try:
+        # หา Pivot Points
+        rsi_highs, rsi_lows = find_pivot_points(df['rsi'], left_bars, right_bars)
+        
+        if not (rsi_highs or rsi_lows):
+            return "HOLD"
+
+        current_idx = len(df) - 1
+            
+        # ดูเฉพาะ 2 จุดล่าสุด และต้องไม่เก่าเกิน recent_bars แท่ง
+        for point_type in ['high', 'low']:
+            points = rsi_highs if point_type == 'high' else rsi_lows
+            points = [p for p in points if current_idx - p <= recent_bars]  # กรองเฉพาะจุดที่ไม่เก่าเกิน recent_bars
+            
+            if len(points) >= 2:
+                last_two = points[-2:]
+                
+                # Regular Bullish Divergence
+                if point_type == 'low':
+                    if (df['close'].iloc[last_two[1]] < df['close'].iloc[last_two[0]] and  # ราคาทำ Lower Low
+                        df['rsi'].iloc[last_two[1]] > df['rsi'].iloc[last_two[0]] and      # RSI ทำ Higher Low
+                        df['rsi'].iloc[last_two[1]] < 30):                                 # RSI อยู่ในโซน Oversold
+                        return "BUY"
+                        
+                    # Hidden Bullish Divergence
+                    if plot_hidden:
+                        if (df['close'].iloc[last_two[1]] > df['close'].iloc[last_two[0]] and  # ราคาทำ Higher Low
+                            df['rsi'].iloc[last_two[1]] < df['rsi'].iloc[last_two[0]] and      # RSI ทำ Lower Low
+                            df['rsi'].iloc[last_two[1]] < 45):                                 # RSI ต่ำกว่าค่ากลาง
+                            return "BUY_HIDDEN"
+                
+                # Regular Bearish Divergence
+                if point_type == 'high':
+                    if (df['close'].iloc[last_two[1]] > df['close'].iloc[last_two[0]] and  # ราคาทำ Higher High
+                        df['rsi'].iloc[last_two[1]] < df['rsi'].iloc[last_two[0]] and      # RSI ทำ Lower High
+                        df['rsi'].iloc[last_two[1]] > 70):                                 # RSI อยู่ในโซน Overbought
+                        return "SELL"
+                        
+                    # Hidden Bearish Divergence
+                    if plot_hidden:
+                        if (df['close'].iloc[last_two[1]] < df['close'].iloc[last_two[0]] and  # ราคาทำ Lower High
+                            df['rsi'].iloc[last_two[1]] > df['rsi'].iloc[last_two[0]] and      # RSI ทำ Higher High
+                            df['rsi'].iloc[last_two[1]] > 55):                                 # RSI สูงกว่าค่ากลาง
+                            return "SELL_HIDDEN"
+        
+        return "HOLD"
+        
+    except Exception as e:
+        print(f"Error checking divergence: {str(e)}")
+        return "HOLD"
+
+def check_signal(client: Client, symbol: str, interval: str, 
+                rsi_period: int = 14, left_bars: int = 5, 
+                right_bars: int = 5, recent_bars: int = 14,
+                plot_hidden: bool = True) -> str:
+    """
+    ฟังก์ชันหลักสำหรับตรวจหา RSI Divergence
+    """
+    try:
+        df = get_binance_data(client, symbol, interval)
+        if df.empty:
+            return "HOLD"
+            
+        df = calculate_rsi(df, rsi_period)
+        return check_divergence(df, left_bars, right_bars, recent_bars, plot_hidden)
+        
+    except Exception as e:
+        print(f"Error in signal check: {str(e)}")
+        return "HOLD"
+
+        
+
+
 
 
 
@@ -495,9 +579,9 @@ def check_signal(symbol, interval):
 first_run = True
 while True:
     now = datetime.datetime.now()
-    if now.minute == 0 or first_run:
+    if now.minute % 15 == 0 or first_run:
         if first_run == False:
-            time.sleep(60)
+            time.sleep(30)
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
         remove_order_stop_loss_or_take_profit()         
@@ -510,37 +594,28 @@ while True:
             timestamp = int(time.time() * 1000) + offset
             
             symbols = fetch_future_symbols()
-            # ดึงข้อมูล position ที่เปิดอยู่ทั้งหมด   
-            position_info_all = client.futures_position_information(timestamp=timestamp, recvWindow=myRecvWindow)
-
             for symbol in symbols:
-                # ตรวจสอบว่ามี position อยู่หรือไม่ ถ้าไม่มีให้ทำต่อ
-                is_position = False
-                for position in position_info_all:
-                    if position['symbol'] == symbol and float(position['positionAmt']) != 0:
-                        is_position = True
-                        break
-                if not is_position:
-                    try:
-                        orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
-                        for order in orders:
-                            client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
+                try:
+                    orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
+                    for order in orders:
+                        client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
 
 
-                        signal = check_signal(symbol, tread_time_frame)
-                        
-                        if signal == "BUY":
-                            print(f"Signal: {signal} for {symbol}", flush=True)
-                            result = future_create_position(symbol, 'BUY')
-                            if "Margin" in result:
-                                break
-                        elif signal == "SELL":
-                            print(f"Signal: {signal} for {symbol}", flush=True)
-                            result = future_create_position(symbol, 'SELL')
-                            if "Margin" in result:
-                                break
-                    except Exception as e:
-                        print(f"Error: {e}", flush=True)
+                    signal = check_signal(client,symbol, tread_time_frame)
+                    print(f"Signal: {signal} for {symbol}", flush=True)
+                    
+                    if signal == "BUY" or signal == "BUY_HIDDEN":
+                        print(f"Signal: {signal} for {symbol}", flush=True)
+                        result = future_create_position(symbol, 'BUY')
+                        if "Margin" in result:
+                            break
+                    elif signal == "SELL" or signal == "SELL_HIDDEN":
+                        print(f"Signal: {signal} for {symbol}", flush=True)
+                        result = future_create_position(symbol, 'SELL')
+                        if "Margin" in result:
+                            break
+                except Exception as e:
+                    print(f"Error: {e}", flush=True)
 
             time.sleep(2)
             print("Done", flush=True)
