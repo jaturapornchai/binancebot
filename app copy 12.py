@@ -20,7 +20,7 @@ future_leverage = 10
 symbols = []
 tread_time_frame = '15m'
 ignore_symbols = ['USDCUSDT']
-usdt_open_position = 20
+usdt_open_position = 10
 myRecvWindow = 60000  
 
 def sync_time_with_server(client):
@@ -70,12 +70,7 @@ def future_create_position(symbol, side):
                 if current_side != side:
                     print(f"Closing position for {symbol} ({current_side})", flush=True)
                     client.futures_create_order(symbol=symbol, side='SELL' if current_side == 'BUY' else 'BUY', type='MARKET', quantity=abs(float(position['positionAmt'])))
-                    time.sleep(1)     
-                    # clear stop loss and take profit
-                    find_order = client.futures_get_open_orders(symbol=symbol)
-                    for order in find_order:
-                        client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])                               
-                        time.sleep(1)     
+                    time.sleep(2)                
                 else:
                     return ""
 
@@ -104,8 +99,8 @@ def future_create_position(symbol, side):
                 recvWindow=myRecvWindow
             )
             print(f"Created new position for {symbol}: {order}", flush=True)
-            time.sleep(1)
-            create_position_stop_loss_take_profit(symbol, side, quantity)
+            #time.sleep(2)
+            #create_position_stop_loss_take_profit(symbol, side, quantity)
             result = "Success"
         except BinanceAPIException as e:
             print(f"Error creating new position for {symbol}: {e}", flush=True)
@@ -272,7 +267,7 @@ def future_change_margin_type_and_leverage(symbol):
         if positions[0]['marginType'] == 'isolated':
             print(f"Change margin type to CROSS for {symbol}", flush=True)
             client.futures_change_margin_type(symbol=symbol, marginType='CROSSED', timestamp=timestamp, recvWindow=myRecvWindow)  # ใช้ timestamp และ recvWindow
-            time.sleep(1)
+            time.sleep(2)
     
     except Exception as e:
         print(f"Error changing margin type for {symbol}: {e}", flush=True)
@@ -376,7 +371,6 @@ def remove_order_no_position():
                 if not is_position:
                     print(f"Cancel order {order['orderId']} {symbol}", flush=True)
                     client.futures_cancel_order(symbol=symbol, orderId=order['orderId'], timestamp=timestamp, recvWindow=myRecvWindow) 
-                    time.sleep(1)
             
             except Exception as e:
                 print(f"remove_order_no_position Error canceling order for {symbol}: {e}", flush=True)
@@ -439,72 +433,139 @@ def remove_position_no_order():
 
 
 
+def calculate_ema(data: pd.Series, period: int) -> pd.Series:
+    """คำนวณ EMA"""
+    return data.ewm(span=period, adjust=False).mean()
 
+def calculate_rsi(data: pd.Series, periods: int = 14) -> pd.Series:
+    """คำนวณ RSI"""
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
+def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """คำนวณ ATR สำหรับวัดความผันผวน"""
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
 
-
-
-def check_signal(client: Client, symbol: str, interval: str = "15m") -> str:
+def check_signal(client: Client, symbol: str, interval: str = "15m") -> dict:
     """
-    ตรวจจับสัญญาณการตัดกันของ MA7 และ MA25
-    - BUY เมื่อ MA7 ตัดขึ้นเหนือ MA25
-    - SELL เมื่อ MA7 ตัดลงใต้ MA25
-    - HOLD เมื่อไม่มีการตัดกันของเส้น MA
-    
-    Parameters:
-    -----------
-    client : Client
-        Binance client object
-    symbol : str 
-        สัญลักษณ์คู่เทรด เช่น 'BTCUSDT'
-    interval : str, default "15m"
-        timeframe ที่ต้องการ
-        
-    Returns:
-    --------
-    str : 'BUY', 'SELL', หรือ 'HOLD'
+    ตรวจจับสัญญาณการกลับตัวสำหรับ timeframe 15m
     """
-    # ดึงข้อมูลราคาย้อนหลัง
+    # ดึงข้อมูลราคาย้อนหลัง 200 แท่ง
     klines = client.get_historical_klines(symbol, interval, "50 hours ago UTC")
     
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
                                      'close_time', 'quote_asset_volume', 'number_of_trades',
                                      'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     
-    # แปลงคอลัมน์ราคาเป็น float
-    df['close'] = df['close'].astype(float)
+    df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
     
-    # คำนวณ MA7 และ MA25
-    df['ma7'] = df['close'].rolling(window=7).mean()
-    df['ma25'] = df['close'].rolling(window=25).mean()
+    # คำนวณตัวชี้วัดหลัก
+    df['ema5'] = calculate_ema(df['close'], 5)
+    df['ema8'] = calculate_ema(df['close'], 8)
+    df['ema13'] = calculate_ema(df['close'], 13)
+    df['ema21'] = calculate_ema(df['close'], 21)
+    df['rsi'] = calculate_rsi(df['close'], 14)
+    df['atr'] = calculate_atr(df['high'], df['low'], df['close'], 14)
+    df['volume_sma3'] = df['volume'].rolling(window=3).mean()
     
-    # ดูค่าปัจจุบันและย้อนหลัง 1 แท่ง
+    # ตรวจสอบ Price Action และ Momentum
     current_idx = -1
     prev_idx = -2
     
-    # เช็คการตัดกันของเส้น MA
-    ma7_current = df['ma7'].iloc[current_idx]
-    ma7_prev = df['ma7'].iloc[prev_idx]
-    ma25_current = df['ma25'].iloc[current_idx]
-    ma25_prev = df['ma25'].iloc[prev_idx]
+    # 1. ตรวจสอบการกลับตัวของ EMA ระยะสั้น
+    ema_short_trend = (
+        df['ema5'].iloc[current_idx] > df['ema8'].iloc[current_idx] and
+        df['ema8'].iloc[current_idx] > df['ema13'].iloc[current_idx]
+    )
     
-    # ตรวจสอบการตัดขึ้น (BUY Signal)
-    if ma7_prev <= ma25_prev and ma7_current > ma25_current:
-        return 'BUY'
+    ema_trend_change = (
+        df['ema5'].iloc[current_idx] > df['ema8'].iloc[current_idx] and
+        df['ema5'].iloc[prev_idx] <= df['ema8'].iloc[prev_idx]
+    )
     
-    # ตรวจสอบการตัดลง (SELL Signal)
-    elif ma7_prev >= ma25_prev and ma7_current < ma25_current:
-        return 'SELL'
+    # 2. ตรวจสอบ Momentum และ Volume
+    momentum_strong = (
+        abs(df['close'].iloc[current_idx] - df['close'].iloc[prev_idx]) > 
+        df['atr'].iloc[current_idx] * 0.8
+    )
     
-    # ไม่มีการตัดกัน
-    else:
-        return 'HOLD'
-
-
-
-
-
-
+    volume_increasing = (
+        df['volume'].iloc[current_idx] > df['volume_sma3'].iloc[current_idx] * 1.5 and
+        df['volume'].iloc[current_idx] > df['volume'].iloc[prev_idx]
+    )
+    
+    # 3. ตรวจสอบแท่งเทียนปัจจุบัน
+    current_candle = {
+        'body': abs(df['close'].iloc[current_idx] - df['open'].iloc[current_idx]),
+        'upper_shadow': df['high'].iloc[current_idx] - max(df['open'].iloc[current_idx], df['close'].iloc[current_idx]),
+        'lower_shadow': min(df['open'].iloc[current_idx], df['close'].iloc[current_idx]) - df['low'].iloc[current_idx],
+        'is_bullish': df['close'].iloc[current_idx] > df['open'].iloc[current_idx]
+    }
+    
+    strong_candle = current_candle['body'] > df['atr'].iloc[current_idx] * 0.5
+    
+    # 4. ตรวจสอบ Micro Support/Resistance
+    last_3_highs = df['high'].iloc[-4:-1]
+    last_3_lows = df['low'].iloc[-4:-1]
+    current_price = df['close'].iloc[current_idx]
+    
+    breaking_resistance = current_price > last_3_highs.max()
+    breaking_support = current_price < last_3_lows.min()
+    
+    # สร้างเงื่อนไขสัญญาณซื้อ
+    buy_conditions = {
+        'ema_alignment': df['ema5'].iloc[current_idx] > df['ema8'].iloc[current_idx],
+        'price_action': current_candle['is_bullish'] and strong_candle,
+        'momentum': df['rsi'].iloc[current_idx] > df['rsi'].iloc[prev_idx],
+        'volume_confirmed': volume_increasing,
+        'breaking_level': breaking_resistance,
+        'trend_change': ema_trend_change and df['rsi'].iloc[current_idx] > 40
+    }
+    
+    # สร้างเงื่อนไขสัญญาณขาย
+    sell_conditions = {
+        'ema_alignment': df['ema5'].iloc[current_idx] < df['ema8'].iloc[current_idx],
+        'price_action': not current_candle['is_bullish'] and strong_candle,
+        'momentum': df['rsi'].iloc[current_idx] < df['rsi'].iloc[prev_idx],
+        'volume_confirmed': volume_increasing,
+        'breaking_level': breaking_support,
+        'trend_change': not ema_trend_change and df['rsi'].iloc[current_idx] < 60
+    }
+    
+    # คำนวณคะแนนสัญญาณ
+    buy_score = sum(buy_conditions.values())
+    sell_score = sum(sell_conditions.values())
+    
+    # สร้างข้อมูลสำหรับส่งกลับ
+    result = {
+        'signal': 'HOLD',
+        'score': 0,
+        'conditions': {},
+        'metrics': {
+            'rsi': df['rsi'].iloc[current_idx],
+            'volume_ratio': df['volume'].iloc[current_idx] / df['volume_sma3'].iloc[current_idx],
+            'atr': df['atr'].iloc[current_idx]
+        }
+    }
+    
+    # ตัดสินใจจากคะแนนและกำหนดสัญญาณ
+    if buy_score >= 4:  # ต้องเข้าเงื่อนไขอย่างน้อย 4 ข้อ
+        result['signal'] = 'BUY'
+        result['score'] = buy_score
+        result['conditions'] = buy_conditions
+    elif sell_score >= 4:  # ต้องเข้าเงื่อนไขอย่างน้อย 4 ข้อ
+        result['signal'] = 'SELL'
+        result['score'] = sell_score
+        result['conditions'] = sell_conditions
+    
+    return result['signal']
 
 
 
@@ -519,10 +580,12 @@ def check_signal(client: Client, symbol: str, interval: str = "15m") -> str:
 first_run = True
 while True:
     now = datetime.datetime.now()
-    if now.minute % 15 == 0 or first_run:
+    if now.minute == 0 or first_run:
+        if first_run == False:
+            time.sleep(10)
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
-        #remove_order_stop_loss_or_take_profit()         
+        remove_order_stop_loss_or_take_profit()         
         first_run = False 
         try:
             # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
@@ -534,35 +597,33 @@ while True:
             symbols = fetch_future_symbols()
             for symbol in symbols:
                 try:
-                    """orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
+                    orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
                     for order in orders:
-                        client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])"""
+                        client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
 
 
-                    signal = check_signal(client,symbol,tread_time_frame)
-                    print(f"Signal: {signal} for {symbol}", flush=True)
+                    signal = check_signal(client,symbol, tread_time_frame)
+                    #print(f"Signal: {signal} for {symbol}", flush=True)
                     
                     if signal == "BUY":
                         print(f"Signal: {signal} for {symbol}", flush=True)
-                        # result = future_create_position(symbol, 'BUY')
-                        result = future_create_position(symbol, 'SELL')
-                        if "Margin" in result:
-                            break
+                        result = future_create_position(symbol, 'BUY')
+                        #if "Margin" in result:
+                        #    break
                     elif signal == "SELL":
                         print(f"Signal: {signal} for {symbol}", flush=True)
-                        # result = future_create_position(symbol, 'SELL')
-                        result = future_create_position(symbol, 'BUY')
-                        if "Margin" in result:
-                            break
+                        result = future_create_position(symbol, 'SELL')
+                        #if "Margin" in result:
+                        #    break
                 except Exception as e:
                     print(f"Error: {e}", flush=True)
 
-            time.sleep(1)
+            time.sleep(2)
             print("Done", flush=True)
 
         except Exception as e:            
             print(f"Main Error: {e}", flush=True)
-        #xcheck_position_stop_loss_take_profit()
+        xcheck_position_stop_loss_take_profit()
         time.sleep(60)
 
     time.sleep(10)

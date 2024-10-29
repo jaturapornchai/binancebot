@@ -3,4 +3,3 @@ pandas
 requests
 python-binance
 scipy
-ta-lib

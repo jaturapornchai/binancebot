@@ -1,90 +1,119 @@
-from binance.client import Client
-import matplotlib.pyplot as plt
-import numpy as np
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+import time
 
-api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
-api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
-client = Client(api_key, api_secret)
+def get_binance_data(symbol, interval, start_time, end_time):
+    """
+    ดึงข้อมูลราคาจาก Binance API
+    
+    Parameters:
+    - symbol: คู่เหรียญ (เช่น 'BTCUSDT')
+    - interval: timeframe (เช่น '1h')
+    - start_time: เวลาเริ่มต้น (timestamp)
+    - end_time: เวลาสิ้นสุด (timestamp)
+    """
+    
+    endpoint = "https://api.binance.com/api/v3/klines"
+    
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'startTime': int(start_time * 1000),
+        'endTime': int(end_time * 1000),
+        'limit': 1000
+    }
+    
+    response = requests.get(endpoint, params=params)
+    
+    # เพิ่มการตรวจสอบสถานะการตอบกลับ
+    if response.status_code != 200:
+        raise Exception(f"API Error: {response.status_code} - {response.text}")
+        
+    data = response.json()
+    
+    return data
 
-# ดึงข้อมูลแท่งเทียน 15 นาที
-candles = client.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_15MINUTE)
+def create_dataframe(data):
+    """แปลงข้อมูลจาก API เป็น DataFrame ตามรูปแบบที่ต้องการ"""
+    
+    columns = [
+        'Open time',
+        'Open',
+        'High',
+        'Low',
+        'Close',
+        'Volume',
+        'Close time',
+        'Quote asset volume',
+        'Number of trades',
+        'Taker buy base asset volume',
+        'Taker buy quote asset volume',
+        'Ignore'
+    ]
+    
+    df = pd.DataFrame(data, columns=columns)
+    
+    # แปลง timestamps เป็น datetime
+    df['Open time'] = pd.to_datetime(df['Open time'], unit='ms')
+    df['Close time'] = pd.to_datetime(df['Close time'], unit='ms')
+    
+    # แปลงค่าต่างๆ เป็น float
+    numeric_columns = [
+        'Open', 'High', 'Low', 'Close', 'Volume',
+        'Quote asset volume', 'Taker buy base asset volume',
+        'Taker buy quote asset volume'
+    ]
+    df[numeric_columns] = df[numeric_columns].astype(float)
+    
+    # แปลง Number of trades เป็น integer
+    df['Number of trades'] = df['Number of trades'].astype(int)
+    
+    # ลบคอลัมน์ Ignore ที่ไม่ได้ใช้
+    df = df.drop('Ignore', axis=1)
+    
+    return df
 
-# แปลงข้อมูลแท่งเทียน
-closes = np.array([float(candle[4]) for candle in candles])
-highs = np.array([float(candle[2]) for candle in candles])
-lows = np.array([float(candle[3]) for candle in candles])
-times = [candle[0] for candle in candles]
+def main():
+    # กำหนดพารามิเตอร์
+    symbol = 'APEUSDT'
+    interval = '1h'  # เปลี่ยนเป็น interval 1 ชั่วโมง
+    
+    # คำนวณช่วงเวลา (10 วันย้อนหลัง)
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=10)
+    
+    # แปลงเวลาเป็น timestamp
+    start_timestamp = time.mktime(start_time.timetuple())
+    end_timestamp = time.mktime(end_time.timetuple())
+    
+    try:
+        # ดึงข้อมูล
+        print(f"กำลังดึงข้อมูล {symbol} (interval {interval}) จาก {start_time.strftime('%Y-%m-%d %H:%M')} "
+              f"ถึง {end_time.strftime('%Y-%m-%d %H:%M')}...")
+        data = get_binance_data(symbol, interval, start_timestamp, end_timestamp)
+        
+        # สร้าง DataFrame
+        df = create_dataframe(data)
+        
+        # บันทึกเป็น CSV
+        filename = f"{symbol}_{interval}_{start_time.strftime('%Y%m%d_%H%M')}_{end_time.strftime('%Y%m%d_%H%M')}.csv"
+        df.to_csv(filename, index=False)
+        print(f"บันทึกข้อมูลเรียบร้อยแล้วที่: {filename}")
+        
+        # แสดงข้อมูลตัวอย่าง
+        print(f"\nจำนวนแท่งเทียนทั้งหมด: {len(df)}")
+        print("\nตัวอย่างข้อมูล:")
+        print(df.head())
+        print("\nข้อมูลสถิติ:")
+        print(df.describe())
+        
+        # แสดงข้อมูลเพิ่มเติม
+        print("\nข้อมูลคอลัมน์:")
+        print(df.info())
+        
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาด: {e}")
 
-# ฟังก์ชันหาจุด Swing High
-def find_swing_high(highs, period=20):
-    swing_high = []
-    for i in range(period, len(highs) - period):
-        if highs[i] == max(highs[i-period:i+period+1]):
-            if len(swing_high) == 0 or (i - swing_high[-1][0] > period):
-                swing_high.append((i, highs[i]))
-    return swing_high
-
-# ฟังก์ชันหาจุด Swing Low
-def find_swing_low(lows, period=20):
-    swing_low = []
-    for i in range(period, len(lows) - period):
-        if lows[i] == min(lows[i-period:i+period+1]):
-            if len(swing_low) == 0 or (i - swing_low[-1][0] > period):
-                swing_low.append((i, lows[i]))
-    return swing_low
-
-# หาจุด Swing High และ Swing Low
-period = 20
-swing_highs = find_swing_high(highs, period)
-swing_lows = find_swing_low(lows, period)
-
-# ตรวจสอบสัญญาณ BUY และ SELL ในแท่งเทียนปัจจุบัน (แท่งล่าสุด)
-current_index = len(closes) - 1  # แท่งเทียนปัจจุบันคือแท่งสุดท้าย
-current_price = closes[current_index]
-
-buy_signal = False
-sell_signal = False
-
-# ตรวจสอบจุด Buy เมื่อราคาปิดใกล้กับ Swing Low
-for (swing_low_index, swing_low_price) in swing_lows:
-    if current_index == swing_low_index and current_price <= swing_low_price * 1.01:  # ใกล้ Swing Low 1%
-        buy_signal = True
-        break
-
-# ตรวจสอบจุด Sell เมื่อราคาปิดใกล้กับ Swing High
-for (swing_high_index, swing_high_price) in swing_highs:
-    if current_index == swing_high_index and current_price >= swing_high_price * 0.99:  # ใกล้ Swing High 1%
-        sell_signal = True
-        break
-
-# แสดงกราฟพร้อมสัญญาณ
-plt.figure(figsize=(10, 6))
-plt.plot(closes, label='Close Price')
-
-# แสดงจุด Swing High บนกราฟ
-for (i, price) in swing_highs:
-    plt.scatter(i, price, color='red', label='Swing High' if i == swing_highs[0][0] else "", marker='^')
-
-# แสดงจุด Swing Low บนกราฟ
-for (i, price) in swing_lows:
-    plt.scatter(i, price, color='green', label='Swing Low' if i == swing_lows[0][0] else "", marker='v')
-
-# แสดงสัญญาณ Buy หรือ Sell สำหรับแท่งเทียนปัจจุบัน
-if buy_signal:
-    plt.scatter(current_index, current_price, color='blue', label='Current Buy Signal', marker='o')
-if sell_signal:
-    plt.scatter(current_index, current_price, color='orange', label='Current Sell Signal', marker='x')
-
-plt.title('BTCUSDT 15-minute Close Price with Swing High, Low, and Current Buy/Sell Signals')
-plt.xlabel('Time')
-plt.ylabel('Price')
-plt.legend()
-plt.show()
-
-# แสดงผลลัพธ์ Buy หรือ Sell
-if buy_signal:
-    print("สัญญาณ Buy ที่แท่งเทียนปัจจุบัน")
-elif sell_signal:
-    print("สัญญาณ Sell ที่แท่งเทียนปัจจุบัน")
-else:
-    print("ไม่มีสัญญาณที่แท่งเทียนปัจจุบัน")
+if __name__ == "__main__":
+    main()
