@@ -545,13 +545,11 @@ while True:
                     if signal == "BUY":
                         print(f"Signal: {signal} for {symbol}", flush=True)
                         # result = future_create_position(symbol, 'BUY')
-                        result = future_create_position(symbol, 'SELL')
-                        if "Margin" in result:
-                            break
+                        # if "Margin" in result:
+                        #    break
                     elif signal == "SELL":
                         print(f"Signal: {signal} for {symbol}", flush=True)
-                        # result = future_create_position(symbol, 'SELL')
-                        result = future_create_position(symbol, 'BUY')
+                        result = future_create_position(symbol, 'SELL')
                         if "Margin" in result:
                             break
                 except Exception as e:
