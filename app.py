@@ -63,7 +63,7 @@ def future_create_position(symbol, side):
         print(f"Opening position for {symbol} ({side})", flush=True)
 
         # ตรวจสอบว่ามี position อยู่หรือไม่ ถ้ามี และเป็นสัญญาณกลับกัน ให้ปิดก่อน
-        positions = client.futures_position_information(symbol=symbol)
+        """positions = client.futures_position_information(symbol=symbol)
         for position in positions:
             if float(position['positionAmt']) != 0:
                 current_side = 'BUY' if float(position['positionAmt']) > 0 else 'SELL'
@@ -78,7 +78,7 @@ def future_create_position(symbol, side):
                         time.sleep(1)     
                 else:
                     return ""
-
+        """
         
         # เปลี่ยน leverage และ margin type
         future_change_margin_type_and_leverage(symbol)
@@ -532,6 +532,13 @@ while True:
             timestamp = int(time.time() * 1000) + offset
             
             symbols = fetch_future_symbols()
+            # ดึง position ที่เปิดอยู่ ลบออกจาก symbols
+            positions = client.futures_position_information(timestamp=timestamp, recvWindow=myRecvWindow)
+            for position in positions:
+                if float(position['positionAmt']) != 0:
+                    if position['symbol'] in symbols:
+                        symbols.remove(position['symbol'])
+                        
             for symbol in symbols:
                 try:
                     """orders = client.futures_get_open_orders(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
