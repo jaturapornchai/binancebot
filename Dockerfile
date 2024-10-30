@@ -20,7 +20,7 @@ COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir numpy==1.23.5
 
 # ติดตั้ง TA-Lib
-RUN pip install --no-cache-dir TA-Lib
+# RUN pip install --no-cache-dir TA-Lib
 
 # ติดตั้งแพ็คเกจที่เหลือ
 RUN pip install --no-cache-dir -r requirements.txt

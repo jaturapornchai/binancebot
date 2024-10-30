@@ -18,9 +18,9 @@ api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
 future_leverage = 10
 symbols = []
-tread_time_frame = '15m'
+tread_time_frame = '1h'
 ignore_symbols = ['USDCUSDT']
-usdt_open_position = 20
+usdt_open_position = 15
 myRecvWindow = 60000  
 
 def sync_time_with_server(client):
@@ -105,7 +105,7 @@ def future_create_position(symbol, side):
             )
             print(f"Created new position for {symbol}: {order}", flush=True)
             time.sleep(1)
-            create_position_stop_loss_take_profit(symbol, side, quantity)
+            #create_position_stop_loss_take_profit(symbol, side, quantity)
             result = "Success"
         except BinanceAPIException as e:
             print(f"Error creating new position for {symbol}: {e}", flush=True)
@@ -183,7 +183,7 @@ def xcheck_position_stop_loss_take_profit():
                         lows = [float(kline[3]) for kline in klines]
                         stop_loss = min(lows)
                         stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
-                        take_profit = ((current_price - stop_loss) * 1.25) + current_price
+                        take_profit = ((current_price - stop_loss) * 1.2) + current_price
                         if take_profit < current_price:
                             take_profit = current_price
                         take_profit = math.ceil(take_profit / get_price_step_size) * get_price_step_size
@@ -207,20 +207,20 @@ def xcheck_position_stop_loss_take_profit():
                             print(f"Stop loss for {symbol}: {stop_loss}, Take profit for {symbol}: {take_profit}", flush=True)
                             client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        """is_take_profit = False
+                        is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
+                            client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
                     else:
                         # หาราคาสูงสุด ย้อนไป 14 time frame
                         klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=data_limit)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
                         stop_loss = math.ceil(stop_loss / get_price_step_size) * get_price_step_size
-                        take_profit = current_price - ((stop_loss - current_price) * 1.25) 
+                        take_profit = current_price - ((stop_loss - current_price) * 1.2) 
                         if take_profit > current_price:
                             take_profit = current_price
                         take_profit = math.floor(take_profit / get_price_step_size) * get_price_step_size
@@ -245,13 +245,13 @@ def xcheck_position_stop_loss_take_profit():
                             client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
 
                         # ตรวจสอบว่ามี take profit ถ้าไม่มีให้สร้างใหม่
-                        """is_take_profit = False
+                        is_take_profit = False
                         for order in find_order:
                             if order['type'] == 'TAKE_PROFIT_MARKET':
                                 is_take_profit = True
                                 break
                         if not is_take_profit:
-                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
+                            client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
             except Exception as e:
                 print(f"Error checking position: {e}", flush=True)
 
@@ -440,68 +440,135 @@ def remove_position_no_order():
 
 
 
+def calculate_rsi(prices: np.array, period: int = 14) -> np.array:
+    """Calculate RSI indicator"""
+    deltas = np.diff(prices)
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    
+    avg_gain = np.zeros_like(prices)
+    avg_loss = np.zeros_like(prices)
+    
+    # First average gain and loss
+    avg_gain[period] = np.mean(gains[:period])
+    avg_loss[period] = np.mean(losses[:period])
+    
+    # Calculate smoothed average gain and loss
+    for i in range(period + 1, len(prices)):
+        avg_gain[i] = (avg_gain[i-1] * (period-1) + gains[i-1]) / period
+        avg_loss[i] = (avg_loss[i-1] * (period-1) + losses[i-1]) / period
+    
+    rs = avg_gain[period:] / np.where(avg_loss[period:] != 0, avg_loss[period:], 1e-8)
+    rsi = 100 - (100 / (1 + rs))
+    
+    return np.concatenate([np.zeros(period), rsi])
 
-
-
-
-def check_signal(client: Client, symbol: str, interval: str = "15m") -> str:
+def find_swing_points(data: np.array, window: int = 5) -> Tuple[List[int], List[int]]:
     """
-    ตรวจจับสัญญาณการตัดกันของ MA7 และ MA25
-    - BUY เมื่อ MA7 ตัดขึ้นเหนือ MA25
-    - SELL เมื่อ MA7 ตัดลงใต้ MA25
-    - HOLD เมื่อไม่มีการตัดกันของเส้น MA
-    
-    Parameters:
-    -----------
-    client : Client
-        Binance client object
-    symbol : str 
-        สัญลักษณ์คู่เทรด เช่น 'BTCUSDT'
-    interval : str, default "15m"
-        timeframe ที่ต้องการ
-        
-    Returns:
-    --------
-    str : 'BUY', 'SELL', หรือ 'HOLD'
+    Find swing high and low points in the data
+    Returns: Tuple of (swing highs indices, swing lows indices)
     """
-    # ดึงข้อมูลราคาย้อนหลัง
-    klines = client.get_historical_klines(symbol, interval, "50 hours ago UTC")
+    highs = []
+    lows = []
     
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                     'close_time', 'quote_asset_volume', 'number_of_trades',
-                                     'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+    for i in range(window, len(data) - window):
+        # Check for swing high
+        if all(data[i] >= data[i-window:i]) and all(data[i] >= data[i+1:i+window+1]):
+            highs.append(i)
+        # Check for swing low
+        if all(data[i] <= data[i-window:i]) and all(data[i] <= data[i+1:i+window+1]):
+            lows.append(i)
     
-    # แปลงคอลัมน์ราคาเป็น float
-    df['close'] = df['close'].astype(float)
-    
-    # คำนวณ MA7 และ MA25
-    df['ma7'] = df['close'].rolling(window=7).mean()
-    df['ma25'] = df['close'].rolling(window=25).mean()
-    
-    # ดูค่าปัจจุบันและย้อนหลัง 1 แท่ง
-    current_idx = -1
-    prev_idx = -2
-    
-    # เช็คการตัดกันของเส้น MA
-    ma7_current = df['ma7'].iloc[current_idx]
-    ma7_prev = df['ma7'].iloc[prev_idx]
-    ma25_current = df['ma25'].iloc[current_idx]
-    ma25_prev = df['ma25'].iloc[prev_idx]
-    
-    # ตรวจสอบการตัดขึ้น (BUY Signal)
-    if ma7_prev <= ma25_prev and ma7_current > ma25_current:
-        return 'BUY'
-    
-    # ตรวจสอบการตัดลง (SELL Signal)
-    elif ma7_prev >= ma25_prev and ma7_current < ma25_current:
-        return 'SELL'
-    
-    # ไม่มีการตัดกัน
-    else:
-        return 'HOLD'
+    return highs, lows
 
+def check_divergence(client: Client, symbol: str, interval: str = "1h") -> str:
+    """
+    Check for RSI divergence and return trading signal
+    
+    Returns: 'BUY', 'SELL', or 'HOLD'
+    """
+    # Get historical data
+    klines = client.get_klines(
+        symbol=symbol,
+        interval=interval,
+        limit=100  # Last 100 candles
+    )
+    
+    # Extract close prices
+    prices = np.array([float(kline[4]) for kline in klines])
+    
+    # Calculate RSI
+    rsi = calculate_rsi(prices)
+    
+    # Find swing points
+    price_highs, price_lows = find_swing_points(prices)
+    rsi_highs, rsi_lows = find_swing_points(rsi)
+    
+    # Check last 2 swing points
+    if len(price_highs) >= 2 and len(rsi_highs) >= 2:
+        # Check bearish divergence
+        if (prices[price_highs[-1]] > prices[price_highs[-2]] and  # Higher high in price
+            rsi[rsi_highs[-1]] < rsi[rsi_highs[-2]]):             # Lower high in RSI
+            return "SELL"
+    
+    if len(price_lows) >= 2 and len(rsi_lows) >= 2:
+        # Check bullish divergence
+        if (prices[price_lows[-1]] < prices[price_lows[-2]] and   # Lower low in price
+            rsi[rsi_lows[-1]] > rsi[rsi_lows[-2]]):              # Higher low in RSI
+            return "BUY"
+    
+    return "HOLD"
 
-
+def get_divergence_info(client: Client, symbol: str, interval: str = "1h") -> str:
+    """
+    Get detailed divergence information
+    """
+    klines = client.get_klines(
+        symbol=symbol,
+        interval=interval,
+        limit=100
+    )
+    
+    prices = np.array([float(kline[4]) for kline in klines])
+    rsi = calculate_rsi(prices)
+    
+    price_highs, price_lows = find_swing_points(prices)
+    rsi_highs, rsi_lows = find_swing_points(rsi)
+    
+    signal = "HOLD"
+    divergence_type = "NONE"
+    
+    # Detail for last 2 swing points
+    details = {
+        'current_price': prices[-1],
+        'current_rsi': rsi[-1],
+        'bullish_div': False,
+        'bearish_div': False,
+        'swing_points': {
+            'price_highs': prices[price_highs[-2:]] if len(price_highs) >= 2 else [],
+            'price_lows': prices[price_lows[-2:]] if len(price_lows) >= 2 else [],
+            'rsi_highs': rsi[rsi_highs[-2:]] if len(rsi_highs) >= 2 else [],
+            'rsi_lows': rsi[rsi_lows[-2:]] if len(rsi_lows) >= 2 else []
+        }
+    }
+    
+    # Check bearish divergence
+    if len(price_highs) >= 2 and len(rsi_highs) >= 2:
+        if (prices[price_highs[-1]] > prices[price_highs[-2]] and 
+            rsi[rsi_highs[-1]] < rsi[rsi_highs[-2]]):
+            signal = "SELL"
+            divergence_type = "BEARISH"
+            details['bearish_div'] = True
+    
+    # Check bullish divergence
+    if len(price_lows) >= 2 and len(rsi_lows) >= 2:
+        if (prices[price_lows[-1]] < prices[price_lows[-2]] and 
+            rsi[rsi_lows[-1]] > rsi[rsi_lows[-2]]):
+            signal = "BUY"
+            divergence_type = "BULLISH"
+            details['bullish_div'] = True
+    
+    return signal
 
 
 
@@ -519,10 +586,10 @@ def check_signal(client: Client, symbol: str, interval: str = "15m") -> str:
 first_run = True
 while True:
     now = datetime.datetime.now()
-    if now.minute % 15 == 0 or first_run:
+    if now.minute == 0 or first_run:
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
-        #remove_order_stop_loss_or_take_profit()         
+        remove_order_stop_loss_or_take_profit()         
         first_run = False 
         try:
             # ซิงค์เวลาและดึง offset จากฟังก์ชัน sync_time_with_server
@@ -546,19 +613,19 @@ while True:
                         client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])"""
 
 
-                    signal = check_signal(client,symbol,tread_time_frame)
-                    print(f"Signal: {signal} for {symbol}", flush=True)
+                    signal = get_divergence_info(client,symbol,tread_time_frame)
+                    #print(f"Signal: {signal} for {symbol}", flush=True)
                     
                     if signal == "BUY":
                         print(f"Signal: {signal} for {symbol}", flush=True)
-                        # result = future_create_position(symbol, 'BUY')
-                        # if "Margin" in result:
-                        #    break
+                        result = future_create_position(symbol, 'BUY')
+                        if "Margin" in result:
+                           break
                     elif signal == "SELL":
                         print(f"Signal: {signal} for {symbol}", flush=True)
                         result = future_create_position(symbol, 'SELL')
                         if "Margin" in result:
-                            break
+                           break
                 except Exception as e:
                     print(f"Error: {e}", flush=True)
 
@@ -567,7 +634,7 @@ while True:
 
         except Exception as e:            
             print(f"Main Error: {e}", flush=True)
-        #xcheck_position_stop_loss_take_profit()
+        xcheck_position_stop_loss_take_profit()
         time.sleep(60)
 
     time.sleep(10)
