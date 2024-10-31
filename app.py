@@ -436,146 +436,79 @@ def remove_position_no_order():
 
 
 
+import numpy as np
+from typing import List, Tuple
 
-
-
-
-def calculate_rsi(prices: np.array, period: int = 14) -> np.array:
-    """Calculate RSI indicator"""
-    deltas = np.diff(prices)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    
-    avg_gain = np.zeros_like(prices)
-    avg_loss = np.zeros_like(prices)
-    
-    # First average gain and loss
-    avg_gain[period] = np.mean(gains[:period])
-    avg_loss[period] = np.mean(losses[:period])
-    
-    # Calculate smoothed average gain and loss
-    for i in range(period + 1, len(prices)):
-        avg_gain[i] = (avg_gain[i-1] * (period-1) + gains[i-1]) / period
-        avg_loss[i] = (avg_loss[i-1] * (period-1) + losses[i-1]) / period
-    
-    rs = avg_gain[period:] / np.where(avg_loss[period:] != 0, avg_loss[period:], 1e-8)
-    rsi = 100 - (100 / (1 + rs))
-    
-    return np.concatenate([np.zeros(period), rsi])
-
-def find_swing_points(data: np.array, window: int = 5) -> Tuple[List[int], List[int]]:
+def find_swing_points(prices: np.array, window: int = 5) -> Tuple[List[int], List[int]]:
     """
-    Find swing high and low points in the data
+    Find swing high and low points in price data
     Returns: Tuple of (swing highs indices, swing lows indices)
     """
     highs = []
     lows = []
     
-    for i in range(window, len(data) - window):
+    for i in range(window, len(prices) - window):
         # Check for swing high
-        if all(data[i] >= data[i-window:i]) and all(data[i] >= data[i+1:i+window+1]):
+        if all(prices[i] >= prices[i-window:i]) and all(prices[i] >= prices[i+1:i+window+1]):
             highs.append(i)
         # Check for swing low
-        if all(data[i] <= data[i-window:i]) and all(data[i] <= data[i+1:i+window+1]):
+        if all(prices[i] <= prices[i-window:i]) and all(prices[i] <= prices[i+1:i+window+1]):
             lows.append(i)
     
     return highs, lows
 
-def check_divergence(client: Client, symbol: str, interval: str = "1h") -> str:
+def check_swing_signal(client: Client, symbol: str, interval: str = "1h") -> str:
     """
-    Check for RSI divergence and return trading signal
-    
-    Returns: 'BUY', 'SELL', or 'HOLD'
+    Check price swing points and return trading signal based on conditions:
+    BUY = latest swing low is higher than absolute low and all previous swing lows
+    SELL = latest swing high is lower than absolute high and all previous swing highs
     """
-    # Get historical data
+    # Get 288 candles of historical data
     klines = client.get_klines(
         symbol=symbol,
         interval=interval,
-        limit=100  # Last 100 candles
+        limit=288
     )
     
     # Extract close prices
     prices = np.array([float(kline[4]) for kline in klines])
     
-    # Calculate RSI
-    rsi = calculate_rsi(prices)
+    # Find all swing points
+    swing_highs, swing_lows = find_swing_points(prices)
     
-    # Find swing points
-    price_highs, price_lows = find_swing_points(prices)
-    rsi_highs, rsi_lows = find_swing_points(rsi)
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return "HOLD"
+        
+    # Get absolute high and low points
+    absolute_high = np.max(prices)
+    absolute_low = np.min(prices)
     
-    # Check last 2 swing points
-    if len(price_highs) >= 2 and len(rsi_highs) >= 2:
-        # Check bearish divergence
-        if (prices[price_highs[-1]] > prices[price_highs[-2]] and  # Higher high in price
-            rsi[rsi_highs[-1]] < rsi[rsi_highs[-2]]):             # Lower high in RSI
-            return "SELL"
+    # Get latest swing points
+    latest_swing_high = prices[swing_highs[-1]]
+    latest_swing_low = prices[swing_lows[-1]]
     
-    if len(price_lows) >= 2 and len(rsi_lows) >= 2:
-        # Check bullish divergence
-        if (prices[price_lows[-1]] < prices[price_lows[-2]] and   # Lower low in price
-            rsi[rsi_lows[-1]] > rsi[rsi_lows[-2]]):              # Higher low in RSI
-            return "BUY"
+    # Get all previous swing points (excluding the latest)
+    previous_swing_highs = prices[swing_highs[:-1]]
+    previous_swing_lows = prices[swing_lows[:-1]]
+    
+    # Check BUY condition:
+    # Latest swing low is higher than absolute low AND higher than all previous swing lows
+    if (latest_swing_low > absolute_low and 
+        all(latest_swing_low > prev_low for prev_low in previous_swing_lows)):
+        return "BUY"
+    
+    # Check SELL condition:
+    # Latest swing high is lower than absolute high AND lower than all previous swing highs
+    if (latest_swing_high < absolute_high and 
+        all(latest_swing_high < prev_high for prev_high in previous_swing_highs)):
+        return "SELL"
     
     return "HOLD"
 
-def get_divergence_info(client: Client, symbol: str, interval: str = "1h") -> str:
-    """
-    Get detailed divergence information
-    """
-    klines = client.get_klines(
-        symbol=symbol,
-        interval=interval,
-        limit=100
-    )
-    
-    prices = np.array([float(kline[4]) for kline in klines])
-    rsi = calculate_rsi(prices)
-    
-    price_highs, price_lows = find_swing_points(prices)
-    rsi_highs, rsi_lows = find_swing_points(rsi)
-    
-    signal = "HOLD"
-    divergence_type = "NONE"
-    
-    # Detail for last 2 swing points
-    details = {
-        'current_price': prices[-1],
-        'current_rsi': rsi[-1],
-        'bullish_div': False,
-        'bearish_div': False,
-        'swing_points': {
-            'price_highs': prices[price_highs[-2:]] if len(price_highs) >= 2 else [],
-            'price_lows': prices[price_lows[-2:]] if len(price_lows) >= 2 else [],
-            'rsi_highs': rsi[rsi_highs[-2:]] if len(rsi_highs) >= 2 else [],
-            'rsi_lows': rsi[rsi_lows[-2:]] if len(rsi_lows) >= 2 else []
-        }
-    }
-    
-    # Check bearish divergence
-    if len(price_highs) >= 2 and len(rsi_highs) >= 2:
-        if (prices[price_highs[-1]] > prices[price_highs[-2]] and 
-            rsi[rsi_highs[-1]] < rsi[rsi_highs[-2]]):
-            signal = "SELL"
-            divergence_type = "BEARISH"
-            details['bearish_div'] = True
-    
-    # Check bullish divergence
-    if len(price_lows) >= 2 and len(rsi_lows) >= 2:
-        if (prices[price_lows[-1]] < prices[price_lows[-2]] and 
-            rsi[rsi_lows[-1]] > rsi[rsi_lows[-2]]):
-            signal = "BUY"
-            divergence_type = "BULLISH"
-            details['bullish_div'] = True
-    
-    return signal
-
-
-
-
-
-
-
+# Example usage:
+# client = Client(api_key, api_secret)
+# signal = check_swing_signal(client, "BTCUSDT", "1h")
+# print(f"Trading Signal: {signal}")
 
 
 
@@ -613,8 +546,8 @@ while True:
                         client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])"""
 
 
-                    signal = get_divergence_info(client,symbol,tread_time_frame)
-                    #print(f"Signal: {signal} for {symbol}", flush=True)
+                    signal = check_swing_signal(client,symbol,tread_time_frame)
+                    print(f"Signal: {signal} for {symbol}", flush=True)
                     
                     if signal == "BUY":
                         print(f"Signal: {signal} for {symbol}", flush=True)
