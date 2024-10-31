@@ -19,7 +19,7 @@ client = Client(api_key, api_secret)
 future_leverage = 10
 symbols = []
 tread_time_frame = '1h'
-ignore_symbols = ['USDCUSDT']
+ignore_symbols = ['USDCUSDT','XEMUSDT']
 usdt_open_position = 15
 myRecvWindow = 60000  
 
@@ -160,7 +160,7 @@ def create_position_stop_loss_take_profit(symbol, side, quantity):
 
 
 def xcheck_position_stop_loss_take_profit():
-    data_limit = 7
+    data_limit = 14
     time.sleep(1)
     try:
         # คำนวณ timestamp โดยใช้เวลาในเครื่องบวกกับ offset
@@ -516,7 +516,7 @@ def check_signal(client: Client, symbol: str, interval: str = "1h") -> str:
     
 
 
-    
+
 
 
 
