@@ -18,7 +18,7 @@ api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
 future_leverage = 10
 symbols = []
-tread_time_frame = '1h'
+tread_time_frame = '15m'
 ignore_symbols = ['USDCUSDT','XEMUSDT']
 usdt_open_position = 15
 myRecvWindow = 60000  
@@ -452,22 +452,28 @@ def get_historical_klines(client: Client, symbol: str, interval: str, limit: int
     """
     Fetch historical klines from Binance and convert to DataFrame
     """
-    klines = client.get_klines(
-        symbol=symbol,
-        interval=interval,
-        limit=limit  # Get enough data for EMAs and historical comparison
-    )
-    
-    df = pd.DataFrame(klines, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-        'taker_buy_quote', 'ignored'
-    ])
-    
-    # Convert prices to float
-    df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
-    
-    return df
+    try:
+        klines = client.get_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=limit
+        )
+        if not klines:
+            raise ValueError("No data returned from API.")
+        
+        df = pd.DataFrame(klines, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+            'taker_buy_quote', 'ignored'
+        ])
+        
+        # Convert relevant columns to float for calculations
+        df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
+        
+        return df
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return pd.DataFrame()  # Return empty DataFrame on error
 
 def check_signal(client: Client, symbol: str, interval: str = "1h") -> str:
     """
@@ -484,25 +490,28 @@ def check_signal(client: Client, symbol: str, interval: str = "1h") -> str:
     # Get historical data
     df = get_historical_klines(client, symbol, interval)
     
+    # Ensure we have enough data for lookback calculations
+    if df.empty or len(df) < 144:
+        print("Insufficient data for analysis.")
+        return "HOLD"
+    
     # Calculate EMAs
     df['ema7'] = calculate_ema(df['close'], 7)
     df['ema25'] = calculate_ema(df['close'], 25)
     df['ema99'] = calculate_ema(df['close'], 99)
     
-    # Get current index (latest complete candle is -2 since -1 might be incomplete)
+    # Get the current index (-2 for the last complete candle)
     current_idx = -2
     
-    # Check EMA alignment
-    ema_buy_aligned = (df['ema7'].iloc[current_idx] > df['ema25'].iloc[current_idx] > 
-                      df['ema99'].iloc[current_idx])
-    ema_sell_aligned = (df['ema7'].iloc[current_idx] < df['ema25'].iloc[current_idx] < 
-                       df['ema99'].iloc[current_idx])
+    # Check EMA alignment for BUY and SELL signals
+    ema_buy_aligned = (df['ema7'].iloc[current_idx] > df['ema25'].iloc[current_idx] > df['ema99'].iloc[current_idx])
+    ema_sell_aligned = (df['ema7'].iloc[current_idx] < df['ema25'].iloc[current_idx] < df['ema99'].iloc[current_idx])
     
-    # Get previous candle high/low
+    # Get previous candle's high and low
     prev_high = df['high'].iloc[current_idx]
     prev_low = df['low'].iloc[current_idx]
     
-    # Get highest/lowest prices from last 144 periods
+    # Get the highest/lowest prices from the last 144 periods
     lookback_high = df['high'].iloc[current_idx-144:current_idx].max()
     lookback_low = df['low'].iloc[current_idx-144:current_idx].min()
     
@@ -513,7 +522,6 @@ def check_signal(client: Client, symbol: str, interval: str = "1h") -> str:
         return "SELL"
     else:
         return "HOLD"
-    
 
 
 
