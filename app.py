@@ -436,81 +436,87 @@ def remove_position_no_order():
 
 
 
-import numpy as np
-from typing import List, Tuple
 
-def find_swing_points(prices: np.array, window: int = 5) -> Tuple[List[int], List[int]]:
-    """
-    Find swing high and low points in price data
-    Returns: Tuple of (swing highs indices, swing lows indices)
-    """
-    highs = []
-    lows = []
-    
-    for i in range(window, len(prices) - window):
-        # Check for swing high
-        if all(prices[i] >= prices[i-window:i]) and all(prices[i] >= prices[i+1:i+window+1]):
-            highs.append(i)
-        # Check for swing low
-        if all(prices[i] <= prices[i-window:i]) and all(prices[i] <= prices[i+1:i+window+1]):
-            lows.append(i)
-    
-    return highs, lows
 
-def check_swing_signal(client: Client, symbol: str, interval: str = "1h") -> str:
+
+
+
+
+def calculate_ema(data: pd.Series, period: int) -> pd.Series:
     """
-    Check price swing points and return trading signal based on conditions:
-    BUY = latest swing low is higher than absolute low and all previous swing lows
-    SELL = latest swing high is lower than absolute high and all previous swing highs
+    Calculate Exponential Moving Average for a given period
     """
-    # Get 288 candles of historical data
+    return data.ewm(span=period, adjust=False).mean()
+
+def get_historical_klines(client: Client, symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
+    """
+    Fetch historical klines from Binance and convert to DataFrame
+    """
     klines = client.get_klines(
         symbol=symbol,
         interval=interval,
-        limit=288
+        limit=limit  # Get enough data for EMAs and historical comparison
     )
     
-    # Extract close prices
-    prices = np.array([float(kline[4]) for kline in klines])
+    df = pd.DataFrame(klines, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+        'taker_buy_quote', 'ignored'
+    ])
     
-    # Find all swing points
-    swing_highs, swing_lows = find_swing_points(prices)
+    # Convert prices to float
+    df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
     
-    if len(swing_highs) < 2 or len(swing_lows) < 2:
-        return "HOLD"
-        
-    # Get absolute high and low points
-    absolute_high = np.max(prices)
-    absolute_low = np.min(prices)
+    return df
+
+def check_signal(client: Client, symbol: str, interval: str = "1h") -> str:
+    """
+    Check trading signal based on EMA crossover and price comparison strategy
     
-    # Get latest swing points
-    latest_swing_high = prices[swing_highs[-1]]
-    latest_swing_low = prices[swing_lows[-1]]
+    Strategy:
+    BUY = EMA7 > EMA25 > EMA99 and previous candle's high > highest price in last 144 periods
+    SELL = EMA99 > EMA25 > EMA7 and previous candle's low < lowest price in last 144 periods
+    HOLD = Otherwise
     
-    # Get all previous swing points (excluding the latest)
-    previous_swing_highs = prices[swing_highs[:-1]]
-    previous_swing_lows = prices[swing_lows[:-1]]
+    Returns:
+    str: 'BUY', 'SELL', or 'HOLD'
+    """
+    # Get historical data
+    df = get_historical_klines(client, symbol, interval)
     
-    # Check BUY condition:
-    # Latest swing low is higher than absolute low AND higher than all previous swing lows
-    if (latest_swing_low > absolute_low and 
-        all(latest_swing_low > prev_low for prev_low in previous_swing_lows)):
+    # Calculate EMAs
+    df['ema7'] = calculate_ema(df['close'], 7)
+    df['ema25'] = calculate_ema(df['close'], 25)
+    df['ema99'] = calculate_ema(df['close'], 99)
+    
+    # Get current index (latest complete candle is -2 since -1 might be incomplete)
+    current_idx = -2
+    
+    # Check EMA alignment
+    ema_buy_aligned = (df['ema7'].iloc[current_idx] > df['ema25'].iloc[current_idx] > 
+                      df['ema99'].iloc[current_idx])
+    ema_sell_aligned = (df['ema7'].iloc[current_idx] < df['ema25'].iloc[current_idx] < 
+                       df['ema99'].iloc[current_idx])
+    
+    # Get previous candle high/low
+    prev_high = df['high'].iloc[current_idx]
+    prev_low = df['low'].iloc[current_idx]
+    
+    # Get highest/lowest prices from last 144 periods
+    lookback_high = df['high'].iloc[current_idx-144:current_idx].max()
+    lookback_low = df['low'].iloc[current_idx-144:current_idx].min()
+    
+    # Check conditions and return signal
+    if ema_buy_aligned and prev_high > lookback_high:
         return "BUY"
-    
-    # Check SELL condition:
-    # Latest swing high is lower than absolute high AND lower than all previous swing highs
-    if (latest_swing_high < absolute_high and 
-        all(latest_swing_high < prev_high for prev_high in previous_swing_highs)):
+    elif ema_sell_aligned and prev_low < lookback_low:
         return "SELL"
+    else:
+        return "HOLD"
     
-    return "HOLD"
-
-# Example usage:
-# client = Client(api_key, api_secret)
-# signal = check_swing_signal(client, "BTCUSDT", "1h")
-# print(f"Trading Signal: {signal}")
 
 
+    
 
 
 
@@ -546,7 +552,7 @@ while True:
                         client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])"""
 
 
-                    signal = check_swing_signal(client,symbol,tread_time_frame)
+                    signal = check_signal(client,symbol,tread_time_frame)
                     print(f"Signal: {signal} for {symbol}", flush=True)
                     
                     if signal == "BUY":
