@@ -41,7 +41,7 @@ class GateioTrader:
         if time_passed < 60:  # Within a minute window
             if self.request_count >= self.rate_limit:
                 sleep_time = 60 - time_passed
-                print(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
+                print(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds", flush=True)
                 time.sleep(sleep_time)
                 self.request_count = 0
                 self.last_request_time = time.time()
@@ -76,7 +76,7 @@ class GateioTrader:
             return current_value
             
         except Exception as e:
-            print(f"Error checking {symbol} balance: {str(e)}")
+            print(f"Error checking {symbol} balance: {str(e)}", flush=True)
             return 0
 
     def get_candlesticks(self, symbol, interval='1h', limit=144):
@@ -106,50 +106,50 @@ class GateioTrader:
             
             # Place order
             result = self.spot_api.create_order(order)
-            print(f"\n✅ Market Buy Order Placed for {symbol}")
-            print(f"Order ID: {result.id}")
-            print(f"Status: {result.status}")
-            print(f"Amount: $20.00 USDT")
+            print(f"\n✅ Market Buy Order Placed for {symbol}", flush=True)
+            print(f"Order ID: {result.id}", flush=True)
+            print(f"Status: {result.status}", flush=True)
+            print(f"Amount: $20.00 USDT", flush=True)
             return True
             
         except GateApiException as ex:
-            print(f"\n❌ Gate.io API Error for {symbol}:")
-            print(f"Label: {ex.label}")
-            print(f"Message: {ex.message}")
+            print(f"\n❌ Gate.io API Error for {symbol}:", flush=True)
+            print(f"Label: {ex.label}", flush=True)
+            print(f"Message: {ex.message}", flush=True)
             # Check for both types of balance error messages
             if "Insufficient balance" in ex.message or "Not enough balance" in ex.message:
-                print("\n💡 Insufficient balance detected. Ending current scan round.")
-                print("⏰ Waiting for next hour...")
+                print("\n💡 Insufficient balance detected. Ending current scan round.", flush=True)
+                print("⏰ Waiting for next hour...", flush=True)
                 raise InsufficientBalanceError("Not enough balance")
             return False
         except ApiException as e:
-            print(f"\n❌ API Error for {symbol}: {str(e)}")
+            print(f"\n❌ API Error for {symbol}: {str(e)}", flush=True)
             if "Not enough balance" in str(e):
-                print("\n💡 Insufficient balance detected. Ending current scan round.")
-                print("⏰ Waiting for next hour...")
+                print("\n💡 Insufficient balance detected. Ending current scan round.", flush=True)
+                print("⏰ Waiting for next hour...", flush=True)
                 raise InsufficientBalanceError("Not enough balance")
             return False
         except Exception as e:
-            print(f"\n❌ Error placing order for {symbol}: {str(e)}")
+            print(f"\n❌ Error placing order for {symbol}: {str(e)}", flush=True)
             if "Not enough balance" in str(e):
-                print("\n💡 Insufficient balance detected. Ending current scan round.")
-                print("⏰ Waiting for next hour...")
+                print("\n💡 Insufficient balance detected. Ending current scan round.", flush=True)
+                print("⏰ Waiting for next hour...", flush=True)
                 raise InsufficientBalanceError("Not enough balance")
             return False
 
     def scan_and_trade(self):
         """Scan for volume spikes and place orders"""
-        print(f"\n🔍 Starting scan at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n🔍 Starting scan at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
         pairs_with_signal = 0
         
         try:
-            print("\nScanning Gate.io USDT pairs for volume spikes...")
+            print("\nScanning Gate.io USDT pairs for volume spikes...", flush=True)
             
             # Get all trading pairs
             endpoint = f"{self.base_url}/spot/currency_pairs"
             response = requests.get(endpoint, headers=self.headers)
             if response.status_code != 200:
-                print("Failed to fetch trading pairs")
+                print("Failed to fetch trading pairs", flush=True)
                 return
                 
             pairs = response.json()
@@ -165,8 +165,8 @@ class GateioTrader:
             # Randomly shuffle the coin list
             random.shuffle(coins)
             
-            print(f"\nFound {len(coins)} valid coins")
-            print("Coins have been randomly shuffled for processing")
+            print(f"\nFound {len(coins)} valid coins", flush=True)
+            print("Coins have been randomly shuffled for processing", flush=True)
             
             # Process each coin in random order
             for idx, coin in enumerate(coins, 1):
@@ -217,7 +217,7 @@ class GateioTrader:
                     # Calculate buy volume increase
                     volume_increase = ((current_buy_volume - avg_buy_volume) / avg_buy_volume) * 100
                     
-                    if volume_increase > 1000:  # Buy volume increased by more than 1000%
+                    if volume_increase > 500:  # Buy volume increased by more than 500%
                         df['open'] = pd.to_numeric(df['open'], errors='coerce')
                         
                         try:
@@ -231,39 +231,39 @@ class GateioTrader:
                         if current_buy_volume > avg_buy_volume:
                             pairs_with_signal += 1
                             
-                            print(f"\n\n🚨 Buy Volume Spike Found: {symbol}")
-                            print(f"💹 Buy Volume Increase: {volume_increase:.2f}%")
-                            print(f"📈 Price Change: {price_change:.2f}%")
-                            print(f"💰 Price: {current_price:.8f} USDT")
-                            print(f"💼 Portfolio Value: ${portfolio_value:.2f} USDT")
-                            print(f"📊 24h Volume: ${volume_24h_usdt:,.2f} USDT")
-                            print(f"🛒 Current Buy Volume: {current_buy_volume:.2f}")
-                            print(f"📈 Average Buy Volume (144h): {avg_buy_volume:.2f}")
+                            print(f"\n\n🚨 Buy Volume Spike Found: {symbol}", flush=True)
+                            print(f"💹 Buy Volume Increase: {volume_increase:.2f}%", flush=True)
+                            print(f"📈 Price Change: {price_change:.2f}%", flush=True)
+                            print(f"💰 Price: {current_price:.8f} USDT", flush=True)
+                            print(f"💼 Portfolio Value: ${portfolio_value:.2f} USDT", flush=True)
+                            print(f"📊 24h Volume: ${volume_24h_usdt:,.2f} USDT", flush=True)
+                            print(f"🛒 Current Buy Volume: {current_buy_volume:.2f}", flush=True)
+                            print(f"📈 Average Buy Volume (144h): {avg_buy_volume:.2f}", flush=True)
                             
                             self.place_spot_order(symbol)
-                            print("-" * 80)
+                            print("-" * 80, flush=True)
                 
                 except InsufficientBalanceError:
-                    print("\n⏰ Waiting for next hour due to insufficient balance...")
+                    print("\n⏰ Waiting for next hour due to insufficient balance...", flush=True)
                     return
                 except Exception as e:
                     continue
                 
                 time.sleep(0.1)
             
-            print(f"\n\n✨ Scan completed. Found {pairs_with_signal} pairs with signals.")
+            print(f"\n\n✨ Scan completed. Found {pairs_with_signal} pairs with signals.", flush=True)
             
         except Exception as e:
-            print(f"\nAn error occurred during scan: {str(e)}")
+            print(f"\nAn error occurred during scan: {str(e)}", flush=True)
 
 def main():
-    print("🤖 Gate.io Volume Scanner Bot Starting...")
+    print("🤖 Gate.io Volume Scanner Bot Starting...", flush=True)
     trader = GateioTrader()
     
     # Run first scan
     trader.scan_and_trade()
     
-    print("\n⏰ Waiting for the first minute of next hour...")
+    print("\n⏰ Waiting for the first minute of next hour...", flush=True)
     
     while True:
         if datetime.now().minute == 0:
