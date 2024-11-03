@@ -1,3 +1,4 @@
+import random
 import requests
 import pandas as pd
 import time
@@ -102,6 +103,11 @@ class GateioTrader:
             return response.json()
         return None
 
+    def get_random_symbol(self, coins):
+        """Get a random coin symbol from the list and append _USDT"""
+        coin = random.choice(coins)
+        return f"{coin}_USDT"
+
     def scan_and_trade(self):
         """Scan for volume spikes and place orders"""
         print(f"\n🔍 Starting scan at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -118,16 +124,25 @@ class GateioTrader:
                 return
                 
             pairs = response.json()
-            usdt_pairs = [
-                pair for pair in pairs 
-                if pair['id'].endswith('_USDT') and 
-                not any(c.isdigit() for c in pair['id'].split('_')[0][0])
-            ]
-            print(f"\nFound {len(usdt_pairs)} valid USDT pairs")
             
-            for idx, pair in enumerate(usdt_pairs, 1):
-                symbol = pair['id']
-                print(f"\rProcessing {idx}/{len(usdt_pairs)}: {symbol}", end='', flush=True)
+            # Extract base coins from USDT pairs and filter out numbers
+            coins = []
+            for pair in pairs:
+                if pair['id'].endswith('_USDT'):
+                    base_coin = pair['id'].split('_')[0]
+                    if not any(c.isdigit() for c in base_coin):
+                        coins.append(base_coin)
+            
+            # Randomly shuffle the coin list
+            random.shuffle(coins)
+            
+            print(f"\nFound {len(coins)} valid coins")
+            print("Coins have been randomly shuffled for processing")
+            
+            # Process each coin in random order
+            for idx, coin in enumerate(coins, 1):
+                symbol = f"{coin}_USDT"
+                print(f"\rProcessing {idx}/{len(coins)}: {symbol}", end='', flush=True)
                 
                 try:
                     candles = self.get_candlesticks(symbol)
@@ -154,7 +169,7 @@ class GateioTrader:
                     
                     volume_increase = ((current_volume - avg_volume) / avg_volume) * 100
                     
-                    if volume_increase > 1000:  # Volume must increase by 1000%
+                    if volume_increase > 10:  # Volume must increase by 10%
                         df['close'] = pd.to_numeric(df['close'], errors='coerce')
                         df['open'] = pd.to_numeric(df['open'], errors='coerce')
                         

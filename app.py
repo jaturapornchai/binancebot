@@ -1,3 +1,4 @@
+import random
 import requests
 import pandas as pd
 import time
@@ -11,6 +12,10 @@ from gate_api.exceptions import ApiException, GateApiException
 # API Credentials
 API_KEY = "c84d3616806f44e5651912c198094a1b"
 API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
+
+# Custom exception for insufficient balance
+class InsufficientBalanceError(Exception):
+    pass
 
 class GateioTrader:
     def __init__(self):
@@ -46,47 +51,45 @@ class GateioTrader:
             
         self.request_count += 1
 
-    def place_spot_order(self, symbol, amount_usdt=10):
+    def place_spot_order(self, symbol):
         """Place a spot market buy order using gate-api"""
-        try:
-            # Get current price
-            tickers = self.spot_api.list_tickers(currency_pair=symbol)
-            if not tickers or not tickers[0].last:
-                print(f"Could not get price for {symbol}")
-                return False
-            
-            current_price = float(tickers[0].last)
-            quantity = amount_usdt / current_price
-            
-            # Create market buy order
+        try:                        
+            # Create market buy order $20
             order = Order(
                 currency_pair=symbol,
                 side='buy',
-                amount=str(round(quantity, 8)),
+                amount=20,
                 type='market',
                 time_in_force='ioc'  # Immediate or Cancel for market orders
             )
             
             # Place order
             result = self.spot_api.create_order(order)
-            
-            print(f"\n✅ Market Buy Order Placed for {symbol}")
-            print(f"Order ID: {result.id}")
-            print(f"Status: {result.status}")
-            print(f"Amount: {quantity:.8f} {symbol.split('_')[0]}")
-            print(f"Total: {amount_usdt} USDT")
             return True
             
         except GateApiException as ex:
             print(f"\n❌ Gate.io API Error for {symbol}:")
             print(f"Label: {ex.label}")
             print(f"Message: {ex.message}")
+            # Check for both types of balance error messages
+            if "Insufficient balance" in ex.message or "Not enough balance" in ex.message:
+                print("\n💡 Insufficient balance detected. Ending current scan round.")
+                print("⏰ Waiting for next hour...")
+                raise InsufficientBalanceError("Not enough balance")
             return False
         except ApiException as e:
             print(f"\n❌ API Error for {symbol}: {str(e)}")
+            if "Not enough balance" in str(e):
+                print("\n💡 Insufficient balance detected. Ending current scan round.")
+                print("⏰ Waiting for next hour...")
+                raise InsufficientBalanceError("Not enough balance")
             return False
         except Exception as e:
             print(f"\n❌ Error placing order for {symbol}: {str(e)}")
+            if "Not enough balance" in str(e):
+                print("\n💡 Insufficient balance detected. Ending current scan round.")
+                print("⏰ Waiting for next hour...")
+                raise InsufficientBalanceError("Not enough balance")
             return False
 
     def get_candlesticks(self, symbol, interval='1h', limit=144):
@@ -118,16 +121,25 @@ class GateioTrader:
                 return
                 
             pairs = response.json()
-            usdt_pairs = [
-                pair for pair in pairs 
-                if pair['id'].endswith('_USDT') and 
-                not any(c.isdigit() for c in pair['id'].split('_')[0][0])
-            ]
-            print(f"\nFound {len(usdt_pairs)} valid USDT pairs")
             
-            for idx, pair in enumerate(usdt_pairs, 1):
-                symbol = pair['id']
-                print(f"\rProcessing {idx}/{len(usdt_pairs)}: {symbol}", end='', flush=True)
+            # Extract base coins from USDT pairs and filter out numbers
+            coins = []
+            for pair in pairs:
+                if pair['id'].endswith('_USDT'):
+                    base_coin = pair['id'].split('_')[0]
+                    if not any(c.isdigit() for c in base_coin):
+                        coins.append(base_coin)
+            
+            # Randomly shuffle the coin list
+            random.shuffle(coins)
+            
+            print(f"\nFound {len(coins)} valid coins")
+            print("Coins have been randomly shuffled for processing")
+            
+            # Process each coin in random order
+            for idx, coin in enumerate(coins, 1):
+                symbol = f"{coin}_USDT"
+                print(f"\rProcessing {idx}/{len(coins)}: {symbol}", end='', flush=True)
                 
                 try:
                     candles = self.get_candlesticks(symbol)
@@ -140,9 +152,18 @@ class GateioTrader:
                     ])
                     
                     df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-                    df = df.dropna(subset=['volume'])
+                    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+                    df = df.dropna(subset=['volume', 'close'])
                     
                     if len(df) < 144:
+                        continue
+                    
+                    # Calculate 24h volume in USDT
+                    df['volume_usdt'] = df['volume'] * df['close']
+                    volume_24h_usdt = float(df['volume_usdt'].tail(24).sum())
+                    
+                    # Skip if 24h volume is less than $100,000
+                    if volume_24h_usdt < 100000:
                         continue
                     
                     ma_144 = df['volume'].rolling(window=144).mean()
@@ -154,8 +175,7 @@ class GateioTrader:
                     
                     volume_increase = ((current_volume - avg_volume) / avg_volume) * 100
                     
-                    if volume_increase > 1000:  # Volume must increase by 1000%
-                        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+                    if volume_increase > 100:  
                         df['open'] = pd.to_numeric(df['open'], errors='coerce')
                         
                         try:
@@ -164,20 +184,23 @@ class GateioTrader:
                         except (ValueError, ZeroDivisionError):
                             price_change = 0
                         
-                        volume_24h = float(df['volume'].tail(24).sum())
+                        current_price = float(df['close'].iloc[-1])
                         
-                        if current_volume > avg_volume and volume_24h > 0:
+                        if current_volume > avg_volume:
                             pairs_with_signal += 1
                             
                             print(f"\n\n🚨 Volume Spike Found: {symbol}")
                             print(f"💹 Volume Increase: {volume_increase:.2f}%")
                             print(f"📈 Price Change: {price_change:.2f}%")
-                            print(f"💰 Price: {float(df['close'].iloc[-1]):.8f} USDT")
-                            print(f"📊 Volume (Current/24h/144MA): {current_volume:.2f} / {volume_24h:.2f} / {avg_volume:.2f}")
+                            print(f"💰 Price: {current_price:.8f} USDT")
+                            print(f"📊 24h Volume: ${volume_24h_usdt:,.2f} USDT")
                             
-                            self.place_spot_order(symbol, amount_usdt=10)
+                            self.place_spot_order(symbol)
                             print("-" * 80)
                 
+                except InsufficientBalanceError:
+                    print("\n⏰ Waiting for next hour due to insufficient balance...")
+                    return
                 except Exception as e:
                     continue
                 
