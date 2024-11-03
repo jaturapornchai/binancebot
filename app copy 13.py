@@ -18,9 +18,9 @@ api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
 client = Client(api_key, api_secret)
 future_leverage = 10
 symbols = []
-tread_time_frame = '1h'
+tread_time_frame = '15m'
 ignore_symbols = ['USDCUSDT','XEMUSDT']
-usdt_open_position = 10
+usdt_open_position = 15
 myRecvWindow = 60000  
 
 def sync_time_with_server(client):
@@ -130,37 +130,27 @@ def create_position_stop_loss_take_profit(symbol, side, quantity):
         position_info = client.futures_position_information(symbol=symbol, timestamp=timestamp, recvWindow=myRecvWindow)
         position_enter_price = float(position_info[0]['entryPrice'])
         get_price_step_size = price_step_size(symbol)
-
-        # ดึงราคาต่ำสุด และสูงสุด ย้อนหลังไป 28 time frame (เอาราคาที่ต่ำที่สุด และที่สูงที่สุด)
-        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=28)
-        price_low = min([float(kline[3]) for kline in klines])
-        price_high = max([float(kline[2]) for kline in klines])        
-
-        if side == 'BUY':        
-            # stop loss เพิ่ม 0.5% จากราคาต่ำสุด และ take profit คือราคาสูงสุด ลด 0.5%
-            stop_loss = price_low * 0.995
-            take_profit = price_high * 0.995
-
+        if side == 'BUY':
+            # stop loss 1%
+            stop_loss = position_enter_price - (position_enter_price * 0.01)
+            # take profit 
+            take_profit = position_enter_price + (position_enter_price - stop_loss)
             stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
             take_profit = math.floor(take_profit / get_price_step_size) * get_price_step_size
-
             stop_loss = round(stop_loss, 8)
             take_profit = round(take_profit, 8)
-
             client.futures_create_order(symbol=symbol, side='SELL', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(quantity), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
             time.sleep(1)
             client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(quantity), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
         else:
-            # stop loss ลด 0.5% จากราคาสูงสุด และ take profit คือราคาต่ำสุด เพิ่ม 0.5%
-            stop_loss = price_high * 1.005
-            take_profit = price_low * 1.005
-
+            # stop loss 1%
+            stop_loss = position_enter_price + (position_enter_price * 0.01)
+            # take profit 
+            take_profit = position_enter_price - (stop_loss - position_enter_price)
             stop_loss = math.ceil(stop_loss / get_price_step_size) * get_price_step_size
             take_profit = math.ceil(take_profit / get_price_step_size) * get_price_step_size
-
             stop_loss = round(stop_loss, 8)
             take_profit = round(take_profit, 8)
-
             client.futures_create_order(symbol=symbol, side='BUY', type='STOP_MARKET', stopPrice=stop_loss, quantity=abs(quantity), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
             time.sleep(1)
             client.futures_create_order(symbol=symbol, side='BUY', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(quantity), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)
@@ -184,16 +174,14 @@ def xcheck_position_stop_loss_take_profit():
                 symbol = position['symbol']
                 position_amount = float(position['positionAmt'])
                 if position_amount != 0:                
-                    # หาราคาต่ำสุด ย้อนไป 14 time frame
-                    klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=data_limit)
                     side = 'LONG' if position_amount > 0 else 'SHORT'
-                    #current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
-                    # enter price
-                    current_price = float(position['entryPrice'])
+                    current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
                     get_price_step_size = price_step_size(symbol)
                     if side == 'LONG':
+                        # หาราคาต่ำสุด ย้อนไป 14 time frame
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=data_limit)
                         lows = [float(kline[3]) for kline in klines]
-                        stop_loss = min(lows) 
+                        stop_loss = min(lows)
                         stop_loss = math.floor(stop_loss / get_price_step_size) * get_price_step_size
                         take_profit = ((current_price - stop_loss) * 1.2) + current_price
                         if take_profit < current_price:
@@ -227,6 +215,8 @@ def xcheck_position_stop_loss_take_profit():
                         if not is_take_profit:
                             client.futures_create_order(symbol=symbol, side='SELL', type='TAKE_PROFIT_MARKET', stopPrice=take_profit, quantity=abs(position_amount), timestamp=timestamp, recvWindow=myRecvWindow,closePosition=True)"""
                     else:
+                        # หาราคาสูงสุด ย้อนไป 14 time frame
+                        klines = client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=data_limit)
                         highs = [float(kline[2]) for kline in klines]
                         stop_loss = max(highs)
                         stop_loss = math.ceil(stop_loss / get_price_step_size) * get_price_step_size
@@ -449,117 +439,100 @@ def remove_position_no_order():
 
 
 
-def calculate_linear_regression_channel(prices: List[float], length: int = 100, deviation: float = 2.0) -> Tuple[float, float, float, float]:
+
+def calculate_ema(data: pd.Series, period: int) -> pd.Series:
     """
-    Calculate Linear Regression Channel parameters
+    Calculate Exponential Moving Average for a given period
+    """
+    return data.ewm(span=period, adjust=False).mean()
+
+def get_historical_klines(client: Client, symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
+    """
+    Fetch historical klines from Binance and convert to DataFrame
+    """
+    try:
+        klines = client.get_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=limit
+        )
+        if not klines:
+            raise ValueError("No data returned from API.")
+        
+        df = pd.DataFrame(klines, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+            'taker_buy_quote', 'ignored'
+        ])
+        
+        # Convert relevant columns to float for calculations
+        df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
+        
+        return df
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return pd.DataFrame()  # Return empty DataFrame on error
+
+def check_signal(client: Client, symbol: str, interval: str = "1h") -> str:
+    """
+    Check trading signal based on new price comparison strategy
     
-    Args:
-        prices: List of closing prices
-        length: Look-back period
-        deviation: Channel deviation multiplier
+    Strategy:
+    BUY = In the last 14 candles, if any candle's high > highest high of last 144 periods
+          AND current price < highest high of last 14 candles
+          
+    SELL = In the last 14 candles, if any candle's low < lowest low of last 144 periods
+           AND current price > lowest low of last 14 candles
+           
+    HOLD = Otherwise
     
     Returns:
-        Tuple of (intercept, end_y, deviation_value, slope)
+    str: 'BUY', 'SELL', or 'HOLD'
     """
-    if len(prices) < length:
-        raise ValueError("Not enough price data")
+    # Get historical data
+    df = get_historical_klines(client, symbol, interval)
     
-    # Get last n prices
-    prices = prices[-length:]
-    x = np.arange(length)
+    # Ensure we have enough data for lookback calculations
+    if df.empty or len(df) < 144:
+        print("Insufficient data for analysis.")
+        return "HOLD"
     
-    # Calculate linear regression
-    slope, intercept = np.polyfit(x, prices, 1)
+    # Calculate EMAs
+    df['ema7'] = calculate_ema(df['close'], 7)
+    df['ema25'] = calculate_ema(df['close'], 25)
+    df['ema99'] = calculate_ema(df['close'], 99)
     
-    # Calculate midline end points
-    end_y = intercept + slope * (length - 1)
+    # Get the current price (last incomplete candle)
+    current_price = df['close'].iloc[-1]
     
-    # Calculate standard deviation
-    reg_line = slope * x + intercept
-    deviation_value = np.std(prices - reg_line)
+    # Define lookback periods
+    current_idx = -2  # Last complete candle
+    lookback_14_start = current_idx - 14  # Start index for 14 candles lookback
+    lookback_144_start = current_idx - 144  # Start index for 144 candles lookback
     
-    return intercept, end_y, deviation_value, slope
-
-def calculate_slope_percentage(slope: float, current_price: float) -> float:
-    """
-    Calculate slope as a percentage
+    # Get high and low values for different periods
+    last_14_highs = df['high'].iloc[lookback_14_start:current_idx]
+    last_14_lows = df['low'].iloc[lookback_14_start:current_idx]
+    lookback_144_high = df['high'].iloc[lookback_144_start:lookback_14_start].max()
+    lookback_144_low = df['low'].iloc[lookback_144_start:lookback_14_start].min()
     
-    Args:
-        slope: The slope of the regression line
-        current_price: Current price for percentage calculation
+    # Get highest high and lowest low of last 14 candles
+    last_14_highest = last_14_highs.max()
+    last_14_lowest = last_14_lows.min()
     
-    Returns:
-        float: Slope as a percentage
-    """
-    # Convert slope to angle in radians
-    angle = math.atan(slope)
-    # Convert to degrees
-    degrees = math.degrees(angle)
-    # Convert to percentage (normalize to -100 to 100 range)
-    percentage = (degrees / 90) * 100
-    return percentage
-
-def check_signal(client: Client, symbol: str) -> str:
-    """
-    Check for trading signals based on Linear Regression Channel
+    # Check if any of the last 14 candles had a higher high than the 144 lookback period
+    buy_condition_met = any(high > lookback_144_high for high in last_14_highs)
     
-    Args:
-        client: Binance client instance
-        symbol: Trading pair symbol (e.g. 'BTCUSDT')
+    # Check if any of the last 14 candles had a lower low than the 144 lookback period
+    sell_condition_met = any(low < lookback_144_low for low in last_14_lows)
     
-    Returns:
-        str: 'BUY', 'SELL', or 'HOLD'
-    """
-    # Get historical klines/candlestick data
-    klines = client.get_klines(
-        symbol=symbol,
-        interval=Client.KLINE_INTERVAL_1HOUR,
-        limit=100  # Length parameter from original script
-    )
-    
-    # Extract closing prices
-    closes = [float(k[4]) for k in klines]
-    current_price = closes[-1]
-    
-    # Calculate Linear Regression Channel
-    intercept, end_y, dev, slope = calculate_linear_regression_channel(
-        prices=closes,
-        length=100,
-        deviation=2.0
-    )
-    
-    # Calculate slope percentage
-    slope_percentage = calculate_slope_percentage(slope, current_price)
-    
-    # Calculate channel boundaries at current point
-    x_pos = 99  # Last position (100-1)
-    middle_line = slope * x_pos + intercept
-    upper_channel = middle_line + (dev * 2.0)
-    lower_channel = middle_line - (dev * 2.0)
-    
-    # Calculate 75% level
-    channel_height = upper_channel - lower_channel
-    upper_75 = upper_channel - (channel_height * 0.25)  # 75% from bottom
-    lower_75 = lower_channel + (channel_height * 0.25)  # 75% from top
-    
-    # Check for signals
-    if slope > 0 and abs(slope_percentage) > 25:  # Uptrend with >25% slope
-        if current_price < lower_75:
-            return "BUY"
-    elif slope < 0 and abs(slope_percentage) > 25:  # Downtrend with >25% slope
-        if current_price > upper_75:
-            return "SELL"
-            
-    return "HOLD"  # No buy/sell signal
-
-
-
-
-
-
-
-
-
+    # Check conditions and return signal
+    if buy_condition_met and current_price < last_14_highest:
+        return "BUY"
+    elif sell_condition_met and current_price > last_14_lowest:
+        return "SELL"
+    else:
+        return "HOLD"
 
 
 
@@ -568,7 +541,7 @@ def check_signal(client: Client, symbol: str) -> str:
 first_run = True
 while True:
     now = datetime.datetime.now()
-    if now.minute == 0 or first_run:
+    if now.minute % 15 == 0 or first_run:
         print(f"Current time Tread : {now}", flush=True)
         remove_order_no_position()
         remove_order_stop_loss_or_take_profit()         
@@ -595,8 +568,8 @@ while True:
                         client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])"""
 
 
-                    signal = check_signal(client,symbol)
-                    #print(f"Signal: {signal} for {symbol}", flush=True)
+                    signal = check_signal(client,symbol,tread_time_frame)
+                    print(f"Signal: {signal} for {symbol}", flush=True)
                     
                     if signal == "BUY":
                         print(f"Signal: {signal} for {symbol}", flush=True)

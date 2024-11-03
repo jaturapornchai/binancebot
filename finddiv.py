@@ -1,153 +1,186 @@
-import datetime
-import ccxt
 import pandas as pd
-from datetime import datetime
+import numpy as np
 import requests
-from binance.client import Client
-import time
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
 
-# Configure API key authorization
-api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
-api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
-client = Client(api_key, api_secret)
-tread_time_frame = '15m'
-exchange = ccxt.binance()
-ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
-line_token = "aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
+class ElliottWaveOscillator:
+    def __init__(self, sma1_length=5, sma2_length=35, use_percent=True):
+        self.sma1_length = sma1_length
+        self.sma2_length = sma2_length
+        self.use_percent = use_percent
 
-def send_line_notify(message):
-    """Send notifications through LINE Notify."""
-    headers = {
-        'Authorization': f'Bearer ' + line_token,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    payload = {'message': message}
-    response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-    return response.status_code
+    def get_binance_klines(self, symbol, interval, limit):
+        """ดึงข้อมูลจาก Binance"""
+        endpoint = "https://api.binance.com/api/v3/klines"
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
+        response = requests.get(endpoint, params=params)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"Error fetching data: {response.status_code}")
 
-def fetch_future_symbols():
-    info = client.futures_exchange_info()
-    symbols = [item['symbol'] for item in info['symbols'] if 'USDT' in item['symbol'] and item['status'] == 'TRADING']
-    symbols = [symbol for symbol in symbols if not any(char.isdigit() for char in symbol)]
-    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
-    symbols.sort()    
-    return symbols
+    def calculate_sma(self, prices, period):
+        """คำนวณ Simple Moving Average"""
+        return pd.Series(prices).rolling(window=period).mean()
 
-def rsi(df, periods=14, ema=True):
-    close_delta = df['close'].diff()
+    def calculate_ewo(self, df):
+        """คำนวณ Elliott Wave Oscillator"""
+        src = df['close'].values
+        sma1 = self.calculate_sma(src, self.sma1_length)
+        sma2 = self.calculate_sma(src, self.sma2_length)
+        
+        if self.use_percent:
+            ewo = (sma1 - sma2) / src * 100
+        else:
+            ewo = sma1 - sma2
+            
+        return ewo
+
+    def find_signals(self, df):
+        """หาสัญญาณซื้อขายจากการเปลี่ยนสี"""
+        ewo = self.calculate_ewo(df)
+        df['ewo'] = ewo
+        
+        buy_signals = []
+        sell_signals = []
+        
+        # หาจุดตัด 0 (เปลี่ยนสี)
+        for i in range(1, len(df)):
+            # Buy signal: เปลี่ยนจากแดงเป็นเขียว (ตัดขึ้นผ่าน 0)
+            if df['ewo'].iloc[i-1] <= 0 and df['ewo'].iloc[i] > 0:
+                buy_signals.append({
+                    'index': i,
+                    'price': df['close'].iloc[i],
+                    'ewo': df['ewo'].iloc[i]
+                })
+            
+            # Sell signal: เปลี่ยนจากเขียวเป็นแดง (ตัดลงผ่าน 0)
+            elif df['ewo'].iloc[i-1] > 0 and df['ewo'].iloc[i] <= 0:
+                sell_signals.append({
+                    'index': i,
+                    'price': df['close'].iloc[i],
+                    'ewo': df['ewo'].iloc[i]
+                })
+        
+        return {'buy': buy_signals, 'sell': sell_signals}
+
+    def plot_analysis(self, df, signals):
+        """วาดกราฟแสดงผลการวิเคราะห์"""
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
+        
+        # Plot 1: Price and Signal Points
+        ax1.plot(df.index, df['close'], label='Price', color='blue', alpha=0.7)
+        
+        # Plot Buy Signals (เปลี่ยนจากแดงเป็นเขียว)
+        for signal in signals['buy']:
+            idx = df.index[signal['index']]
+            ax1.plot(idx, signal['price'], '^', markersize=10, color='g')
+            signal_text = f"BUY\nPrice: {signal['price']:.2f}\nEWO: {signal['ewo']:.2f}"
+            ax1.annotate(signal_text,
+                        (idx, signal['price']),
+                        xytext=(10, 10),
+                        textcoords='offset points',
+                        bbox=dict(facecolor='lightgreen', alpha=0.7))
+        
+        # Plot Sell Signals (เปลี่ยนจากเขียวเป็นแดง)
+        for signal in signals['sell']:
+            idx = df.index[signal['index']]
+            ax1.plot(idx, signal['price'], 'v', markersize=10, color='r')
+            signal_text = f"SELL\nPrice: {signal['price']:.2f}\nEWO: {signal['ewo']:.2f}"
+            ax1.annotate(signal_text,
+                        (idx, signal['price']),
+                        xytext=(10, -10),
+                        textcoords='offset points',
+                        bbox=dict(facecolor='lightcoral', alpha=0.7))
+        
+        ax1.set_title('Price Chart with Buy/Sell Signals')
+        ax1.grid(True)
+        
+        # Plot 2: Elliott Wave Oscillator
+        colors = ['g' if x > 0 else 'r' for x in df['ewo']]
+        ax2.bar(df.index, df['ewo'], color=colors, alpha=0.7)
+        ax2.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+        
+        # เพิ่มจุดที่เกิดสัญญาณใน EWO
+        for signal in signals['buy']:
+            idx = df.index[signal['index']]
+            ax2.plot(idx, signal['ewo'], '^', color='g', markersize=8)
+        for signal in signals['sell']:
+            idx = df.index[signal['index']]
+            ax2.plot(idx, signal['ewo'], 'v', color='r', markersize=8)
+        
+        ax2.set_title('Elliott Wave Oscillator')
+        ax2.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+
+def main():
+    # ตั้งค่าพารามิเตอร์
+    symbol = "BTCUSDT"
+    interval = "1h"
+    limit = 500
+    sma1_length = 5
+    sma2_length = 35
+    use_percent = True
+
+    # สร้าง ElliottWaveOscillator object
+    ewo = ElliottWaveOscillator(sma1_length, sma2_length, use_percent)
     
-    if ema:
-        up = close_delta.clip(lower=0)
-        down = -1 * close_delta.clip(upper=0)
-        ma_up = up.ewm(com=periods-1, adjust=True, min_periods=periods).mean()
-        ma_down = down.ewm(com=periods-1, adjust=True, min_periods=periods).mean()
-    else:
-        up = close_delta[close_delta > 0].reindex_like(df)
-        down = -1 * close_delta[close_delta < 0].reindex_like(df)
-        ma_up = up.rolling(window=periods, min_periods=0).mean()
-        ma_down = down.rolling(window=periods, min_periods=0).mean()
+    # ดึงข้อมูลจาก Binance
+    klines = ewo.get_binance_klines(symbol, interval, limit)
     
-    rs = ma_up / ma_down
-    return 100 - (100 / (1 + rs))
-
-def find_swing_points(data, rsi_col='rsi', lb=5):
-    swing_highs = []
-    swing_lows = []
+    # แปลงข้อมูลเป็น DataFrame
+    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                                     'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                                     'taker_buy_quote', 'ignored'])
     
-    for i in range(lb, len(data) - lb):
-        if data[rsi_col].iloc[i] == max(data[rsi_col].iloc[i - lb:i + lb + 1]):
-            swing_highs.append((data.index[i], data[rsi_col].iloc[i]))
-        if data[rsi_col].iloc[i] == min(data[rsi_col].iloc[i - lb:i + lb + 1]):
-            swing_lows.append((data.index[i], data[rsi_col].iloc[i]))
+    # แปลงข้อมูลให้เป็นรูปแบบที่ใช้งานได้
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        df[col] = df[col].astype(float)
     
-    return swing_highs, swing_lows
-
-def find_divergence(data, swing_highs, swing_lows):
-    divergences = {'bullish': [], 'bearish': []}
+    # ตั้ง timestamp เป็น index
+    df.set_index('timestamp', inplace=True)
     
-    for i in range(1, len(swing_lows)):
-        if swing_lows[i][1] > swing_lows[i - 1][1] and data['close'][swing_lows[i][0]] < data['close'][swing_lows[i - 1][0]]:
-            divergences['bullish'].append(swing_lows[i])
+    # หาสัญญาณซื้อขาย
+    signals = ewo.find_signals(df)
     
-    for i in range(1, len(swing_highs)):
-        if swing_highs[i][1] < swing_highs[i - 1][1] and data['close'][swing_highs[i][0]] > data['close'][swing_highs[i - 1][0]]:
-            divergences['bearish'].append(swing_highs[i])
+    # วาดกราฟ
+    ewo.plot_analysis(df, signals)
     
-    return divergences
+    # แสดงสัญญาณล่าสุด
+    print("\nLatest Signals (Last 24 hours):")
+    latest_index = df.index[-1]
+    last_24h = latest_index - pd.Timedelta(hours=24)
+    
+    # แสดงสัญญาณ Buy
+    recent_buys = [s for s in signals['buy'] 
+                   if df.index[s['index']] > last_24h]
+    if recent_buys:
+        print("\nBUY Signals (เปลี่ยนจากแดงเป็นเขียว):")
+        for signal in recent_buys:
+            print(f"\nTime: {df.index[signal['index']]}")
+            print(f"Price: {signal['price']:.2f}")
+            print(f"EWO: {signal['ewo']:.2f}")
+    
+    # แสดงสัญญาณ Sell
+    recent_sells = [s for s in signals['sell'] 
+                    if df.index[s['index']] > last_24h]
+    if recent_sells:
+        print("\nSELL Signals (เปลี่ยนจากเขียวเป็นแดง):")
+        for signal in recent_sells:
+            print(f"\nTime: {df.index[signal['index']]}")
+            print(f"Price: {signal['price']:.2f}")
+            print(f"EWO: {signal['ewo']:.2f}")
+    
+    if not recent_buys and not recent_sells:
+        print("No signals in the last 24 hours")
 
-def check_div_signal(symbol):
-    # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
-    limit = 1000  
-    # ดึงข้อมูลย้อนหลัง 10 วัน
-    since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 10  
-
-    # ดึงข้อมูลในช่วงเวลาที่กำหนด
-    bars = []
-    while True:
-        ohlcv = exchange.fetch_ohlcv(symbol, tread_time_frame, since, limit)
-        if not ohlcv:
-            break
-        since = ohlcv[-1][0] + 1
-        bars.extend(ohlcv)
-        if len(ohlcv) < limit:
-            break
-
-    data = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-    data.set_index('timestamp', inplace=True)
-
-    data['rsi'] = rsi(data, periods=14)
-    swing_highs, swing_lows = find_swing_points(data)
-    divergences = find_divergence(data, swing_highs, swing_lows)
-
-    latest_divergence = None
-
-    if divergences['bullish']:
-        latest_bullish_divergence = divergences['bullish'][-1][0]
-        time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 5:
-            latest_divergence = 'long'
-
-    if divergences['bearish']:
-        latest_bearish_divergence = divergences['bearish'][-1][0]
-        time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 5:
-            latest_divergence = 'short'
-
-    if not latest_divergence:
-        latest_divergence = 'normal'
-
-    return latest_divergence
-
-def future_find_signal():
-    print("Start check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-    symbols = fetch_future_symbols()
-    for symbol in symbols:
-        try:
-            signal = check_div_signal(symbol)
-            if signal == 'short':
-                print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
-                send_line_notify(f"Short : Symbol: {symbol}, Signal: {signal}")
-
-            if signal == 'long':
-                print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
-                send_line_notify(f"Long : Symbol: {symbol}, Signal: {signal}")
-
-        except Exception as e:
-            print(f"Error: {e}", flush=True)    
-            continue    
-    print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-
-def future_get_balance():
-    balance = client.futures_account_balance()
-    balance_asset = 0
-    for item in balance:
-        if item['asset'] == 'USDT':
-            balance_asset = float(item['balance'])
-            break
-    print(f"Balance USDT: {balance_asset}", flush=True)  
-    return balance_asset
-
-# clear screen terminal
-print("\033[H\033[J")
-future_find_signal()
+if __name__ == "__main__":
+    main()
