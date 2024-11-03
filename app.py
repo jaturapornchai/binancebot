@@ -51,6 +51,47 @@ class GateioTrader:
             
         self.request_count += 1
 
+    def check_coin_balance(self, symbol):
+        """Check if already have this coin and get current value in USDT"""
+        try:
+            coin = symbol.split('_')[0]  # Get coin from pair (e.g., BTC from BTC_USDT)
+            
+            # Get balance
+            balances = self.spot_api.list_spot_accounts(currency=coin)
+            
+            if not balances or len(balances) == 0:
+                return 0
+                
+            # Get current price
+            tickers = self.spot_api.list_tickers(currency_pair=symbol)
+            if not tickers or not tickers[0].last:
+                return 0
+                
+            current_price = float(tickers[0].last)
+            balance = float(balances[0].available)
+            
+            # Calculate current value in USDT
+            current_value = balance * current_price
+            
+            return current_value
+            
+        except Exception as e:
+            print(f"Error checking {symbol} balance: {str(e)}")
+            return 0
+
+    def get_candlesticks(self, symbol, interval='1h', limit=144):
+        """Get candlestick data for a trading pair"""
+        endpoint = f"{self.base_url}/spot/candlesticks"
+        params = {
+            'currency_pair': symbol,
+            'interval': interval,
+            'limit': limit
+        }
+        response = requests.get(endpoint, headers=self.headers, params=params)
+        if response.status_code == 200:
+            return response.json()
+        return None
+
     def place_spot_order(self, symbol):
         """Place a spot market buy order using gate-api"""
         try:                        
@@ -65,6 +106,10 @@ class GateioTrader:
             
             # Place order
             result = self.spot_api.create_order(order)
+            print(f"\n✅ Market Buy Order Placed for {symbol}")
+            print(f"Order ID: {result.id}")
+            print(f"Status: {result.status}")
+            print(f"Amount: $20.00 USDT")
             return True
             
         except GateApiException as ex:
@@ -91,19 +136,6 @@ class GateioTrader:
                 print("⏰ Waiting for next hour...")
                 raise InsufficientBalanceError("Not enough balance")
             return False
-
-    def get_candlesticks(self, symbol, interval='1h', limit=144):
-        """Get candlestick data for a trading pair"""
-        endpoint = f"{self.base_url}/spot/candlesticks"
-        params = {
-            'currency_pair': symbol,
-            'interval': interval,
-            'limit': limit
-        }
-        response = requests.get(endpoint, headers=self.headers, params=params)
-        if response.status_code == 200:
-            return response.json()
-        return None
 
     def scan_and_trade(self):
         """Scan for volume spikes and place orders"""
@@ -142,6 +174,13 @@ class GateioTrader:
                 print(f"\rProcessing {idx}/{len(coins)}: {symbol}", end='', flush=True)
                 
                 try:
+                    # Check current portfolio value for this coin
+                    portfolio_value = self.check_coin_balance(symbol)
+                    
+                    # Skip if portfolio value is > $5
+                    if portfolio_value > 5:
+                        continue
+                        
                     candles = self.get_candlesticks(symbol)
                     if not candles:
                         continue
@@ -151,31 +190,34 @@ class GateioTrader:
                         'low', 'open', 'amount', 'count'
                     ])
                     
-                    df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+                    # Convert columns to numeric
+                    df['amount'] = pd.to_numeric(df['amount'], errors='coerce')  # Buy volume
                     df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                    df = df.dropna(subset=['volume', 'close'])
+                    df = df.dropna(subset=['amount', 'close'])
                     
                     if len(df) < 144:
                         continue
                     
-                    # Calculate 24h volume in USDT
-                    df['volume_usdt'] = df['volume'] * df['close']
-                    volume_24h_usdt = float(df['volume_usdt'].tail(24).sum())
+                    # Calculate 24h volume in USDT using buy volume (amount)
+                    df['buy_volume_usdt'] = df['amount'] * df['close']
+                    volume_24h_usdt = float(df['buy_volume_usdt'].tail(24).sum())
                     
                     # Skip if 24h volume is less than $100,000
                     if volume_24h_usdt < 100000:
                         continue
                     
-                    ma_144 = df['volume'].rolling(window=144).mean()
-                    current_volume = float(df['volume'].iloc[-1])
-                    avg_volume = float(ma_144.iloc[-1])
+                    # Calculate buy volume moving average
+                    ma_144 = df['amount'].rolling(window=144).mean()
+                    current_buy_volume = float(df['amount'].iloc[-1])
+                    avg_buy_volume = float(ma_144.iloc[-1])
                     
-                    if pd.isna(avg_volume) or avg_volume == 0:
+                    if pd.isna(avg_buy_volume) or avg_buy_volume == 0:
                         continue
                     
-                    volume_increase = ((current_volume - avg_volume) / avg_volume) * 100
+                    # Calculate buy volume increase
+                    volume_increase = ((current_buy_volume - avg_buy_volume) / avg_buy_volume) * 100
                     
-                    if volume_increase > 100:  
+                    if volume_increase > 1000:  # Buy volume increased by more than 1000%
                         df['open'] = pd.to_numeric(df['open'], errors='coerce')
                         
                         try:
@@ -186,14 +228,17 @@ class GateioTrader:
                         
                         current_price = float(df['close'].iloc[-1])
                         
-                        if current_volume > avg_volume:
+                        if current_buy_volume > avg_buy_volume:
                             pairs_with_signal += 1
                             
-                            print(f"\n\n🚨 Volume Spike Found: {symbol}")
-                            print(f"💹 Volume Increase: {volume_increase:.2f}%")
+                            print(f"\n\n🚨 Buy Volume Spike Found: {symbol}")
+                            print(f"💹 Buy Volume Increase: {volume_increase:.2f}%")
                             print(f"📈 Price Change: {price_change:.2f}%")
                             print(f"💰 Price: {current_price:.8f} USDT")
+                            print(f"💼 Portfolio Value: ${portfolio_value:.2f} USDT")
                             print(f"📊 24h Volume: ${volume_24h_usdt:,.2f} USDT")
+                            print(f"🛒 Current Buy Volume: {current_buy_volume:.2f}")
+                            print(f"📈 Average Buy Volume (144h): {avg_buy_volume:.2f}")
                             
                             self.place_spot_order(symbol)
                             print("-" * 80)
