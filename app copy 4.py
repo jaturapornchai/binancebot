@@ -1,439 +1,336 @@
-import os
-import time
-import pandas as pd
-import numpy as np
-from datetime import datetime
+import random
 import requests
-from binance.client import Client
-from sklearn.linear_model import LinearRegression
+import pandas as pd
+import time
+import hmac
+import hashlib
+import json
+from datetime import datetime
+from gate_api import ApiClient, Configuration, Order, SpotApi
+from gate_api.exceptions import ApiException, GateApiException
 
-# ดึงค่า API key และ secret จาก environment variables
-#api_key = os.getenv('BINANCE_API_KEY')
-#api_secret = os.getenv('BINANCE_SECRET_KEY')
-#line_token = os.getenv('LINE_NOTIFY_TOKEN')
-api_key="wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN"
-api_secret="8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU"
-line_token="LINE_NOTIFY_TOKEN=cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
+# API Credentials
+API_KEY = "c84d3616806f44e5651912c198094a1b"
+API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
 
+# Custom exception for insufficient balance
+class InsufficientBalanceError(Exception):
+    pass
 
-# สร้างอินสแตนซ์ของ Binance Futures
-client = Client(api_key, api_secret)
-future_leverage = 15
-tread_time_frame = '1h'
-
-ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
-
-# ตรวจสอบว่า API key, secret และ line_token ไม่เป็น None
-if not api_key or not api_secret or not line_token:
-    raise ValueError("API key, secret หรือ LINE token ไม่ถูกต้อง")
-
-def send_line_notify(message):
-    """Send notifications through LINE Notify."""
-    headers = {
-        'Authorization': f'Bearer ' + line_token,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    payload = {'message': message}
-    response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-    return response.status_code
-
-def fetch_future_symbols():
-    exchange_info = client.futures_exchange_info()
-    symbols = [s['symbol'] for s in exchange_info['symbols'] if s['symbol'].endswith('USDT') and s['status'] == 'TRADING']
-    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
-    symbols.sort()
-    return symbols
-
-def linear_regression_channel(data, window=100, devlen=2.0):
-    X = np.arange(window).reshape(-1, 1)
-    model = LinearRegression()
-    upper_bound = []
-    lower_bound = []
-    middle = []
-    for i in range(len(data) - window + 1):
-        y = data[i:i+window]
-        model.fit(X, y)
-        trend = model.predict(X)
-        residuals = y - trend
-        std_res = np.std(residuals)
-        middle.append(trend[-1])
-        upper_bound.append(trend[-1] + std_res * devlen)
-        lower_bound.append(trend[-1] - std_res * devlen)
-    return middle, upper_bound, lower_bound
-
-def check_breakout(data, upper_bound, lower_bound):
-    if data[-1] > upper_bound[-1]:
-        return 'LONG'
-    elif data[-1] < lower_bound[-1]:
-        return 'SHORT'
-    else:
-        return 'normal'
-
-def check_signal(symbol, timeframe='1h', window=100, devlen=2.0):
-    try:
-        ohlcv = client.futures_klines(symbol=symbol, interval=timeframe, limit=window)
-        if len(ohlcv) < window:
-            return 'normal'
-
-        data = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-        data.set_index('timestamp', inplace=True)
-
-        # แปลงชนิดข้อมูลให้เป็น float
-        data['open'] = data['open'].astype(float)
-        data['high'] = data['high'].astype(float)
-        data['low'] = data['low'].astype(float)
-        data['close'] = data['close'].astype(float)
-        data['volume'] = data['volume'].astype(float)
-
-        close_prices = data['close'].values
-        middle, upper_bound, lower_bound = linear_regression_channel(close_prices, window, devlen)
-
-        return check_breakout(close_prices, upper_bound, lower_bound)
-    except Exception as e:
-        print(f"Error checking signal for {symbol}: {e}", flush=True)
-        return 'normal'
-
-def future_find_signal(timeframe, window=100, devlen=2.0):
-    global future_exchange_info 
-    global future_balance
-
-    future_exchange_info = client.futures_exchange_info()
-    future_balance = future_get_balance()
-    if future_balance < 10:
-        print("USDT balance is not enough", flush=True)
-        return None
-    
-    symbols = fetch_future_symbols()
-    positions = future_get_position()
-    for symbol in symbols:
-        # ถ้า symbol มี position ให้ข้ามไป  
-        if symbol in positions:
-            continue
-        signal = check_signal(symbol, timeframe, window, devlen)
-        if signal != 'normal':
-            color = '🟢' if signal == 'LONG' else '🔴'
-            message = f"Binance: Signal detected for {symbol}: {color} {signal}"
-            try:
-                print(message, flush=True)
-                if signal == 'LONG':
-                    print(f"Open position {symbol} {signal}", flush=True)
-                    future_open_position(symbol, 'BUY')
-                if signal == 'SHORT':
-                    print(f"Open position {symbol} {signal}", flush=True)
-                    future_open_position(symbol, 'SELL')                
-                send_line_notify(message)
-                time.sleep(1)
-            except Exception as e:
-                print(f"Error sending LINE message: {e}", flush=True)        
-    positions = future_get_position()
-    for symbol in positions:
-        future_compare_stop_loss(symbol)
+class GateioTrader:
+    def __init__(self):
+        self.base_url = "https://api.gateio.ws/api/v4"
+        self.headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+        self.request_count = 0
+        self.last_request_time = time.time()
+        self.rate_limit = 300  # requests per minute
         
-def get_step_size(symbol):
-    exchange_info = client.futures_exchange_info()
-    for item in exchange_info['symbols']:
-        if item['symbol'] == symbol:
-            for filt in item['filters']:
-                if filt['filterType'] == 'LOT_SIZE':
-                    return float(filt['stepSize'])
-    return None
-
-def get_tick_size(symbol):
-    exchange_info = client.futures_exchange_info()
-    for item in exchange_info['symbols']:
-        if item['symbol'] == symbol:
-            for filt in item['filters']:
-                if filt['filterType'] == 'PRICE_FILTER':
-                    return float(filt['tickSize'])
-    return None
-
-def round_quantity(quantity, step_size):
-    return (quantity // step_size) * step_size
-
-def future_open_position(symbol, side):
-    if not future_get_last_trade(symbol):
-        print(f"Skip symbol {symbol} because last trade near", flush=True)
-        return None
-
-    if future_change_margin_type_and_leverage(symbol) == False:
-        print(f"Error changing margin type and leverage for {symbol}", flush=True)
-        return None
-    
-    usdt_amount = future_balance / 75.0    
-    print(f"USDT amount: {usdt_amount}", flush=True)
-    quantity = 0
-    current_price = 0
-    try:
-        ticker = client.futures_symbol_ticker(symbol=symbol)
-        current_price = float(ticker['price'])
-        step_size = get_step_size(symbol)
-        tick_size = get_tick_size(symbol)
-        quantity = usdt_amount / current_price * future_leverage
-        quantity = round_quantity(quantity, step_size)
-    except Exception as e:
-        print(f"Error calculating quantity: {e}", flush=True)
-        return None
-    
-    try:
-        time.sleep(1)
-        print(f"Open position {symbol} {side} {quantity}", flush=True)
-        if side == 'BUY':
-            df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=100), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            df = df.iloc[:-2]
-            df['low'] = df['low'].astype(float)
-            min_price = df['low'].min()    
-            if current_price > min_price:
-                print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='BUY',
-                    type='MARKET',
-                    quantity=quantity
-                )
-                send_line_notify(f"Open position {symbol} {side}")
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='SELL',
-                    type='STOP_MARKET',
-                    quantity=quantity,
-                    stopPrice=min_price,
-                    closePosition=True
-                )
-        if side == 'SELL':
-            df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=100), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            df = df.iloc[:-2]
-            df['high'] = df['high'].astype(float)
-            max_price = df['high'].max()
-            if current_price < max_price:
-                print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='SELL',
-                    type='MARKET',
-                    quantity=quantity
-                )
-                send_line_notify(f"Open position {symbol} {side}")
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='BUY',
-                    type='STOP_MARKET',
-                    quantity=quantity,
-                    stopPrice=max_price,
-                    closePosition=True
-                )
-
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        send_line_notify(f"Error: {e}")
-        return None
-
-def future_get_balance():
-    # ดึงข้อมูล account balance
-    balance = client.futures_account_balance()
-    balance_usdt = 0
-    for item in balance:
-        if item['asset'] == 'USDT':
-            balance_usdt = float(item['balance'])
-            break
-    print(f"USDT balance: {balance_usdt}", flush=True)
-    return balance_usdt
-
-def future_get_last_trade(symbol):
-    try:
-        time_hour = 4
-        trades = client.futures_account_trades(symbol=symbol)
-        if len(trades) == 0:
-            return True
-        last_trade = trades[-1]
-        trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
-        time_diff = datetime.now() - trade_time
-        if time_diff.total_seconds() < 60 * 60 * time_hour:
-            return False
-        return True
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        return False
-
-def future_compare_stop_loss(symbol):
-    print(f"Compare stop loss {symbol}", flush=True)
-    tread_time_frame_stop_loss = '15m'
-    limit_time_frame = 14
-    try:
-        position_info = client.futures_position_information(symbol=symbol)
-        position_amount = float(position_info[0]['positionAmt'])
-        if position_amount == 0:
-            return None
+        # Initialize gate-api client
+        config = Configuration(key=API_KEY, secret=API_SECRET)
+        client = ApiClient(config)
+        self.spot_api = SpotApi(client)
         
-        position_side = (position_amount > 0) and 'BUY' or 'SELL'
-
-        future_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
-        orders = client.futures_get_open_orders(symbol=symbol)
-        order = None
-        for item in orders:
-            if item['status'] == 'NEW':
-                order = item
-                break
+    def _rate_limit_check(self):
+        """Implement rate limiting"""
+        current_time = time.time()
+        time_passed = current_time - self.last_request_time
         
-        if order == None:
-            print(f"Order not found {symbol}", flush=True)
-            if position_side == 'BUY':
-                df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df.set_index('timestamp', inplace=True)
-                df['low'] = df['low'].astype(float)
-                bottom_price = df['low'].min()
-                print(f"Reorder {symbol} {position_side} {position_amount} {bottom_price}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL",
-                    type='STOP_MARKET',
-                    quantity=position_amount,
-                    stopPrice=bottom_price,
-                    closePosition=True
-                )
-            if position_side == 'SELL':
-                df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df.set_index('timestamp', inplace=True)
-                df['high'] = df['high'].astype(float)
-                top_price = df['high'].max()
-                print(f"Reorder {symbol} {position_side} {position_amount} {top_price}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="BUY",
-                    type='STOP_MARKET',
-                    quantity=position_amount,
-                    stopPrice=top_price,
-                    closePosition=True
-                )            
+        if time_passed < 60:  # Within a minute window
+            if self.request_count >= self.rate_limit:
+                sleep_time = 60 - time_passed
+                print(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds", flush=True)
+                time.sleep(sleep_time)
+                self.request_count = 0
+                self.last_request_time = time.time()
         else:
-            old_order_stop_price = float(order['stopPrice'])                
-            top_price = 0
-            bottom_price = 0
-            df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            top_price = df['high'].max()
-            bottom_price = df['low'].min()
-            if position_side == 'BUY':
-                if old_order_stop_price < bottom_price and future_price > bottom_price:
-                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                    time.sleep(5) 
-                    print(f"Reorder {symbol} {order['side']} {position_amount} {bottom_price}", flush=True)
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side=order['side'],
-                        type=order['type'],
-                        quantity=position_amount,
-                        stopPrice=bottom_price,
-                        closePosition=True
-                    )
-            if position_side == 'SELL':
-                if old_order_stop_price > top_price and future_price < top_price:
-                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                    time.sleep(1) 
-                    print(f"Reorder {symbol} {order['side']} {position_amount} {top_price}", flush=True)
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side=order['side'],
-                        type=order['type'],
-                        quantity=position_amount,
-                        stopPrice=top_price,
-                        closePosition=True
-                    )                
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
+            self.request_count = 0
+            self.last_request_time = current_time
+            
+        self.request_count += 1
+
+    def check_24h_volume(self, df):
+        """
+        Check if the last 24 timeframes have total volume greater than $10,000 USDT
+        """
+        try:
+            if len(df) < 24:
+                return False
+            
+            # Get last 24 candles
+            last_24_candles = df.tail(24)
+            
+            # Calculate volume in USDT (volume * close price)
+            volume_usdt = sum(float(row['volume']) * float(row['close']) for _, row in last_24_candles.iterrows())
+            
+            print(f"📊 24h Volume in USDT: ${volume_usdt:,.2f}", flush=True)
+            
+            return volume_usdt > 10000
+            
+        except Exception as e:
+            print(f"Error checking 24h volume: {str(e)}", flush=True)
+            return False
+
+    def check_coin_balance(self, symbol):
+        """Check if already have this coin and get current value in USDT"""
+        try:
+            coin = symbol.split('_')[0]  # Get coin from pair (e.g., BTC from BTC_USDT)
+            
+            # Get balance
+            balances = self.spot_api.list_spot_accounts(currency=coin)
+            
+            if not balances or len(balances) == 0:
+                return 0
+                
+            # Get current price
+            tickers = self.spot_api.list_tickers(currency_pair=symbol)
+            if not tickers or not tickers[0].last:
+                return 0
+                
+            current_price = float(tickers[0].last)
+            balance = float(balances[0].available)
+            
+            # Calculate current value in USDT
+            current_value = balance * current_price
+            
+            return current_value
+            
+        except Exception as e:
+            print(f"Error checking {symbol} balance: {str(e)}", flush=True)
+            return 0
+
+    def get_candlesticks(self, symbol, interval='1h', limit=144):
+        """Get candlestick data for a trading pair"""
+        endpoint = f"{self.base_url}/spot/candlesticks"
+        params = {
+            'currency_pair': symbol,
+            'interval': interval,
+            'limit': limit
+        }
+        response = requests.get(endpoint, headers=self.headers, params=params)
+        if response.status_code == 200:
+            return response.json()
         return None
 
-def future_get_position():
-    positions_open = []
-    positions = client.futures_position_information()
-    for position in positions:
-        position_amount = float(position['positionAmt'])
-        if position_amount != 0:
-            positions_open.append(position['symbol'])
-    return positions_open
-
-def future_change_margin_type_and_leverage(symbol):
-    try:
-        # เปลี่ยนเป็น cross margin ถ้าเป็น isolated margin
-        positions = client.futures_position_information(symbol=symbol)
-        if positions[0]['marginType'] == 'isolated':
-            print(f"Change margin type to CROSS for {symbol}", flush=True)
-            client.futures_change_margin_type(symbol=symbol, marginType='CROSSED')              
-    except Exception as e:
-        print(f"Error changing margin type: {e}", flush=True)
-        return False
-    
-    try:
-        positions = client.futures_position_information(symbol=symbol)
-        current_leverage = positions[0]['leverage']
-        if int(current_leverage) != future_leverage:
-            print(f"Change leverage to {future_leverage} for {symbol}", flush=True)
-            client.futures_change_leverage(symbol=symbol, leverage=future_leverage)
-    except Exception as e:
-        print(f"Error checking or setting leverage: {e}", flush=True)
-        return False
-    
-    return True
-
-def future_find_order_no_position():
-    print("Start check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-    # หา order ที่ไม่มี position ให้ยกเลิก order
-    orders = client.futures_get_open_orders()
-    for order in orders:
-        try:
-            symbol = order['symbol']
-            is_position = False
-            position_info = client.futures_position_information(symbol=symbol)
-            position_amount = float(position_info[0]['positionAmt'])            
-            if position_amount != 0:
-                is_position = True
-            if not is_position:
-                # ถ้าไม่มียกเลิก order ที่ไม่มี position
-                print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
+    def place_spot_order(self, symbol):
+        """Place a spot market buy order using gate-api"""
+        try:                        
+            # Create market buy order $20
+            order = Order(
+                currency_pair=symbol,
+                side='buy',
+                amount=20,
+                type='market',
+                time_in_force='ioc'  # Immediate or Cancel for market orders
+            )
+            
+            # Place order
+            result = self.spot_api.create_order(order)
+            print(f"\n✅ Market Buy Order Placed for {symbol}", flush=True)
+            print(f"Order ID: {result.id}", flush=True)
+            print(f"Status: {result.status}", flush=True)
+            print(f"Amount: $20.00 USDT", flush=True)
+            return True
+            
+        except GateApiException as ex:
+            print(f"\n❌ Gate.io API Error for {symbol}:", flush=True)
+            print(f"Label: {ex.label}", flush=True)
+            print(f"Message: {ex.message}", flush=True)
+            if "Insufficient balance" in ex.message or "Not enough balance" in ex.message:
+                print("\n💡 Insufficient balance detected. Ending current scan round.", flush=True)
+                print("⏰ Waiting for next hour...", flush=True)
+                raise InsufficientBalanceError("Not enough balance")
+            return False
         except Exception as e:
-            print(f"Error: {e}", flush=True)
-    print("End check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+            print(f"\n❌ Error placing order for {symbol}: {str(e)}", flush=True)
+            if "Not enough balance" in str(e):
+                print("\n💡 Insufficient balance detected. Ending current scan round.", flush=True)
+                print("⏰ Waiting for next hour...", flush=True)
+                raise InsufficientBalanceError("Not enough balance")
+            return False
 
-def future_change_margin_type_and_leverage_all():
-    symbols = fetch_future_symbols()
-    for symbol in symbols:
-        future_change_margin_type_and_leverage(symbol)        
+    def place_spot_sell_order(self, symbol, amount):
+        """Place a spot market sell order using gate-api"""
+        try:
+            # Create market sell order
+            order = Order(
+                currency_pair=symbol,
+                side='sell',
+                amount=str(amount),
+                type='market',
+                time_in_force='ioc'
+            )
+            
+            # Place order
+            result = self.spot_api.create_order(order)
+            print(f"\n✅ Market Sell Order Placed for {symbol}", flush=True)
+            print(f"Order ID: {result.id}", flush=True)
+            print(f"Status: {result.status}", flush=True)
+            print(f"Amount: {amount} {symbol.split('_')[0]}", flush=True)
+            return True
+            
+        except GateApiException as ex:
+            print(f"\n❌ Gate.io API Error for {symbol}:", flush=True)
+            print(f"Label: {ex.label}", flush=True)
+            print(f"Message: {ex.message}", flush=True)
+            return False
+        except Exception as e:
+            print(f"\n❌ Error placing sell order for {symbol}: {str(e)}", flush=True)
+            return False
 
+    def check_and_sell_portfolio(self, threshold=200):
+        """Check portfolio and sell coins with value over threshold"""
+        print(f"\n📊 Checking portfolio for coins over ${threshold} USDT...", flush=True)
+        
+        try:
+            balances = self.spot_api.list_spot_accounts()
+            
+            for balance in balances:
+                if float(balance.available) > 0:
+                    symbol = f"{balance.currency}_USDT"
+                    
+                    try:
+                        current_value = self.check_coin_balance(symbol)
+                        
+                        if current_value > threshold:
+                            print(f"\n💰 Found {symbol} worth ${current_value:.2f} USDT", flush=True)
+                            self.place_spot_sell_order(symbol, float(balance.available))
+                            print(f"🔄 Attempted to sell {balance.available} {balance.currency}", flush=True)
+                            
+                    except Exception as e:
+                        print(f"Error processing {symbol}: {str(e)}", flush=True)
+                        continue
+            
+            print("\n✅ Portfolio check completed", flush=True)
+            
+        except Exception as e:
+            print(f"\n❌ Error checking portfolio: {str(e)}", flush=True)
 
-# ดึงข้อมูล exchange และ balance
-#future_exchange_info = client.futures_exchange_info()
-#future_balance = future_get_balance()
+    def scan_and_trade(self):
+        """Scan for volume spikes and place orders"""
+        print(f"\n🔍 Starting scan at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+        pairs_with_signal = 0
+        
+        try:
+            # First, check portfolio and sell coins over $200
+            self.check_and_sell_portfolio(threshold=200)
+            
+            print("\nScanning Gate.io USDT pairs for volume spikes...", flush=True)
+            
+            # Get all trading pairs
+            endpoint = f"{self.base_url}/spot/currency_pairs"
+            response = requests.get(endpoint, headers=self.headers)
+            if response.status_code != 200:
+                print("Failed to fetch trading pairs", flush=True)
+                return
+                
+            pairs = response.json()
+            
+            coins = []
+            for pair in pairs:
+                if pair['id'].endswith('_USDT'):
+                    base_coin = pair['id'].split('_')[0]
+                    if not any(c.isdigit() for c in base_coin):
+                        coins.append(base_coin)
+            
+            random.shuffle(coins)
+            
+            print(f"\nFound {len(coins)} valid coins", flush=True)
+            print("Coins have been randomly shuffled for processing", flush=True)
+            
+            for idx, coin in enumerate(coins, 1):
+                symbol = f"{coin}_USDT"
+                print(f"\rProcessing {idx}/{len(coins)}: {symbol}", end='', flush=True)
+                
+                try:
+                    portfolio_value = self.check_coin_balance(symbol)
+                    
+                    if portfolio_value > 5:
+                        continue
+                        
+                    candles = self.get_candlesticks(symbol)
+                    if not candles:
+                        continue
+                    
+                    df = pd.DataFrame(candles, columns=[
+                        'timestamp', 'volume', 'close', 'high', 
+                        'low', 'open', 'amount', 'count'
+                    ])
+                    
+                    # Convert columns to numeric
+                    df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+                    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+                    df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+                    df['open'] = pd.to_numeric(df['open'], errors='coerce')
+                    df = df.dropna(subset=['amount', 'close', 'volume', 'open'])
+                    
+                    if len(df) < 144:
+                        continue
+                    
+                    # Calculate buy volume moving average
+                    ma_144 = df['amount'].rolling(window=144).mean()
+                    current_buy_volume = float(df['amount'].iloc[-1])
+                    avg_buy_volume = float(ma_144.iloc[-1])
+                    
+                    if pd.isna(avg_buy_volume) or avg_buy_volume == 0:
+                        continue
+                    
+                    # Calculate buy volume increase
+                    volume_increase = ((current_buy_volume - avg_buy_volume) / avg_buy_volume) * 100
+                    
+                    if volume_increase > 500:  # Buy volume increased by more than 500%
+                        try:
+                            price_change = ((float(df['close'].iloc[-1]) - float(df['open'].iloc[-1])) / 
+                                          float(df['open'].iloc[-1])) * 100
+                        except (ValueError, ZeroDivisionError):
+                            price_change = 0
+                        
+                        current_price = float(df['close'].iloc[-1])
+                        
+                        if current_buy_volume > avg_buy_volume:
+                            # Check 24h volume requirement
+                            if not self.check_24h_volume(df):
+                                print(f"\n⚠️ {symbol} skipped: 24h volume < $10,000 USDT", flush=True)
+                                continue
+                                
+                            pairs_with_signal += 1
+                            
+                            print(f"\n\n🚨 Buy Volume Spike Found: {symbol}", flush=True)
+                            print(f"💹 Buy Volume Increase: {volume_increase:.2f}%", flush=True)
+                            print(f"📈 Price Change: {price_change:.2f}%", flush=True)
+                            print(f"💰 Price: {current_price:.8f} USDT", flush=True)
+                            print(f"💼 Portfolio Value: ${portfolio_value:.2f} USDT", flush=True)
+                            print(f"🛒 Current Buy Volume: {current_buy_volume:.2f}", flush=True)
+                            print(f"📈 Average Buy Volume (144h): {avg_buy_volume:.2f}", flush=True)
+                            
+                            self.place_spot_order(symbol)
+                            print("-" * 80, flush=True)
+                
+                except InsufficientBalanceError:
+                    print("\n⏰ Waiting for next hour due to insufficient balance...", flush=True)
+                    return
+                except Exception as e:
+                    continue
+                
+                time.sleep(0.1)
+            
+            print(f"\n\n✨ Scan completed. Found {pairs_with_signal} pairs with signals.", flush=True)
+            
+        except Exception as e:
+            print(f"\nAn error occurred during scan: {str(e)}", flush=True)
 
-# start
-#future_change_margin_type_and_leverage_all()
-print("Start", flush=True)
-future_find_order_no_position()
-future_find_signal(tread_time_frame)
+def main():
+    print("🤖 Gate.io Volume Scanner Bot Starting...", flush=True)
+    trader = GateioTrader()
+    trader.scan_and_trade() 
+    
+    while True:
+        if datetime.now().minute == 0:
+            trader.scan_and_trade()
+            time.sleep(55)
+        time.sleep(10)
 
-while True:
-    try:
-        date_time_now = datetime.now()
-        print(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-        last_minute = date_time_now.minute
-        if last_minute % 15 == 0:
-            future_find_signal(tread_time_frame)
-            time.sleep(120)
-            future_find_order_no_position()
-            # wait 5 minutes
-            time.sleep(300)
-    except Exception as e:
-        send_line_notify(f"Error: {e}")
-        print(f"Error: {e}", flush=True)
-    time.sleep(10)
+if __name__ == "__main__":
+    main()

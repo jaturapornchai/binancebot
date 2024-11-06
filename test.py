@@ -1,54 +1,80 @@
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from gate_api import ApiClient, Configuration, Order, SpotApi
+from gate_api.exceptions import ApiException, GateApiException
 import time
 
-# ไม่แสดง API key และ secret ในโค้ด
-api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
-api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
-
-client = Client(api_key, api_secret)
-
-def get_server_time():
-    for _ in range(10):  # ลองหลายครั้งเพื่อลดผลกระทบจาก network latency
-        server_time = client.futures_time()['serverTime']
-        local_time = int(time.time() * 1000)
-        time_offset = server_time - local_time
-        return time_offset
-    raise Exception("ไม่สามารถซิงโครไนซ์เวลากับเซิร์ฟเวอร์ได้")
-
-def get_open_orders(recv_window):
+def sell_all_coins():
+    # API configuration
+    config = Configuration(
+        key="c84d3616806f44e5651912c198094a1b",
+        secret="32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
+    )
+    
+    # Create API client
+    client = ApiClient(config)
+    spot_api = SpotApi(client)
+    
     try:
-        time_offset = get_server_time()
-        timestamp = int(time.time() * 1000 + time_offset)
+        # Get all spot balances
+        balances = spot_api.list_spot_accounts()
+        
+        # Filter non-zero balances (excluding USDT)
+        non_zero_balances = [
+            balance for balance in balances 
+            if float(balance.available) > 0 and balance.currency != 'USDT'
+        ]
+        
+        if not non_zero_balances:
+            print("No available balances to sell.")
+            return
+        
+        print("\nFound the following non-zero balances:")
+        for balance in non_zero_balances:
+            print(f"{balance.currency}: {balance.available}")
+        
+        # Ask for confirmation
+        confirm = input("\nDo you want to proceed with selling all these currencies? (yes/no): ")
+        if confirm.lower() != 'yes':
+            print("Operation cancelled.")
+            return
+        
+        # Sell each currency
+        for balance in non_zero_balances:
+            currency = balance.currency
+            available = float(balance.available)
+            currency_pair = f"{currency}_USDT"
+            
+            try:
+                # Create market sell order
+                order = Order(
+                    currency_pair=currency_pair,
+                    side='sell',
+                    amount=str(available),
+                    type='market',
+                    time_in_force='ioc'
+                )
+                
+                print(f"\nAttempting to sell {available} {currency}")
+                result = spot_api.create_order(order)
+                print(f"Successfully created sell order for {currency}: Order ID {result.id}")
+                
+                # Add small delay between orders
+                time.sleep(1)
+                
+            except GateApiException as ex:
+                print(f"Gate.io API Error selling {currency}:")
+                print(f"Label: {ex.label}, Message: {ex.message}")
+                continue
+            except ApiException as e:
+                print(f"Error selling {currency}: {str(e)}")
+                continue
+                
+    except GateApiException as ex:
+        print(f"Gate.io API Error:")
+        print(f"Label: {ex.label}, Message: {ex.message}")
+    except ApiException as e:
+        print(f"Error accessing API: {str(e)}")
+    finally:
+        client.close()
 
-        orders = client.futures_get_open_orders(
-            timestamp=timestamp,
-            recvWindow=recv_window
-        )
-        return orders
-    except BinanceAPIException as e:
-        print(f"เกิดข้อผิดพลาด Binance API: {e.status_code} - {e.message}")
-        if e.status_code == 400 and "recvWindow" in e.message:
-            print("ลองเพิ่มค่า recvWindow และลองอีกครั้ง")
-        return None
-    except Exception as e:
-        print(f"เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}")
-        return None
-
-# ทดสอบการเรียกใช้ฟังก์ชัน
-for recv_window in [20000]:
-    print(f"\nกำลังลองใช้ recvWindow = {recv_window}")
-    open_orders = get_open_orders(recv_window)
-    if open_orders is not None:
-        if len(open_orders) > 0:
-            print("คำสั่งที่เปิดอยู่:")
-            for order in open_orders:
-                print(f"Symbol: {order['symbol']}, Side: {order['side']}, Quantity: {order['origQty']}, Price: {order['price']}")
-        else:
-            print("ไม่มีคำสั่งที่เปิดอยู่")
-        break  # ออกจากลูปถ้าสำเร็จ
-    else:
-        print(f"ไม่สามารถดึงข้อมูลคำสั่งที่เปิดอยู่ได้ด้วย recvWindow = {recv_window}")
-
-if open_orders is None:
-    print("\nไม่สามารถดึงข้อมูลคำสั่งที่เปิดอยู่ได้หลังจากลองทุกค่า recvWindow")
+if __name__ == "__main__":
+    sell_all_coins()
