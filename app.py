@@ -7,32 +7,44 @@ from datetime import datetime
 from gate_api import ApiClient, Configuration, Order, SpotApi
 from gate_api.exceptions import ApiException, GateApiException
 
-# API Credentials
+# API Credentials remain the same
 API_KEY = "c84d3616806f44e5651912c198094a1b"
 API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
 
 class InsufficientBalanceError(Exception):
     pass
 
-class MACD:
-    def __init__(self, fast=12, slow=26, signal=9):
-        self.fast = fast
-        self.slow = slow
-        self.signal = signal
+class LinearRegressionChannel:
+    def __init__(self, length=100, deviation=2.0):
+        self.length = length
+        self.deviation = deviation
 
-    def calculate(self, prices):
-        """Calculate MACD and Signal line"""
-        # Calculate EMAs
-        exp1 = prices.ewm(span=self.fast, adjust=False).mean()
-        exp2 = prices.ewm(span=self.slow, adjust=False).mean()
+    def calculate(self, data):
+        """Calculate Linear Regression Channel"""
+        if len(data) < self.length:
+            return None, None, None
+
+        # Get the last n periods
+        closes = data[-self.length:]
+        x = np.arange(len(closes))
         
-        # Calculate MACD line
-        macd = exp1 - exp2
+        # Calculate linear regression
+        slope, intercept = np.polyfit(x, closes, 1)
         
-        # Calculate Signal line
-        signal = macd.ewm(span=self.signal, adjust=False).mean()
+        # Calculate regression line
+        reg_line = slope * x + intercept
         
-        return macd, signal
+        # Calculate standard deviation
+        deviation = np.std(closes - reg_line)
+        
+        # Calculate upper and lower bands
+        upper_band = reg_line + (deviation * self.deviation)
+        lower_band = reg_line - (deviation * self.deviation)
+        
+        # Get current slope direction
+        slope_direction = 1 if slope > 0 else -1 if slope < 0 else 0
+        
+        return slope_direction, upper_band[-2:], lower_band[-2:]  # Return last two values for crossover check
 
 class GateioTrader:
     def __init__(self):
@@ -50,10 +62,11 @@ class GateioTrader:
         client = ApiClient(config)
         self.spot_api = SpotApi(client)
         
-        # Initialize MACD
-        self.macd = MACD()
+        # Initialize Linear Regression Channel
+        self.lrc = LinearRegressionChannel(length=100, deviation=2.0)
 
     def _rate_limit_check(self):
+        # Rate limit checking remains the same
         current_time = time.time()
         time_passed = current_time - self.last_request_time
         
@@ -71,6 +84,7 @@ class GateioTrader:
         self.request_count += 1
 
     def check_coin_balance(self, symbol):
+        # Balance checking remains the same
         try:
             coin = symbol.split('_')[0]
             balances = self.spot_api.list_spot_accounts(currency=coin)
@@ -92,7 +106,8 @@ class GateioTrader:
             print(f"Error checking {symbol} balance: {str(e)}", flush=True)
             return 0, 0
 
-    def get_candlesticks(self, symbol, interval='1h', limit=100):
+    def get_candlesticks(self, symbol, interval='1h', limit=144):
+        # Candlesticks fetching remains the same
         endpoint = f"{self.base_url}/spot/candlesticks"
         params = {
             'currency_pair': symbol,
@@ -104,35 +119,33 @@ class GateioTrader:
             return response.json()
         return None
 
-    def check_macd_signals(self, df):
+    def check_crossover_conditions(self, df, current_direction, upper_bands, lower_bands):
         """
-        Check for MACD crossover signals with additional conditions:
-        - Buy: MACD crosses above Signal line AND MACD is below 0
-        - Sell: MACD crosses below Signal line
-        Returns: (buy_signal, sell_signal)
+        Check for crossover conditions based on the new rules
         """
         try:
-            # Calculate MACD and Signal line
-            macd_line, signal_line = self.macd.calculate(df['close'])
+            current_close = float(df['close'].iloc[-1])
+            prev_high = float(df['high'].iloc[-2])
+            prev_low = float(df['low'].iloc[-2])
             
-            # Get the last two values for crossover check
-            macd_prev = macd_line.iloc[-2]
-            macd_curr = macd_line.iloc[-1]
-            signal_prev = signal_line.iloc[-2]
-            signal_curr = signal_line.iloc[-1]
+            # Buy condition: Downtrend + Latest candle crosses above upper band + Close above upper band
+            buy_signal = (
+                current_direction == -1 and  # Downtrend
+                prev_high <= upper_bands[0] and  # Previous candle touched or crossed upper band
+                current_close > upper_bands[1]  # Current close above upper band
+            )
             
-            # Buy signal: MACD line crosses above Signal line AND MACD is below 0
-            buy_signal = (macd_prev <= signal_prev and 
-                         macd_curr > signal_curr and 
-                         macd_curr < 0)  # Additional condition: MACD below 0
-            
-            # Sell signal: MACD line crosses below Signal line
-            sell_signal = macd_prev >= signal_prev and macd_curr < signal_curr
+            # Sell condition: Uptrend + Latest candle crosses below lower band + Close below lower band
+            sell_signal = (
+                current_direction == 1 and  # Uptrend
+                prev_low >= lower_bands[0] and  # Previous candle touched or crossed lower band
+                current_close < lower_bands[1]  # Current close below lower band
+            )
             
             return buy_signal, sell_signal
             
         except Exception as e:
-            print(f"Error checking MACD signals: {str(e)}", flush=True)
+            print(f"Error checking crossover conditions: {str(e)}", flush=True)
             return False, False
 
     def scan_and_trade(self):
@@ -140,7 +153,7 @@ class GateioTrader:
         pairs_with_signal = 0
         
         try:
-            print("\nScanning Gate.io USDT pairs for MACD crossover signals...", flush=True)
+            print("\nScanning Gate.io USDT pairs for crossover signals...", flush=True)
             
             # Get all trading pairs
             endpoint = f"{self.base_url}/spot/currency_pairs"
@@ -154,14 +167,16 @@ class GateioTrader:
             coins = []
             for pair in pairs:
                 if pair['id'].endswith('_USDT'):
-                    coins.append(pair['id'])
+                    base_coin = pair['id'].split('_')[0]
+                    if not any(c.isdigit() for c in base_coin):
+                        coins.append(base_coin)
             
             random.shuffle(coins)
             
             print(f"\nFound {len(coins)} valid coins", flush=True)
             
             for idx, coin in enumerate(coins, 1):
-                symbol = coin
+                symbol = f"{coin}_USDT"
                 print(f"\rProcessing {idx}/{len(coins)}: {symbol}", end='', flush=True)
                 
                 try:
@@ -181,11 +196,20 @@ class GateioTrader:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
                     df = df.dropna()
                     
-                    if len(df) < 35:  # Need at least enough data for MACD calculation
+                    if len(df) < 100:
                         continue
                     
-                    # Check for MACD signals
-                    buy_signal, sell_signal = self.check_macd_signals(df)
+                    # Get current trend and bands
+                    closes = df['close'].values
+                    current_direction, upper_bands, lower_bands = self.lrc.calculate(closes)
+                    
+                    if current_direction is None:
+                        continue
+                        
+                    # Check for buy/sell signals
+                    buy_signal, sell_signal = self.check_crossover_conditions(
+                        df, current_direction, upper_bands, lower_bands
+                    )
                     
                     current_price = float(df['close'].iloc[-1])
                     
@@ -214,6 +238,8 @@ class GateioTrader:
                         
                         print(f"\n\n🚨 Buy Signal Found: {symbol}", flush=True)
                         print(f"📈 Current Price: {current_price:.8f} USDT", flush=True)
+                        print(f"📊 Upper Band: {upper_bands[-1]:.8f}", flush=True)
+                        print(f"📊 Lower Band: {lower_bands[-1]:.8f}", flush=True)
                         
                         self.place_spot_order(symbol)
                         print("-" * 80, flush=True)
@@ -232,6 +258,7 @@ class GateioTrader:
             print(f"\nAn error occurred during scan: {str(e)}", flush=True)
 
     def place_spot_order(self, symbol):
+        # Order placement remains the same
         try:
             order = Order(
                 currency_pair=symbol,
@@ -262,6 +289,7 @@ class GateioTrader:
             return False
 
     def place_spot_sell_order(self, symbol, amount):
+        # Sell order placement remains the same
         try:
             order = Order(
                 currency_pair=symbol,
@@ -288,6 +316,7 @@ class GateioTrader:
             return False
 
     def check_24h_volume(self, df):
+        # Volume checking remains the same
         try:
             if len(df) < 24:
                 return False
@@ -297,14 +326,14 @@ class GateioTrader:
             
             print(f"📊 24h Volume in USDT: ${volume_usdt:,.2f}", flush=True)
             
-            return volume_usdt > 10000
+            return volume_usdt > 10000 and volume_usdt < 1000000
             
         except Exception as e:
             print(f"Error checking 24h volume: {str(e)}", flush=True)
             return False
 
 def main():
-    print("🤖 Gate.io MACD Trading Bot Starting...", flush=True)
+    print("🤖 Gate.io Linear Regression Channel Bot Starting...", flush=True)
     trader = GateioTrader()
     trader.scan_and_trade()
     
