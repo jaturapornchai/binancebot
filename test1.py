@@ -162,7 +162,7 @@ class GateioTradingBot:
                     # ตรวจสอบเงื่อนไขการซื้อ
                     if current_value < 5:
                         print(f"เริ่มซื้อ {symbol}...")
-                        self.place_market_buy(symbol, self.buy_amount)
+                        #self.place_market_buy(symbol, self.buy_amount)
                     else:
                         print(f"มีในพอร์ตเพียงพอแล้ว (${current_value:.2f})")
 

@@ -1,592 +1,180 @@
-import os
-import random
-import time
-import pandas as pd
-import numpy as np
-from datetime import datetime
-import requests
-from binance.client import Client
-from sklearn.linear_model import LinearRegression
-
-# ดึงค่า API key และ secret จาก environment variables
-#api_key = os.getenv('BINANCE_API_KEY')
-#api_secret = os.getenv('BINANCE_SECRET_KEY')
-#line_token = os.getenv('LINE_NOTIFY_TOKEN')
-api_key="wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN"
-api_secret="8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU"
-line_token="aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
-
-# สร้างอินสแตนซ์ของ Binance Futures
-client = Client(api_key, api_secret)
-future_leverage = 10
-tread_time_frame = '1h'
-
-ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
-
-# ตรวจสอบว่า API key, secret และ line_token ไม่เป็น None
-if not api_key or not api_secret or not line_token:
-    raise ValueError("API key, secret หรือ LINE token ไม่ถูกต้อง")
-
-def send_line_notify_thread(message, token):
-    try:
-        """Send notifications through LINE Notify."""
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        payload = {'message': message}
-        response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-        if response.status_code == 200:
-            print("LINE notification sent successfully", flush=True)
-        else:
-            print(f"Failed to send LINE notification. Status code: {response.status_code}", flush=True)
-    except Exception as e:
-        print(f"Error sending LINE message: {e}", flush=True)
-    
-def send_line_notify(message):
-    send_line_notify_thread(message, line_token)
-    print("Send line notify", flush=True)
-    
-def fetch_future_symbols():
-    exchange_info = client.futures_exchange_info()
-    symbols = [s['symbol'] for s in exchange_info['symbols'] if s['symbol'].endswith('USDT') and s['status'] == 'TRADING']
-    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
-    symbols.sort()
-    # random
-    random.shuffle(symbols)
-    return symbols
-
-def linear_regression_channel(data, window=100, devlen=2.0):
-    X = np.arange(window).reshape(-1, 1)
-    model = LinearRegression()
-    upper_bound = []
-    lower_bound = []
-    middle = []
-    for i in range(len(data) - window + 1):
-        y = data[i:i+window]
-        model.fit(X, y)
-        trend = model.predict(X)
-        residuals = y - trend
-        std_res = np.std(residuals)
-        middle.append(trend[-1])
-        upper_bound.append(trend[-1] + std_res * devlen)
-        lower_bound.append(trend[-1] - std_res * devlen)
-    return middle, upper_bound, lower_bound
-
-def check_breakout(data, upper_bound, lower_bound):
-    if len(data) < 2 or len(upper_bound) < 1 or len(lower_bound) < 1:
-        return 'normal'
-    if data[-1] > upper_bound[-1] and data[-2] <= upper_bound[-1]:
-        return 'LONG'
-    elif data[-1] < lower_bound[-1] and data[-2] >= lower_bound[-1]:
-        return 'SHORT'
-    else:
-        return 'normal'
-    
-def check_signal(symbol, timeframe='1h', window=144, devlen=2.0):
-    try:
-        ohlcv = client.futures_klines(symbol=symbol, interval=timeframe, limit=window)
-        if len(ohlcv) < window:
-            return 'normal'
-
-        data = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-        data.set_index('timestamp', inplace=True)
-
-        # แปลงชนิดข้อมูลให้เป็น float
-        data['open'] = data['open'].astype(float)
-        data['high'] = data['high'].astype(float)
-        data['low'] = data['low'].astype(float)
-        data['close'] = data['close'].astype(float)
-        data['volume'] = data['volume'].astype(float)
-
-        close_prices = data['close'].values
-        middle, upper_bound, lower_bound = linear_regression_channel(close_prices, window, devlen)
-
-        return check_breakout(close_prices, upper_bound, lower_bound)
-    except Exception as e:
-        print(f"Error checking signal for {symbol}: {e}", flush=True)
-        return 'normal'
-
-def future_find_signal(timeframe, window=100, devlen=2.0):
-    global future_exchange_info 
-    global future_balance
-
-    future_exchange_info = client.futures_exchange_info()
-    future_balance = future_get_balance()
-    if future_balance < 10:
-        print("USDT balance is not enough", flush=True)
-        return None
-    
-    symbols = fetch_future_symbols()
-    positions = future_get_position()
-    for symbol in symbols:
-        # ถ้า symbol มี position ให้ข้ามไป  
-        if symbol in positions:
-            continue
+from gate_api import ApiClient, Configuration, SpotApi, Order
+import time, pandas as pd, numpy as np
+from dataclasses import dataclass
+from typing import List
+API_KEY = "c84d3616806f44e5651912c198094a1b"
+API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
+INVALID_PAIRS = ['DILI_USDT', 'POINT_USDT', 'CATCH_OLD_USDT', 'ROOST_OLD_USDT']
+@dataclass
+class BlockEvent:
+    timestamp: float
+    price: float
+    type: str
+    strength: float
+class GateioScanner:
+    def __init__(self):
+        self.config = Configuration(key=API_KEY, secret=API_SECRET, host="https://api.gateio.ws/api/v4")
+        self.client = ApiClient(self.config)
+        self.spot_api = SpotApi(self.client)
+    def is_valid_pair(self, pair_id): return False if '_OLD' in pair_id or pair_id in INVALID_PAIRS else True
+    def get_spot_pairs(self):
         try:
-            signal = check_signal(symbol, timeframe, window, devlen)
-            if signal != 'normal':
-                color = '🟢' if signal == 'LONG' else '🔴'
-                message = f"Binance: Signal detected for {symbol}: {color} {signal}"
-                try:
-                    print(message, flush=True)
-                    if signal == 'LONG':
-                        print(f"Open position {symbol} {signal}", flush=True)
-                        #future_open_position(symbol, 'BUY')
-                    if signal == 'SHORT':
-                        print(f"Open position {symbol} {signal}", flush=True)
-                        #future_open_position(symbol, 'SELL')                
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"Error sending LINE message: {e}", flush=True)        
-        except Exception as e:
-            print(f"Error checking signal for {symbol}: {e}", flush=True)
-            continue
-
-def future_compare_stop_loss_all():
-    positions = future_get_position()
-    for symbol in positions:
-        future_compare_stop_loss(symbol)
-        
-    # ตรวจสอบ postion ที่ไม่มี order ให้เตือน line notify
-    positions = future_get_position()
-    for symbol in positions:
-        orders = client.futures_get_open_orders(symbol=symbol)
-        if len(orders) == 0:
-            try:
-                send_line_notify(f"Position {symbol} without order")
-            except Exception as e:
-                print(f"Error: {e}", flush=True)
-
-def get_step_size(symbol):
-    exchange_info = client.futures_exchange_info()
-    for item in exchange_info['symbols']:
-        if item['symbol'] == symbol:
-            for filt in item['filters']:
-                if filt['filterType'] == 'LOT_SIZE':
-                    return float(filt['stepSize'])
-    return None
-
-def get_tick_size(symbol):
-    exchange_info = client.futures_exchange_info()
-    for item in exchange_info['symbols']:
-        if item['symbol'] == symbol:
-            for filt in item['filters']:
-                if filt['filterType'] == 'PRICE_FILTER':
-                    return float(filt['tickSize'])
-    return None
-
-def round_quantity(quantity, step_size):
-    return (quantity // step_size) * step_size
-
-def future_open_position(symbol, side):
-    diff_percent_max = 5 # จะต้องห่างจากราคาปัจจุบันไม่เกินกี่ %
-
-    if not future_get_last_trade(symbol):
-        print(f"Skip symbol {symbol} because last trade near", flush=True)
-        return None
-
-    if future_change_margin_type_and_leverage(symbol) == False:
-        print(f"Error changing margin type and leverage for {symbol}", flush=True)
-        return None
-    
-    usdt_amount = future_balance / 125.0    
-    print(f"USDT amount: {usdt_amount}", flush=True)
-    quantity = 0
-    current_price = 0
-    try:
-        ticker = client.futures_symbol_ticker(symbol=symbol)
-        current_price = float(ticker['price'])
-        step_size = get_step_size(symbol)
-        tick_size = get_tick_size(symbol)
-        quantity = usdt_amount / current_price * future_leverage
-        quantity = round_quantity(quantity, step_size)
-    except Exception as e:
-        print(f"Error calculating quantity: {e}", flush=True)
-        return None
-    
-    try:
-        time.sleep(1)
-        print(f"Open position {symbol} {side} {quantity}", flush=True)
-        df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame, limit=7), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df = df.iloc[:-2]
-        if side == 'BUY':
-            df['low'] = df['low'].astype(float)
-            min_price = df['low'].min()    
-            # ราคาปัจจุบัน ห่างจากราคาต่ำสุดไม่เกิน diff_percent_max
-            diff_price = (min_price - current_price) * -1
-            diff_percent = (diff_price * 100) / min_price
-            print(f"min_price: {min_price} current_price:{current_price} diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)            
-            if current_price > min_price and diff_percent < diff_percent_max:
-                print(f"Price < MIN : Long Open position {symbol} {quantity}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='BUY',
-                    type='MARKET',
-                    quantity=quantity
-                )
-                send_line_notify(f"Open position {symbol} {side}")
-        if side == 'SELL':
-            df['high'] = df['high'].astype(float)
-            max_price = df['high'].max()
-            # ราคาปัจจุบัน ห่างจากราคาสูงสุดไม่เกิน diff_percent_max
-            diff_price = max_price - current_price
-            diff_percent = (diff_price * 100) / max_price
-            print(f"max_price: {max_price} current_price:{current_price} diff_price: {diff_price} diff_percent: {diff_percent}", flush=True)            
-            if current_price < max_price and diff_percent < diff_percent_max:
-                print(f"Price > MAX : Short Open position {symbol} {quantity}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side='SELL',
-                    type='MARKET',
-                    quantity=quantity
-                )
-                send_line_notify(f"Open position {symbol} {side}")
-
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        return None
-
-def future_get_balance():
-    # ดึงข้อมูล account balance
-    balance = client.futures_account_balance()
-    balance_usdt = 0
-    for item in balance:
-        if item['asset'] == 'USDT':
-            balance_usdt = float(item['balance'])
-            break
-    print(f"USDT balance: {balance_usdt}", flush=True)
-    balance_usdt = balance_usdt / 1.5
-    return balance_usdt
-
-def future_get_last_trade(symbol):
-    try:
-        time_hour = 4
-        trades = client.futures_account_trades(symbol=symbol)
-        if len(trades) == 0:
-            return True
-        last_trade = trades[-1]
-        trade_time = datetime.fromtimestamp(last_trade['time'] / 1000)
-        time_diff = datetime.now() - trade_time
-        if time_diff.total_seconds() < 60 * 60 * time_hour:
-            return False
-        return True
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        return False
-
-def future_compare_stop_loss(symbol):
-    print(f"Compare stop loss {symbol}", flush=True)
-    tread_time_frame_stop_loss = '15m'
-    limit_time_frame = 14
-    try:
-        position_info = client.futures_position_information(symbol=symbol)
-        position_amount = float(position_info[0]['positionAmt'])
-        if position_amount == 0:
-            return None
-        
-        position_side = (position_amount > 0) and 'BUY' or 'SELL'
-
-        future_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
-        orders = client.futures_get_open_orders(symbol=symbol)
-        order = None
-        for item in orders:
-            if item['status'] == 'NEW':
-                order = item
-                break
-        
-        if order == None:
-            print(f"Order not found {symbol}", flush=True)
-            df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            df['low'] = df['low'].astype(float)
-            df['high'] = df['high'].astype(float)
-            if position_side == 'BUY':
-                bottom_price = df['low'].min()
-                print(f"Reorder {symbol} {position_side} {position_amount} {bottom_price}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL",
-                    type='STOP_MARKET',
-                    quantity=position_amount,
-                    stopPrice=bottom_price,
-                    closePosition=True
-                )
-            if position_side == 'SELL':
-                top_price = df['high'].max()
-                print(f"Reorder {symbol} {position_side} {position_amount} {top_price}", flush=True)
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="BUY",
-                    type='STOP_MARKET',
-                    quantity=position_amount,
-                    stopPrice=top_price,
-                    closePosition=True
-                )            
-        else:
-            old_order_stop_price = float(order['stopPrice'])                
-            top_price = 0
-            bottom_price = 0
-            df = pd.DataFrame(client.futures_klines(symbol=symbol, interval=tread_time_frame_stop_loss, limit=limit_time_frame), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            top_price = df['high'].max()
-            bottom_price = df['low'].min()
-            if position_side == 'BUY':
-                if old_order_stop_price < bottom_price and future_price > bottom_price:
-                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                    time.sleep(1) 
-                    print(f"Reorder {symbol} {order['side']} {position_amount} {bottom_price}", flush=True)
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side=order['side'],
-                        type=order['type'],
-                        quantity=position_amount,
-                        stopPrice=bottom_price,
-                        closePosition=True
-                    )
-            if position_side == 'SELL':
-                if old_order_stop_price > top_price and future_price < top_price:
-                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                    time.sleep(1) 
-                    print(f"Reorder {symbol} {order['side']} {position_amount} {top_price}", flush=True)
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side=order['side'],
-                        type=order['type'],
-                        quantity=position_amount,
-                        stopPrice=top_price,
-                        closePosition=True
-                    )                
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        send_line_notify(f"Error: {e}")
-        return None
-
-def future_get_position():
-    positions_open = []
-    positions = client.futures_position_information()
-    for position in positions:
-        position_amount = float(position['positionAmt'])
-        if position_amount != 0:
-            positions_open.append(position['symbol'])
-    return positions_open
-
-def future_change_margin_type_and_leverage(symbol):
-    try:
-        # เปลี่ยนเป็น cross margin ถ้าเป็น isolated margin
-        positions = client.futures_position_information(symbol=symbol)
-        if positions[0]['marginType'] == 'cross':
-            print(f"Change margin type to ISOLATED for {symbol}", flush=True)
-            client.futures_change_margin_type(symbol=symbol, marginType='ISOLATED')  
-    except Exception as e:
-        print(f"Error changing margin type: {e}", flush=True)
-        return False
-    
-    try:
-        positions = client.futures_position_information(symbol=symbol)
-        current_leverage = positions[0]['leverage']
-        if int(current_leverage) != future_leverage:
-            print(f"Change leverage to {future_leverage} for {symbol}", flush=True)
-            client.futures_change_leverage(symbol=symbol, leverage=future_leverage)
-    except Exception as e:
-        print(f"Error checking or setting leverage: {e}", flush=True)
-        return False
-    
-    return True
-
-def future_find_order_no_position():
-    print("Start check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-    # หา order ที่ไม่มี position ให้ยกเลิก order
-    orders = client.futures_get_open_orders()
-    for order in orders:
+            pairs = [pair for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1 and self.is_valid_pair(pair.id)]
+            tickers = self.spot_api.list_tickers()
+            volume_dict = {t.currency_pair: float(t.quote_volume) for t in tickers if t.currency_pair.count('_USDT') == 1 and self.is_valid_pair(t.currency_pair)}
+            filtered_pairs = [pair for pair in pairs if pair.id in volume_dict and volume_dict[pair.id] >= 50_000]
+            for pair in filtered_pairs: pair.volume_24h = volume_dict[pair.id]
+            return sorted(filtered_pairs, key=lambda x: x.volume_24h, reverse=True)
+        except Exception as e: print(f"Error getting pairs: {e}", flush=True); return []
+    def get_klines(self, pair, limit=144):
+        try: return self.spot_api.list_candlesticks(currency_pair=pair, interval='1h', limit=limit) if self.is_valid_pair(pair) else None
+        except Exception as e: print(f"Error getting klines for {pair}: {e}", flush=True); return None
+    def safe_float_convert(self, value):
+        try: return float(value) if isinstance(value, (int, float)) else float(''.join(c for c in value if c.isdigit() or c in '.-')) if isinstance(value, str) and ''.join(c for c in value if c.isdigit() or c in '.-') else 0.0
+        except: return 0.0
+    def get_spot_price(self, pair: str) -> float:
+        try: return float(self.spot_api.list_tickers(currency_pair=pair)[0].last) if self.is_valid_pair(pair) else 0.0
+        except Exception as e: print(f"Error getting price for {pair}: {e}", flush=True); return 0.0
+    def get_account_balance(self, symbol: str) -> float:
+        try: return next((float(b.available) for b in self.spot_api.list_spot_accounts() if b.currency.lower() == symbol.lower()), 0.0)
+        except Exception as e: print(f"Error getting balance: {str(e)}", flush=True); return 0.0
+    def place_market_buy(self, pair: str, amount_usdt: float = 20):
+        try: return self.spot_api.create_order(Order(currency_pair=pair, side='buy', amount=str(amount_usdt), type='market', time_in_force='ioc')) if self.is_valid_pair(pair) else False
+        except Exception as e: print(f"Error placing buy order: {str(e)}", flush=True); return False
+    def place_market_sell(self, pair: str, amount: float):
+        try: return self.spot_api.create_order(Order(currency_pair=pair, side='sell', amount=str(amount), type='market', time_in_force='ioc')) if self.is_valid_pair(pair) else False
+        except Exception as e: print(f"Error placing sell order: {str(e)}", flush=True); return False
+    def find_swing_points(self, df: pd.DataFrame, window: int = 9):
+        highs, lows = [], []
+        for i in range(window, len(df)-window):
+            left_high, right_high = df['high'].iloc[i-window:i].max(), df['high'].iloc[i+1:i+window+1].max()
+            left_low, right_low = df['low'].iloc[i-window:i].min(), df['low'].iloc[i+1:i+window+1].min()
+            if df['high'].iloc[i] > max(left_high, right_high): highs.append((i, df['high'].iloc[i]))
+            if df['low'].iloc[i] < min(left_low, right_low): lows.append((i, df['low'].iloc[i]))
+        return highs, lows
+    def check_bear_blocks(self, df: pd.DataFrame):
         try:
-            symbol = order['symbol']
-            is_position = False
-            position_info = client.futures_position_information(symbol=symbol)
-            position_amount = float(position_info[0]['positionAmt'])            
-            if position_amount != 0:
-                is_position = True
-            if not is_position:
-                # ถ้าไม่มียกเลิก order ที่ไม่มี position
-                print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-        except Exception as e:
-            print(f"Error: {e}", flush=True)
-
-    # ตรวจสอบ position ที่มี order มากกว่า 1 order ให้ลบ order ที่เก่าที่สุดออก ให้เหลือ 1 order
-    positions = future_get_position()
-    for symbol in positions:
-        orders = client.futures_get_open_orders(symbol=symbol)
-        if len(orders) > 1:
-            orders.sort(key=lambda x: x['time'])
-            for order in orders[:-1]:
-                try:
-                    print(f"Cancel order {order['orderId']} {symbol}", flush=True)
-                    client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
-                except Exception as e:
-                    print(f"Error: {e}", flush=True)
-
-    print("End check order no position : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-
-def future_change_margin_type_and_leverage_all():
-    symbols = fetch_future_symbols()
-    for symbol in symbols:
-        future_change_margin_type_and_leverage(symbol)        
-
-def get_thb_usd_rate():
-    url = "https://api.exchangerate-api.com/v4/latest/USD"
-    
-    try:
-        response = requests.get(url)
-        data = response.json()
-        
-        if response.status_code == 200:
-            thb_rate = data['rates']['THB']
-            return thb_rate
-        else:
+            if len(df) < 24: return None
+            last_24_candles = df.iloc[-24:]
+            volume_increase = (last_24_candles['volume'].mean() / df['volume'].mean() - 1) * 100
+            if volume_increase < 20: return None
+            highs, lows = self.find_swing_points(df)
+            last_candle, prev_high = df.iloc[-1], None
+            for i in range(len(last_24_candles)-1, -1, -1):
+                candle = last_24_candles.iloc[i]
+                candle_idx = len(df) - 24 + i
+                if candle['close'] > candle['open']:
+                    for low_idx, low_val in lows:
+                        if low_idx == candle_idx and last_candle['close'] > candle['low']:
+                            return {'block': BlockEvent(timestamp=candle.name, price=candle['low'], type='Be-OB', strength=volume_increase),
+                                    'signal': "SELL 📉", 'current_price': last_candle['close'], 'volume': last_candle['volume']}
+                elif candle['close'] < candle['open']:
+                    for high_idx, high_val in highs:
+                        if high_idx == candle_idx - 1:
+                            if prev_high is None: prev_high = high_val
+                            if high_val < prev_high and last_candle['close'] > candle['low']:
+                                return {'block': BlockEvent(timestamp=candle.name, price=candle['low'], type='Be-MB', strength=volume_increase),
+                                        'signal': "SELL 📉", 'current_price': last_candle['close'], 'volume': last_candle['volume']}
             return None
-    except requests.RequestException:
-        return None
-    
-def future_profit_or_loss_notify():
-    # ดึงช้อมูล จากตลาด Future คำนวณ ยอดกำไร ยอดขายทุน ยอดคงเหลือ กำไรหักขาดทุน ส่ง line notify
-    balance = client.futures_account_balance()
-    balance_usdt = 0
-    profit_usdt = 0
-    profit_position_count = 0
-    loss_usdt = 0
-    loss_position_count = 0
-    for item in balance:
-        if item['asset'] == 'USDT':
-            balance_usdt = float(item['balance'])
-            break
-    positions = client.futures_position_information()
-    for position in positions:
-        position_amount = float(position['positionAmt'])
-        if position_amount != 0:
-            symbol = position['symbol']
-            position_side = (position_amount > 0) and 'BUY' or 'SELL'
-            position_price = float(position['entryPrice'])
-            current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
-            position_profit = (current_price - position_price) * position_amount
-            if position_profit > 0:
-                profit_usdt += position_profit
-                profit_position_count += 1
-            if position_profit < 0:
-                loss_usdt += position_profit
-                loss_position_count += 1
-           
-    # ดึงทรัพย์ทั้งหมด ของมูลค่าตลาด spot จาก Binance ดึงราคามาด้วย คำนวเป็น USDT
-    spot_account = client.get_account()
-    spot_balance_usdt = 0
-    for asset in spot_account['balances']:
-        if float(asset['free']) > 0:
-            if asset['asset'] == 'USDT':
-                spot_balance_usdt += float(asset['free'])
-            else:
-                print(asset, flush=True)
-                symbol = asset['asset'] + 'USDT'
-
+        except Exception as e: print(f"Error checking bear blocks: {e}", flush=True); return None
+    def check_bull_blocks(self, df: pd.DataFrame):
+        try:
+            if len(df) < 24: return None
+            last_24_candles = df.iloc[-24:]
+            volume_increase = (last_24_candles['volume'].mean() / df['volume'].mean() - 1) * 100
+            if volume_increase < 20: return None
+            highs, lows = self.find_swing_points(df)
+            last_candle, prev_low = df.iloc[-1], None
+            for i in range(len(last_24_candles)-1, -1, -1):
+                candle = last_24_candles.iloc[i]
+                candle_idx = len(df) - 24 + i
+                if candle['open'] > candle['close']:
+                    for high_idx, high_val in highs:
+                        if high_idx == candle_idx and last_candle['close'] < candle['high']:
+                            return {'block': BlockEvent(timestamp=candle.name, price=candle['high'], type='Bu-OB', strength=volume_increase),
+                                    'signal': "BUY 🚀", 'current_price': last_candle['close'], 'volume': last_candle['volume']}
+                elif candle['close'] > candle['open']:
+                    for low_idx, low_val in lows:
+                        if low_idx == candle_idx - 1:
+                            if prev_low is None: prev_low = low_val
+                            if low_val > prev_low and last_candle['close'] < candle['high']:
+                                return {'block': BlockEvent(timestamp=candle.name, price=candle['high'], type='Bu-MB', strength=volume_increase),
+                                        'signal': "BUY 🚀", 'current_price': last_candle['close'], 'volume': last_candle['volume']}
+            return None
+        except Exception as e: print(f"Error checking bull blocks: {e}", flush=True); return None
+    def check_portfolio_for_sells(self):
+        try:
+            balances = [b for b in self.spot_api.list_spot_accounts() if float(b.available) > 0 and b.currency != 'USDT' and self.is_valid_pair(f"{b.currency}_USDT")]
+            for balance in balances:
                 try:
-                    ticker = client.futures_symbol_ticker(symbol=symbol)
-                    spot_balance_usdt += float(asset['free']) * float(ticker['price'])
-                except Exception as e:
-                    print(f"Error with symbol {symbol}: {e}", flush=True)
-                    continue
-
-    # ดึงอัตราแลกเปลี่ยน thb/usd จาก internet
-    exchange_rate = get_thb_usd_rate()
-    if exchange_rate:
-        balance_thb = balance_usdt * exchange_rate
-        profit_thb = profit_usdt * exchange_rate
-        loss_thb = loss_usdt * exchange_rate
-        spot_balance_thb = spot_balance_usdt * exchange_rate
-        net_usdt = balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt
-        net_thb = balance_thb + profit_thb + loss_thb + spot_balance_thb
-
-        message = (
-            "Binance:\n"
-            "USDT:\n"
-            f"{format_message(f'กำไร ({profit_position_count}) ไม้:', profit_usdt, 'USDT')}\n"
-            f"{format_message(f'ขาดทุน ({loss_position_count}) ไม้:', loss_usdt, 'USDT')}\n"
-            f"{format_message('ยอดคงเหลือ:', balance_usdt, 'USDT')}\n"
-            f"{format_message('สินทรัพย์ Spot:', spot_balance_usdt, 'USDT')}\n"
-            f"{format_message('สุทธิ:', net_usdt, 'USDT')}\n"
-            "\nTHB:\n"
-            f"{format_message(f'กำไร ({profit_position_count}) ไม้:', profit_thb, 'บาท')}\n"
-            f"{format_message(f'ขาดทุน ({loss_position_count}) ไม้:', loss_thb, 'บาท')}\n"
-            f"{format_message('ยอดคงเหลือ:', balance_thb, 'บาท')}\n"
-            f"{format_message('สินทรัพย์ Spot:', spot_balance_thb, 'บาท')}\n"
-            f"{format_message('สุทธิ:', net_thb, 'บาท')}"
-        )
-    else:
-        net_usdt = balance_usdt + profit_usdt + loss_usdt + spot_balance_usdt
-        message = (
-            "Binance:\n"
-            "USDT:\n"
-            f"{format_message(f'กำไร ({profit_position_count}) ไม้:', profit_usdt, 'USDT')}\n"
-            f"{format_message(f'ขาดทุน ({loss_position_count}) ไม้:', loss_usdt, 'USDT')}\n"
-            f"{format_message('ยอดคงเหลือ:', balance_usdt, 'USDT')}\n"
-            f"{format_message('สินทรัพย์ Spot:', spot_balance_usdt, 'USDT')}\n"
-            f"{format_message('สุทธิ:', net_usdt, 'USDT')}\n\n"
-            "ไม่สามารถคำนวณเป็นเงินบาทได้ เนื่องจากไม่สามารถดึงข้อมูลอัตราแลกเปลี่ยนได้"
-        )
-
-    send_line_notify(message)
-
-def format_message(label, value, unit, width=15):
-    return f"{label:<{width}} {value:>{width},.2f} {unit}"
-
-def transfer_usdt_to_future():
-    # ดึง USDT ที่สามารถ transfer ได้
-    data = client.futures_account_balance()
-    max_withdraw_amount = 0
-    for item in data:
-        if item['asset'] == 'USDT':
-            max_withdraw_amount += float(item['maxWithdrawAmount'])
-    
-    print(f"USDT balance ready for Transfer : {max_withdraw_amount}", flush=True)
-
-    try:
-        client.futures_account_transfer(asset='USDT', amount=max_withdraw_amount - 1000, type=2)
-
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
-        return None
-
-# start
-print("Start", flush=True)
-#transfer_usdt_to_future()
-#future_change_margin_type_and_leverage_all()
-#future_profit_or_loss_notify()
-#future_change_margin_type_and_leverage('BTCUSDT')
-#future_find_order_no_position()
-#future_find_signal(tread_time_frame)
-#future_compare_stop_loss_all()
-first_time = True
-while True:
-    try:
-        date_time_now = datetime.now()
-        print(f"Check signal {date_time_now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-        last_minute = date_time_now.minute
-        if first_time == True or last_minute % 15 == 0:
-            first_time = False
-            future_find_signal(tread_time_frame)
-            future_find_order_no_position()
-            future_compare_stop_loss_all()
-            future_profit_or_loss_notify()
-            #transfer_usdt_to_future()
-            time.sleep(120)
-    except Exception as e:
-        send_line_notify(f"Error: {e}")
-        print(f"Error: {e}", flush=True)
-    time.sleep(10)
+                    symbol, amount = balance.currency, float(balance.available)
+                    pair = f"{symbol}_USDT"
+                    current_price = self.get_spot_price(pair)
+                    if current_price <= 0: continue
+                    value_in_usdt = amount * current_price
+                    if value_in_usdt > 5:
+                        klines = self.get_klines(pair)
+                        if not klines: continue
+                        df = pd.DataFrame([{
+                            'timestamp': self.safe_float_convert(k[0]),
+                            'volume': self.safe_float_convert(k[1]),
+                            'close': self.safe_float_convert(k[2]),
+                            'high': self.safe_float_convert(k[3]),
+                            'low': self.safe_float_convert(k[4]),
+                            'open': self.safe_float_convert(k[5])
+                        } for k in klines if len(k) >= 6])
+                        if df.empty or df.isnull().values.any(): continue
+                        df = df.set_index('timestamp').sort_index()
+                        bear_result = self.check_bear_blocks(df)
+                        if bear_result and bear_result['signal'] == "SELL 📉":
+                            if self.place_market_sell(pair, amount):
+                                print(f"ขายทั้งหมด {pair} มูลค่า ${value_in_usdt:.2f} สำเร็จ ({bear_result['block'].type})")
+                except Exception as e: print(f"Error processing {symbol}: {e}", flush=True)
+        except Exception as e: print(f"Portfolio check error: {e}", flush=True)
+    def scan_for_buys(self):
+        try:
+            pairs = self.get_spot_pairs()
+            print(f"\nScanning {len(pairs)} pairs for buy signals...", flush=True)
+            signals = []
+            for pair in pairs:
+                try:
+                    klines = self.get_klines(pair.id)
+                    if not klines or any(c.isdigit() for c in pair.id.split('_')[0]): continue
+                    df = pd.DataFrame([{
+                        'timestamp': self.safe_float_convert(k[0]),
+                        'volume': self.safe_float_convert(k[1]),
+                        'close': self.safe_float_convert(k[2]),
+                        'high': self.safe_float_convert(k[3]),
+                        'low': self.safe_float_convert(k[4]),
+                        'open': self.safe_float_convert(k[5])
+                    } for k in klines if len(k) >= 6])
+                    if df.empty or df.isnull().values.any(): continue
+                    df = df.set_index('timestamp').sort_index()
+                    bull_result = self.check_bull_blocks(df)
+                    if bull_result:
+                        symbol = pair.id.split('_')[0]
+                        usdt_balance = self.get_account_balance('USDT')
+                        symbol_balance = self.get_account_balance(symbol)
+                        current_price = self.get_spot_price(pair.id)
+                        symbol_balance_usdt = symbol_balance * current_price
+                        if bull_result['signal'] == "BUY 🚀" and symbol_balance_usdt < 5 and usdt_balance >= 20:
+                            if self.place_market_buy(pair.id, 20):
+                                bull_result['auto_trade'] = True
+                                print(f"ซื้อ {pair.id} มูลค่า $20 สำเร็จ ({bull_result['block'].type})")
+                        signals.append({'pair': pair.id, **bull_result})
+                except Exception as e: print(f"Error processing {pair.id}: {e}", flush=True)
+            return signals
+        except Exception as e: print(f"Scan error: {e}", flush=True); return []
+    def scan_market(self):
+        print("\nChecking portfolio for sell signals...", flush=True)
+        self.check_portfolio_for_sells()
+        self.scan_for_buys()
+def main():
+    while True:
+        try:
+            scanner = GateioScanner()
+            scanner.scan_market()
+            print("\nScanner finished. Waiting 15 minutes...", flush=True)
+            time.sleep(60 * 15)
+        except Exception as e: print(f"Error: {e}", flush=True); time.sleep(60)
+if __name__ == "__main__": main()

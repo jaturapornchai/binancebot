@@ -1,153 +1,168 @@
-import datetime
-import ccxt
-import pandas as pd
+import pytz
 from datetime import datetime
 import requests
-from binance.client import Client
-import time
+import matplotlib.pyplot as plt
+import numpy as np
 
-# Configure API key authorization
-api_key = 'wpq57Bbcr4Wg1jW6iZt5qJ46YEewH7E89eyz31185wqqOjQt1r9n4a3mj1yLUmdN'
-api_secret = '8wuq8dMQOdsHMOSgjDLQYsPQF3J8CtdMSXu7VrB6ZNhS4VJ94ZM4b5qfu20jtnLU'
-client = Client(api_key, api_secret)
-tread_time_frame = '15m'
-exchange = ccxt.binance()
-ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
-line_token = "aMFv92TD5VFEXQ3fU9gN1sAaWWrkyVoo6VlJe95hvE7"
+class CandleData:
+    def __init__(self, time, open, high, low, close):
+        self.time = time
+        self.open = open
+        self.high = high
+        self.low = low
+        self.close = close
 
-def send_line_notify(message):
-    """Send notifications through LINE Notify."""
-    headers = {
-        'Authorization': f'Bearer ' + line_token,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    payload = {'message': message}
-    response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-    return response.status_code
+class TradingBot:
+    def __init__(self, symbols):
+        self.candlestick_data = {}
+        self.buy_indexes = {}
+        self.symbols = symbols
+        for symbol in self.symbols:
+            self.fetch_data(symbol)
+        self.plot_candlestick_charts()
 
-def fetch_future_symbols():
-    info = client.futures_exchange_info()
-    symbols = [item['symbol'] for item in info['symbols'] if 'USDT' in item['symbol'] and item['status'] == 'TRADING']
-    symbols = [symbol for symbol in symbols if not any(char.isdigit() for char in symbol)]
-    symbols = [symbol for symbol in symbols if symbol not in ignore_symbols]
-    symbols.sort()    
-    return symbols
-
-def rsi(df, periods=14, ema=True):
-    close_delta = df['close'].diff()
-    
-    if ema:
-        up = close_delta.clip(lower=0)
-        down = -1 * close_delta.clip(upper=0)
-        ma_up = up.ewm(com=periods-1, adjust=True, min_periods=periods).mean()
-        ma_down = down.ewm(com=periods-1, adjust=True, min_periods=periods).mean()
-    else:
-        up = close_delta[close_delta > 0].reindex_like(df)
-        down = -1 * close_delta[close_delta < 0].reindex_like(df)
-        ma_up = up.rolling(window=periods, min_periods=0).mean()
-        ma_down = down.rolling(window=periods, min_periods=0).mean()
-    
-    rs = ma_up / ma_down
-    return 100 - (100 / (1 + rs))
-
-def find_swing_points(data, rsi_col='rsi', lb=5):
-    swing_highs = []
-    swing_lows = []
-    
-    for i in range(lb, len(data) - lb):
-        if data[rsi_col].iloc[i] == max(data[rsi_col].iloc[i - lb:i + lb + 1]):
-            swing_highs.append((data.index[i], data[rsi_col].iloc[i]))
-        if data[rsi_col].iloc[i] == min(data[rsi_col].iloc[i - lb:i + lb + 1]):
-            swing_lows.append((data.index[i], data[rsi_col].iloc[i]))
-    
-    return swing_highs, swing_lows
-
-def find_divergence(data, swing_highs, swing_lows):
-    divergences = {'bullish': [], 'bearish': []}
-    
-    for i in range(1, len(swing_lows)):
-        if swing_lows[i][1] > swing_lows[i - 1][1] and data['close'][swing_lows[i][0]] < data['close'][swing_lows[i - 1][0]]:
-            divergences['bullish'].append(swing_lows[i])
-    
-    for i in range(1, len(swing_highs)):
-        if swing_highs[i][1] < swing_highs[i - 1][1] and data['close'][swing_highs[i][0]] > data['close'][swing_highs[i - 1][0]]:
-            divergences['bearish'].append(swing_highs[i])
-    
-    return divergences
-
-def check_div_signal(symbol):
-    # จำนวนแท่งข้อมูลที่ดึงต่อครั้ง
-    limit = 1000  
-    # ดึงข้อมูลย้อนหลัง 10 วัน
-    since = exchange.milliseconds() - 1000 * 60 * 60 * 24 * 10  
-
-    # ดึงข้อมูลในช่วงเวลาที่กำหนด
-    bars = []
-    while True:
-        ohlcv = exchange.fetch_ohlcv(symbol, tread_time_frame, since, limit)
-        if not ohlcv:
-            break
-        since = ohlcv[-1][0] + 1
-        bars.extend(ohlcv)
-        if len(ohlcv) < limit:
-            break
-
-    data = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
-    data.set_index('timestamp', inplace=True)
-
-    data['rsi'] = rsi(data, periods=14)
-    swing_highs, swing_lows = find_swing_points(data)
-    divergences = find_divergence(data, swing_highs, swing_lows)
-
-    latest_divergence = None
-
-    if divergences['bullish']:
-        latest_bullish_divergence = divergences['bullish'][-1][0]
-        time_since_bullish = (data.index[-1] - latest_bullish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bullish < 5:
-            latest_divergence = 'long'
-
-    if divergences['bearish']:
-        latest_bearish_divergence = divergences['bearish'][-1][0]
-        time_since_bearish = (data.index[-1] - latest_bearish_divergence) // pd.Timedelta(minutes=60)
-        if time_since_bearish < 5:
-            latest_divergence = 'short'
-
-    if not latest_divergence:
-        latest_divergence = 'normal'
-
-    return latest_divergence
-
-def future_find_signal():
-    print("Start check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-    symbols = fetch_future_symbols()
-    for symbol in symbols:
+    def fetch_data(self, symbol):
         try:
-            signal = check_div_signal(symbol)
-            if signal == 'short':
-                print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
-                send_line_notify(f"Short : Symbol: {symbol}, Signal: {signal}")
-
-            if signal == 'long':
-                print(f"Symbol: {symbol}, Signal: {signal}", flush=True)
-                send_line_notify(f"Long : Symbol: {symbol}, Signal: {signal}")
-
+            original_data = self.get_symbol_data(symbol)
+            candles_data = [
+                CandleData(e['time'], e['open'], e['high'], e['low'], e['close'])
+                for e in original_data
+            ]
+            rsi_values = self.calculate_rsi(candles_data, 14)
+            buy_detected = self.detect_hammer_ll(candles_data, rsi_values)
+            self.candlestick_data[symbol] = candles_data
+            self.buy_indexes[symbol] = buy_detected
         except Exception as e:
-            print(f"Error: {e}", flush=True)    
-            continue    
-    print("End check signal : " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+            print(f'Error fetching data for {symbol}: {e}')
 
-def future_get_balance():
-    balance = client.futures_account_balance()
-    balance_asset = 0
-    for item in balance:
-        if item['asset'] == 'USDT':
-            balance_asset = float(item['balance'])
-            break
-    print(f"Balance USDT: {balance_asset}", flush=True)  
-    return balance_asset
+    def get_symbol_data(self, symbol):
+        url = f'https://api.binance.com/api/v3/klines?symbol={symbol}&interval=15m&limit=100'
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            return [
+                {
+                    'time': e[0],
+                    'open': float(e[1]),
+                    'high': float(e[2]),
+                    'low': float(e[3]),
+                    'close': float(e[4]),
+                }
+                for e in data
+            ]
+        else:
+            raise Exception('Failed to load data')
 
-# clear screen terminal
-print("\033[H\033[J")
-future_find_signal()
+    def calculate_rsi(self, data, period):
+        rsi_values = []
+        gains = []
+        losses = []
+
+        for i in range(1, len(data)):
+            change = data[i].close - data[i - 1].close
+            if change > 0:
+                gains.append(change)
+                losses.append(0)
+            else:
+                gains.append(0)
+                losses.append(-change)
+
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+        rs = avg_gain / avg_loss if avg_loss != 0 else 0
+        rsi_values.append(100 - (100 / (1 + rs)) if rs != 0 else 0)
+
+        for i in range(period, len(gains)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+            rs = avg_gain / avg_loss if avg_loss != 0 else 0
+            rsi_values.append(100 - (100 / (1 + rs)) if rs != 0 else 0)
+
+        return [50] * period + rsi_values  # Fill initial values with 50
+
+    def detect_hammer_ll(self, data, rsi_values):
+        buy_indexes = []
+        min_swing_distance = 5
+
+        for i in range(min_swing_distance, len(data) - min_swing_distance):
+            is_ll = (
+                data[i].low < data[i - 1].low
+                and data[i].low < data[i + 1].low
+                and data[i].low < data[i - min_swing_distance].low
+                and data[i].low < data[i + min_swing_distance].low
+            )
+
+            is_hammer = (
+                (data[i].high - data[i].low) > 1.5 * abs(data[i].open - data[i].close)
+                and (data[i].close - data[i].low) / (data[i].high - data[i].low) > 0.4
+                and (data[i].open - data[i].low) / (data[i].high - data[i].low) > 0.4
+            )
+
+            is_rsi_oversold = 30 < rsi_values[i] < 50
+
+            if is_ll and is_hammer and is_rsi_oversold:
+                buy_indexes.append(i)
+
+        return buy_indexes
+
+    def plot_candlestick_charts(self):
+        for symbol in self.symbols:
+            if symbol not in self.candlestick_data:
+                continue
+
+            plt.figure(figsize=(10, 5))
+            dates = np.arange(len(self.candlestick_data[symbol]))
+            high_prices = [c.high for c in self.candlestick_data[symbol]]
+            low_prices = [c.low for c in self.candlestick_data[symbol]]
+            open_prices = [c.open for c in self.candlestick_data[symbol]]
+            close_prices = [c.close for c in self.candlestick_data[symbol]]
+
+            # Plot the candlestick chart
+            for i in range(len(self.candlestick_data[symbol])):
+                color = 'green' if close_prices[i] > open_prices[i] else 'red'
+                plt.plot([dates[i], dates[i]], [low_prices[i], high_prices[i]], color=color)
+                plt.plot([dates[i] - 0.1, dates[i] + 0.1], [open_prices[i], open_prices[i]], color=color)
+                plt.plot([dates[i] - 0.1, dates[i] + 0.1], [close_prices[i], close_prices[i]], color=color)
+
+            # Plot the buy signal with label for legend and time
+            for index in self.buy_indexes[symbol]:
+                buy_time = self.candlestick_data[symbol][index].time
+                formatted_time = self.format_time(buy_time)  # Format time as you like
+                plt.scatter(dates[index], self.candlestick_data[symbol][index].low, color='blue', label=f'BUY at {formatted_time}' if index == self.buy_indexes[symbol][0] else '')
+
+            # Set title, labels and legend
+            plt.title(f'{symbol} - LL Detection with Hammer Buy Signal')
+            plt.xlabel('Time')
+            plt.ylabel('Price')
+            plt.legend(loc='best')  # Ensure the legend is placed correctly
+            plt.show()
+
+    def format_time(self, timestamp):
+        # ตั้งค่าเขตเวลาของประเทศไทย (GMT+7)
+        thailand_tz = pytz.timezone('Asia/Bangkok')
+        
+        # แปลง timestamp เป็นเวลาตาม UTC แล้วแปลงเป็นเขตเวลาไทย
+        utc_time = datetime.utcfromtimestamp(timestamp / 1000).replace(tzinfo=pytz.utc)
+        thailand_time = utc_time.astimezone(thailand_tz)
+        
+        # แสดงเวลาในรูปแบบที่ต้องการ
+        return thailand_time.strftime('%Y-%m-%d %H:%M:%S')
+
+    def get_buy_signal(self, symbol):
+        try:
+            original_data = self.get_symbol_data(symbol)
+            candles_data = [
+                CandleData(e['time'], e['open'], e['high'], e['low'], e['close'])
+                for e in original_data
+            ]
+            rsi_values = self.calculate_rsi(candles_data, 14)
+            buy_detected = self.detect_hammer_ll(candles_data, rsi_values)
+            return buy_detected
+        except Exception as e:
+            print(f'Error fetching data for {symbol}: {e}')
+            return []
+
+if __name__ == '__main__':
+    symbols = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'ADAUSDT']  # Example symbols
+    
+    bot = TradingBot(symbols)

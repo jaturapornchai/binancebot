@@ -1,102 +1,173 @@
-import datetime
+import pytz
+from datetime import datetime
+from gate_api import ApiClient, Configuration, SpotApi
 import time
-import requests
-import yfinance as yf
-import numpy as np
-import pandas as pd
-from scipy.signal import argrelextrema
-import talib
-import ccxt
-from binance.client import Client
 
-api_key = 'FpwthNz84887fuWpz9lEIsLm1zwZB9YV8ZO2FjVQ6v2k6lmR8nv1oKZZOoJSY0il'
-api_secret = 'nszlVyvoFAZPVIXdWnJyhaxgiujMTTUmFN4Ncix3rKBtLhF2kO8hhCZhnwIeu3gt'
-line_token = "cbBeuaCxvJcxe1wxovmMADeRsnktbFvyLizTceJpzbh"
-client = Client(api_key, api_secret)
+API_KEY = "c84d3616806f44e5651912c198094a1b"
+API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
 
-# Constants
-dollar_amount = 75  # Order amount in USD
-leverage = 10
-exchange = ccxt.binance()
-ignore_symbols = ['DONUSDT', 'USDCUSDT', 'SRMUSDT']
+class CandleData:
+    def __init__(self, time, open, high, low, close):
+        self.time = time
+        self.open = float(open)
+        self.high = float(high)
+        self.low = float(low)
+        self.close = float(close)
 
-def send_line_notify(message):
-    """Send notifications through LINE Notify."""
-    headers = {
-        'Authorization': f'Bearer {line_token}',
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    payload = {'message': message}
-    response = requests.post("https://notify-api.line.me/api/notify", headers=headers, params=payload)
-    return response.status_code
+class TradingBot:
+    def __init__(self, symbols):
+        # Initialize Gate.io API client
+        config = Configuration(key=API_KEY, secret=API_SECRET)
+        self.client = ApiClient(config)
+        self.spot_api = SpotApi(self.client)
+        
+        self.candlestick_data = {}
+        self.buy_indexes = {}
+        self.symbols = symbols
+        print("Starting trading bot...", flush=True)
+        print(f"Monitoring symbols: {', '.join(symbols)}", flush=True)
+        print("-" * 50, flush=True)
+        
+        for symbol in self.symbols:
+            self.check_signals(symbol)
 
-def fetch_symbols():
-    """Fetch trading symbols from Binance futures market and apply filters."""
-    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-    response = requests.get(url)
-    data = response.json()
+    def check_signals(self, symbol):
+        try:
+            original_data = self.get_symbol_data(symbol)
+            candles_data = [
+                CandleData(
+                    int(e[0]),  # timestamp
+                    float(e[5]),  # open
+                    float(e[3]),  # high
+                    float(e[4]),  # low
+                    float(e[2])   # close
+                )
+                for e in original_data
+            ]
+            rsi_values = self.calculate_rsi(candles_data, 14)
+            buy_detected = self.detect_hammer_ll(candles_data, rsi_values)
+            
+            if buy_detected:
+                print(f"\n{'='*20} {symbol} Buy Signals {'='*20}", flush=True)
+                for idx in buy_detected:
+                    candle = candles_data[idx]
+                    current_time = time.time()
+                    time_diff_minutes = (current_time - candle.time) / 60
+                    
+                    print(f"Signal Time: {self.format_time(candle.time)} ({time_diff_minutes:.1f} minutes ago)", flush=True)
+                    print(f"Price: {candle.close:.6f}", flush=True)
+                    print(f"RSI: {rsi_values[idx]:.2f}", flush=True)
+                    print("-" * 50, flush=True)
+            else:
+                print(f"No buy signals found for {symbol}", flush=True)
+                
+        except Exception as e:
+            print(f'Error analyzing {symbol}: {e}', flush=True)
 
-    symbols = [symbol["symbol"] for symbol in data["symbols"]
-               if symbol["status"] == "TRADING" and
-               symbol["contractType"] == "PERPETUAL" and
-               symbol["symbol"].endswith("USDT") and
-               symbol["symbol"] not in ignore_symbols and
-               'UPUSDT' not in symbol["symbol"] and 'DOWNUSDT' not in symbol["symbol"]]
+    def get_symbol_data(self, symbol):
+        try:
+            candlesticks = self.spot_api.list_candlesticks(
+                currency_pair=symbol,
+                interval='15m',  # 15-minute intervals
+                limit=100
+            )
+            print(f"Retrieved {len(candlesticks)} candlesticks for {symbol}", flush=True)
+            return candlesticks
+        except Exception as e:
+            raise Exception(f'Failed to load data: {e}')
 
-    return symbols
+    def calculate_rsi(self, data, period):
+        rsi_values = []
+        gains = []
+        losses = []
 
-def symbol_has_divergences(symbol, period='60d', interval='15m', len=14, lbL=5, lbR=5, rangeUpper=60, rangeLower=5):
-    """Check if a symbol has bullish divergences based on RSI and price action."""
-    df = yf.download(symbol, period=period, interval=interval)
-    if df.empty:
-        return False
+        for i in range(1, len(data)):
+            change = data[i].close - data[i - 1].close
+            if change > 0:
+                gains.append(change)
+                losses.append(0)
+            else:
+                gains.append(0)
+                losses.append(-change)
 
-    df['rsi'] = talib.RSI(df['Close'], timeperiod=len)
-    rsi_pivot_lows = argrelextrema(df['rsi'].values, np.less, order=lbL)[0]
-    price_pivot_lows = argrelextrema(df['Low'].values, np.less, order=lbL)[0]
+        if len(gains) < period:
+            return [50] * len(data)
 
-    valid_rsi_pivots = [i for i in rsi_pivot_lows if rangeLower <= i <= rangeUpper]
-    valid_price_pivots = [i for i in price_pivot_lows if rangeLower <= i <= rangeUpper]
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+        rs = avg_gain / avg_loss if avg_loss != 0 else 0
+        rsi_values.append(100 - (100 / (1 + rs)) if rs != 0 else 0)
 
-    divergences = []
-    for rsi_pivot in valid_rsi_pivots:
-        for price_pivot in valid_price_pivots:
-            if lbR <= rsi_pivot - price_pivot <= lbL and df['rsi'][rsi_pivot] > df['rsi'][rsi_pivot - 1] and df['Low'][price_pivot] < df['Low'][price_pivot - 1]:
-                divergences.append((price_pivot, 'Bullish Regular'))
-    
-    return bool(divergences)
+        for i in range(period, len(gains)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+            rs = avg_gain / avg_loss if avg_loss != 0 else 0
+            rsi_values.append(100 - (100 / (1 + rs)) if rs != 0 else 0)
 
-def main():
-    find_name = 'found_spot_symbols.txt'
-    first_run = True
-    found_symbols = []
-    while True:
-        now = datetime.datetime.now()
-        if now.minute % 15 == 0 or first_run:
-            if not first_run:
-                time.sleep(30)  # Avoid multiple executions at the boundary
-            first_run = False
+        return [50] * period + rsi_values
+
+    def detect_hammer_ll(self, data, rsi_values):
+        buy_indexes = []
+        min_swing_distance = 5
+
+        for i in range(min_swing_distance, len(data) - min_swing_distance):
+            is_ll = (
+                data[i].low < data[i - 1].low
+                and data[i].low < data[i + 1].low
+                and data[i].low < data[i - min_swing_distance].low
+                and data[i].low < data[i + min_swing_distance].low
+            )
+
+            is_hammer = (
+                (data[i].high - data[i].low) > 1.5 * abs(data[i].open - data[i].close)
+                and (data[i].close - data[i].low) / (data[i].high - data[i].low) > 0.4
+                and (data[i].open - data[i].low) / (data[i].high - data[i].low) > 0.4
+            )
+
+            is_rsi_oversold = 30 < rsi_values[i] < 50
+
+            if is_ll and is_hammer and is_rsi_oversold:
+                buy_indexes.append(i)
+
+        return buy_indexes
+
+    def format_time(self, timestamp):
+        thailand_tz = pytz.timezone('Asia/Bangkok')
+        utc_time = datetime.utcfromtimestamp(timestamp).replace(tzinfo=pytz.utc)
+        thailand_time = utc_time.astimezone(thailand_tz)
+        return thailand_time.strftime('%Y-%m-%d %H:%M:%S')
+
+    def monitor_signals(self, interval_seconds=60):
+        """
+        Continuously monitor for new buy signals
+        """
+        print(f"\nStarting continuous monitoring...", flush=True)
+        print(f"Checking every {interval_seconds} seconds", flush=True)
+        print("Press Ctrl+C to stop", flush=True)
+        print("-" * 50, flush=True)
+        
+        while True:
             try:
-                spot_symbols = fetch_symbols()
-                found_symbols_list_new = []
-                for symbol in spot_symbols:
-                    if symbol_has_divergences(symbol):
-                        if symbol not in found_symbols:
-                            found_symbols.append(symbol)
-                            found_symbols_list_new.append(symbol + '\n')
+                current_time = self.format_time(int(time.time()))
+                print(f"\nChecking signals at {current_time}", flush=True)
                 
-                if found_symbols_list_new:
-                    send_line_notify('Found symbols\n' + ''.join(found_symbols_list_new))
+                for symbol in self.symbols:
+                    self.check_signals(symbol)
                 
-                with open(find_name, 'w') as f:
-                    for symbol in found_symbols:
-                        f.write(symbol + '\n')
-                print('*** done ***')
-                time.sleep(60)  # Wait a minute before next iteration
+                print(f"\nNext check in {interval_seconds} seconds...", flush=True)
+                time.sleep(interval_seconds)
+                
+            except KeyboardInterrupt:
+                print("\nMonitoring stopped by user", flush=True)
+                break
             except Exception as e:
-                print(f'Error: {e}')
+                print(f"Error during monitoring: {e}", flush=True)
+                print(f"Retrying in {interval_seconds} seconds...", flush=True)
+                time.sleep(interval_seconds)
 
-if __name__ == "__main__":
-    main()
-
+if __name__ == '__main__':
+    # Gate.io uses underscore format for trading pairs
+    symbols = ['BTC_USDT', 'ETH_USDT', 'XRP_USDT', 'LTC_USDT', 'ADA_USDT']
     
+    bot = TradingBot(symbols)
+    bot.monitor_signals(interval_seconds=60)  # Check every minute
