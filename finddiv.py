@@ -163,6 +163,6 @@ class TradingBot:
             return []
 
 if __name__ == '__main__':
-    symbols = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'LTCUSDT', 'ADAUSDT']  # Example symbols
+    symbols = ['ADAUSDT']  # Example symbols
     
     bot = TradingBot(symbols)

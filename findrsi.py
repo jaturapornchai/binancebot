@@ -5,6 +5,7 @@ import time
 
 API_KEY = "c84d3616806f44e5651912c198094a1b"
 API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
+INVALID_PAIRS = ['DILI_USDT', 'POINT_USDT', 'CATCH_OLD_USDT', 'ROOST_OLD_USDT']
 
 class CandleData:
     def __init__(self, time, open, high, low, close):
@@ -15,7 +16,7 @@ class CandleData:
         self.close = float(close)
 
 class TradingBot:
-    def __init__(self, symbols):
+    def __init__(self ):
         # Initialize Gate.io API client
         config = Configuration(key=API_KEY, secret=API_SECRET)
         self.client = ApiClient(config)
@@ -23,13 +24,21 @@ class TradingBot:
         
         self.candlestick_data = {}
         self.buy_indexes = {}
-        self.symbols = symbols
-        print("Starting trading bot...", flush=True)
-        print(f"Monitoring symbols: {', '.join(symbols)}", flush=True)
-        print("-" * 50, flush=True)
+        self.symbols = self.get_spot_pairs()
         
         for symbol in self.symbols:
-            self.check_signals(symbol)
+            self.check_signals(symbol.id)
+
+    def is_valid_pair(self, pair_id): return False if '_OLD' in pair_id or pair_id in INVALID_PAIRS else True
+    def get_spot_pairs(self):
+        try:
+            pairs = [pair for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1 and self.is_valid_pair(pair.id)]
+            tickers = self.spot_api.list_tickers()
+            volume_dict = {t.currency_pair: float(t.quote_volume) for t in tickers if t.currency_pair.count('_USDT') == 1 and self.is_valid_pair(t.currency_pair)}
+            filtered_pairs = [pair for pair in pairs if pair.id in volume_dict and volume_dict[pair.id] >= 100_000]
+            for pair in filtered_pairs: pair.volume_24h = volume_dict[pair.id]
+            return sorted(filtered_pairs, key=lambda x: x.volume_24h, reverse=True)
+        except Exception as e: print(f"Error getting pairs: {e}", flush=True); return []
 
     def check_signals(self, symbol):
         try:
@@ -48,21 +57,22 @@ class TradingBot:
             buy_detected = self.detect_hammer_ll(candles_data, rsi_values)
             
             if buy_detected:
-                print(f"\n{'='*20} {symbol} Buy Signals {'='*20}", flush=True)
                 for idx in buy_detected:
                     candle = candles_data[idx]
                     current_time = time.time()
                     time_diff_minutes = (current_time - candle.time) / 60
-                    
-                    print(f"Signal Time: {self.format_time(candle.time)} ({time_diff_minutes:.1f} minutes ago)", flush=True)
-                    print(f"Price: {candle.close:.6f}", flush=True)
-                    print(f"RSI: {rsi_values[idx]:.2f}", flush=True)
-                    print("-" * 50, flush=True)
-            else:
-                print(f"No buy signals found for {symbol}", flush=True)
+                    if time_diff_minutes < 120:
+                        print(f"\n{'='*20} {symbol} Buy Signals {'='*20}", flush=True)
+                        print(f"Signal Time: {self.format_time(candle.time)} ({time_diff_minutes:.1f} minutes ago)", flush=True)
+                        print(f"Price: {candle.close:.6f}", flush=True)
+                        print(f"RSI: {rsi_values[idx]:.2f}", flush=True)
+                        print("-" * 50, flush=True)
+                        return True
                 
         except Exception as e:
             print(f'Error analyzing {symbol}: {e}', flush=True)
+        
+        return False
 
     def get_symbol_data(self, symbol):
         try:
@@ -71,7 +81,6 @@ class TradingBot:
                 interval='15m',  # 15-minute intervals
                 limit=100
             )
-            print(f"Retrieved {len(candlesticks)} candlesticks for {symbol}", flush=True)
             return candlesticks
         except Exception as e:
             raise Exception(f'Failed to load data: {e}')
@@ -137,37 +146,7 @@ class TradingBot:
         thailand_time = utc_time.astimezone(thailand_tz)
         return thailand_time.strftime('%Y-%m-%d %H:%M:%S')
 
-    def monitor_signals(self, interval_seconds=60):
-        """
-        Continuously monitor for new buy signals
-        """
-        print(f"\nStarting continuous monitoring...", flush=True)
-        print(f"Checking every {interval_seconds} seconds", flush=True)
-        print("Press Ctrl+C to stop", flush=True)
-        print("-" * 50, flush=True)
-        
-        while True:
-            try:
-                current_time = self.format_time(int(time.time()))
-                print(f"\nChecking signals at {current_time}", flush=True)
-                
-                for symbol in self.symbols:
-                    self.check_signals(symbol)
-                
-                print(f"\nNext check in {interval_seconds} seconds...", flush=True)
-                time.sleep(interval_seconds)
-                
-            except KeyboardInterrupt:
-                print("\nMonitoring stopped by user", flush=True)
-                break
-            except Exception as e:
-                print(f"Error during monitoring: {e}", flush=True)
-                print(f"Retrying in {interval_seconds} seconds...", flush=True)
-                time.sleep(interval_seconds)
-
 if __name__ == '__main__':
-    # Gate.io uses underscore format for trading pairs
-    symbols = ['BTC_USDT', 'ETH_USDT', 'XRP_USDT', 'LTC_USDT', 'ADA_USDT']
-    
-    bot = TradingBot(symbols)
-    bot.monitor_signals(interval_seconds=60)  # Check every minute
+    print("Starting trading bot...", flush=True)
+    bot = TradingBot()
+    print("Trading bot started!", flush=True)
