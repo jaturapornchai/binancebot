@@ -1,261 +1,241 @@
-from datetime import datetime
-import time, pandas as pd, numpy as np
+from typing import List, Dict
+from decimal import Decimal
+import logging,time,pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import List
-from gate_api import ApiClient, Configuration, SpotApi, Order
-
-API_KEY = "c84d3616806f44e5651912c198094a1b"
-API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
-INVALID_PAIRS = ['DILI_USDT', 'POINT_USDT', 'CATCH_OLD_USDT', 'ROOST_OLD_USDT']
-
-class CandleData:
-    def __init__(self, time, open, high, low, close):
-        self.time = time
-        self.open = float(open)
-        self.high = float(high)
-        self.low = float(low)
-        self.close = float(close)
-
+from typing import List, Optional, Dict
+from gate_api import ApiClient, Configuration, SpotApi, Order, ApiException
+GREEN = '\033[32m'
+RESET = '\033[0m'
+MIN_VOLUME_USDT = 100_000
+MIN_BALANCE_THRESHOLD = 5
+MARKET_BUY_AMOUNT = 20
+LOOKBACK_PERIODS = 100
 @dataclass
-class GateioScanner:
-    def __init__(self):
-        self.config = Configuration(key=API_KEY, secret=API_SECRET, host="https://api.gateio.ws/api/v4")
-        self.client = ApiClient(self.config)
+class TradingPair:
+    id: str
+    base: str
+    quote: str
+    fee: str
+    min_base_amount: str
+    min_quote_amount: str
+    volume_24h: float = 0.0
+    last_price: float = 0.0
+class GateTrader:
+    def __init__(self, api_key, api_secret):
+        config = Configuration(key=api_key, secret=api_secret, host="https://api.gateio.ws/api/v4")
+        self.client = ApiClient(config)
         self.spot_api = SpotApi(self.client)
-
-    def is_valid_pair(self, pair_id):
-        return False if '_OLD' in pair_id or pair_id in INVALID_PAIRS else True
-
-    def get_spot_pairs(self):
+        self.signal_times = {}
+        self.all_pairs: Dict[str, TradingPair] = {}
+        self.portfolio_coins = set()
+        self.last_scan_minute = -1
+    def fetch_all_market_data(self):
         try:
-            pairs = [pair for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1 and self.is_valid_pair(pair.id)]
-            tickers = self.spot_api.list_tickers()
-            volume_dict = {t.currency_pair: float(t.quote_volume) for t in tickers if t.currency_pair.count('_USDT') == 1 and self.is_valid_pair(t.currency_pair)}
-            filtered_pairs = [pair for pair in pairs if pair.id in volume_dict and volume_dict[pair.id] >= 100_000]
-            for pair in filtered_pairs:
-                pair.volume_24h = volume_dict[pair.id]
-            return sorted(filtered_pairs, key=lambda x: x.volume_24h, reverse=True)
+            print("\nFetching all market data...", flush=True)
+            pairs = {pair.id: TradingPair(id=pair.id,base=pair.base,quote=pair.quote,fee=pair.fee,min_base_amount=pair.min_base_amount,min_quote_amount=pair.min_quote_amount) for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1}
+            tickers = {t.currency_pair: (float(t.quote_volume), float(t.last)) for t in self.spot_api.list_tickers() if t.currency_pair.count('_USDT') == 1}
+            for pair_id, (volume, price) in tickers.items():
+                if pair_id in pairs:
+                    pairs[pair_id].volume_24h = volume
+                    pairs[pair_id].last_price = price
+            accounts = self.spot_api.list_spot_accounts()
+            self.portfolio_coins.clear()
+            for account in accounts:
+                if account.currency != 'USDT':
+                    balance = float(account.available)
+                    if balance > 0:
+                        pair_id = f"{account.currency}_USDT"
+                        if pair_id in tickers:
+                            value = balance * tickers[pair_id][1]
+                            if value >= MIN_BALANCE_THRESHOLD:
+                                self.portfolio_coins.add(pair_id)
+            self.all_pairs = pairs
+            print(f"Found {len(self.all_pairs)} total pairs")
+            print(f"Portfolio contains {len(self.portfolio_coins)} coins with value > ${MIN_BALANCE_THRESHOLD}")
+            return True
         except Exception as e:
-            print(f"Error getting pairs: {e}", flush=True)
-            return []
-
-    def get_spot_price(self, pair: str) -> float:
+            print(f"Error fetching market data: {e}", flush=True)
+            return False
+    def get_tradeable_pairs(self) -> List[TradingPair]:
+        return sorted([pair for pair in self.all_pairs.values() if pair.volume_24h >= MIN_VOLUME_USDT or pair.id in self.portfolio_coins], key=lambda x: x.volume_24h, reverse=True)
+    def place_market_buy(self, pair: str, amount_usdt: float = MARKET_BUY_AMOUNT) -> bool:
         try:
-            return float(self.spot_api.list_tickers(currency_pair=pair)[0].last) if self.is_valid_pair(pair) else 0.0
-        except Exception as e:
-            print(f"Error getting price for {pair}: {e}", flush=True)
-            return 0.0
-
-    def get_account_balance(self, symbol: str) -> float:
-        try:
-            return next((float(b.available) for b in self.spot_api.list_spot_accounts() if b.currency.lower() == symbol.lower()), 0.0)
-        except Exception as e:
-            print(f"Error getting balance: {str(e)}", flush=True)
-            return 0.0
-
-    def place_market_buy(self, pair: str, amount_usdt: float = 20):
-        try:
-            return self.spot_api.create_order(Order(currency_pair=pair, side='buy', amount=str(amount_usdt), type='market', time_in_force='ioc')) if self.is_valid_pair(pair) else False
+            order = Order(currency_pair=pair,side='buy',amount=str(amount_usdt),type='market',time_in_force='ioc')
+            self.spot_api.create_order(order)
+            print(f"{GREEN}Successfully placed market buy order for {pair} worth {amount_usdt} USDT{RESET}", flush=True)
+            return True
         except Exception as e:
             print(f"Error placing buy order: {str(e)}", flush=True)
             return False
-
-    def check_buy_signals(self, symbol):
+    def place_market_sell(self, currency: str, available_amount: Decimal) -> bool:
         try:
-            original_data = self.get_symbol_data(symbol)
-            candles_data = [
-                CandleData(
-                    int(e[0]),  # timestamp
-                    float(e[5]),  # open
-                    float(e[3]),  # high
-                    float(e[4]),  # low
-                    float(e[2])   # close
-                )
-                for e in original_data
-            ]
-            rsi_values = self.calculate_rsi(candles_data, 14)
-            buy_detected = self.detect_hammer_ll(candles_data, rsi_values)
-            
-            if buy_detected:
-                for idx in buy_detected:
-                    candle = candles_data[idx]
-                    current_time = time.time()
-                    time_diff_minutes = (current_time - candle.time) / 60
-                    if time_diff_minutes < 60:
-                        print(f"\n{'='*20} {symbol} Buy Signals {'='*20}", flush=True)
-                        print(f"Signal Time: ({time_diff_minutes:.1f} minutes ago)", flush=True)
-                        print(f"Price: {candle.close:.6f}", flush=True)
-                        print(f"RSI: {rsi_values[idx]:.2f}", flush=True)
-                        print("-" * 50, flush=True)
-                        return True
-                
+            order = Order(currency_pair=f"{currency}_USDT",side='sell',amount=str(available_amount),type='market',time_in_force='ioc')
+            self.spot_api.create_order(order)
+            print(f"{GREEN}Successfully sold {available_amount} {currency}{RESET}", flush=True)
+            return True
         except Exception as e:
-            print(f'Error analyzing {symbol}: {e}', flush=True)
-        
-        return False
-
-    def get_symbol_data(self, symbol):
+            print(f"Error selling {currency}: {str(e)}", flush=True)
+            return False
+    def get_account_balance(self, currency: str) -> float:
         try:
-            candlesticks = self.spot_api.list_candlesticks(
-                currency_pair=symbol,
-                interval='15m',  # 15-minute intervals
-                limit=100
-            )
-            return candlesticks
-        except Exception as e:
-            raise Exception(f'Failed to load data: {e}')
-
-    def calculate_rsi(self, data, period):
-        rsi_values = []
-        gains = []
-        losses = []
-
-        for i in range(1, len(data)):
-            change = data[i].close - data[i - 1].close
-            if change > 0:
-                gains.append(change)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(-change)
-
-        if len(gains) < period:
-            return [50] * len(data)
-
-        avg_gain = sum(gains[:period]) / period
-        avg_loss = sum(losses[:period]) / period
-        rs = avg_gain / avg_loss if avg_loss != 0 else 0
-        rsi_values.append(100 - (100 / (1 + rs)) if rs != 0 else 0)
-
-        for i in range(period, len(gains)):
-            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-            rs = avg_gain / avg_loss if avg_loss != 0 else 0
-            rsi_values.append(100 - (100 / (1 + rs)) if rs != 0 else 0)
-
-        return [50] * period + rsi_values
-
-    def detect_hammer_ll(self, data, rsi_values):
-        buy_indexes = []
-        min_swing_distance = 5
-
-        for i in range(min_swing_distance, len(data) - min_swing_distance):
-            is_ll = (
-                data[i].low < data[i - 1].low
-                and data[i].low < data[i + 1].low
-                and data[i].low < data[i - min_swing_distance].low
-                and data[i].low < data[i + min_swing_distance].low
-            )
-
-            is_hammer = (
-                (data[i].high - data[i].low) > 1.5 * abs(data[i].open - data[i].close)
-                and (data[i].close - data[i].low) / (data[i].high - data[i].low) > 0.4
-                and (data[i].open - data[i].low) / (data[i].high - data[i].low) > 0.4
-            )
-
-            is_rsi_oversold = 30 < rsi_values[i] < 50
-
-            if is_ll and is_hammer and is_rsi_oversold:
-                buy_indexes.append(i)
-
-        return buy_indexes
-
-    def scan_for_buys(self):
+            balances = self.spot_api.list_spot_accounts(currency=currency)
+            return float(balances[0].available) if balances else 0.0
+        except ApiException as e:
+            print(f"Error getting balance for {currency}: {e}", flush=True)
+            return 0.0
+    def get_kline_data(self, symbol: str, interval: str = '15m', limit: int = LOOKBACK_PERIODS + 10) -> List[dict]:
         try:
-            pairs = self.get_spot_pairs()
-            print(f"\nScanning {len(pairs)} pairs for buy signals...", flush=True)
-            for pair in pairs:
-                try:
-                    if self.check_buy_signals(pair.id):
-                        symbol = pair.id.split('_')[0]
-                        usdt_balance = self.get_account_balance('USDT')
-                        symbol_balance = self.get_account_balance(symbol)
-                        current_price = self.get_spot_price(pair.id)
-                        symbol_balance_usdt = symbol_balance * current_price
-                        if symbol_balance_usdt < 5 and usdt_balance >= 20:
-                            self.place_market_buy(pair.id, 20)
-                            print(f"Buy order placed for {pair.id}", flush=True)
-                        else:
-                            print(f"Skipping buy for {pair.id}. Symbol balance USDT: {symbol_balance_usdt:.2f}, USDT balance: {usdt_balance:.2f}", flush=True)
-                except Exception as e:
-                    print(f"Error processing {pair.id}: {e}", flush=True)
-        except Exception as e:
-            print(f"Scan error: {e}", flush=True)
+            return self.spot_api.list_candlesticks(currency_pair=symbol,interval='15m',limit=limit)
+        except ApiException as e:
+            print(f"Error getting kline data: {e}", flush=True)
             return []
-
-    def scan_for_sells(self):
+    def check_sell_signal(self, currency: str) -> bool:
         try:
-            # Get all account balances at once
-            all_balances = self.spot_api.list_spot_accounts()
-            
-            # Get all tickers at once
-            tickers = {t.currency_pair: t for t in self.spot_api.list_tickers()}
-            
-            # Process each balance
-            for balance in all_balances:
-                symbol = balance.currency
-                available_amount = float(balance.available)
-                
-                # Skip if no balance or if it's USDT
-                if available_amount <= 0 or symbol == 'USDT':
-                    continue
-                    
-                # Check if there's a USDT pair for this currency
-                currency_pair = f"{symbol}_USDT"
-                ticker = tickers.get(currency_pair)
-                
-                if ticker:
-                    current_price = float(ticker.last)
-                    
-                    # Calculate total USDT value
-                    total_usdt_value = available_amount * current_price
-                    
-                    # Check if total USDT value is more than $25
-                    if total_usdt_value > 25:
-                        # If value is over $25, sell $10 worth
-                        amount_to_sell = 10 / current_price
-                        
-                        # Make sure we don't try to sell more than we have
-                        amount_to_sell = min(amount_to_sell, available_amount)
-                        
-                        # Create sell order
-                        if amount_to_sell > 0:
-                            self.spot_api.create_order(
-                                Order(
-                                    currency_pair=currency_pair,
-                                    side='sell',
-                                    amount=str(amount_to_sell),
-                                    type='market',
-                                    time_in_force='ioc'
-                                )
-                            )
-                            print(f"Sold ${10} worth of {symbol}", flush=True)
-                            print(f"Current holdings: {available_amount:.8f} {symbol}", flush=True)
-                            print(f"Total USDT value: ${total_usdt_value:.2f}", flush=True)
-                        
+            kline_data = self.get_kline_data(f"{currency}_USDT")
+            if not kline_data or len(kline_data) < LOOKBACK_PERIODS: return False
+            df = pd.DataFrame(kline_data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open', 'total', 'amount'])
+            df[['high', 'low', 'close', 'open']] = df[['high', 'low', 'close', 'open']].apply(pd.to_numeric)
+            _, _, lower_line, _ = self.calculate_regression_channel(df.tail(100))
+            if lower_line is None:
+                return False
+            current_candle = df.iloc[-1]
+            previous_candle = df.iloc[-2]
+            # Check if price breaks below lower line
+            breaks_lower = current_candle['close'] < lower_line[-1] and previous_candle['close'] >= lower_line[-2]
+            return breaks_lower
         except Exception as e:
-            print(f"Error selling: {e}", flush=True)
-
-    def scan_market(self):
-        print("\nChecking portfolio for sell signals...", flush=True)
-        self.scan_for_sells()
-        print("\nChecking market for buy signals...", flush = True)
-        self.scan_for_buys()
-
+            print(f"Error checking sell signal for {currency}: {str(e)}", flush=True)
+            return False
+    def scan_and_sell(self, balances: List[Dict]):
+        print("\nScanning holdings for sell conditions...", flush=True)
+        for balance in balances:
+            try:
+                currency = balance['currency']
+                available = balance['available']
+                if self.check_sell_signal(currency):
+                    print(f"Selling {available} {currency}", flush=True)
+                    self.place_market_sell(currency, available)
+                time.sleep(0.2)
+            except Exception as e:
+                print(f"Error processing {currency}: {str(e)}", flush=True)
+    def calculate_regression_channel(self, df: pd.DataFrame, length: int = 100, dev_length: float = 2.0) -> tuple:
+        try:
+            y = df['close'].values
+            x = np.arange(len(y))
+            x = x[-length:]
+            y = y[-length:]
+            slope, intercept = np.polyfit(x, y, 1)
+            middle_line = slope * x + intercept
+            deviation = np.sqrt(np.sum((y - middle_line) ** 2) / length)
+            upper_line = middle_line + deviation * dev_length
+            lower_line = middle_line - deviation * dev_length
+            return middle_line, upper_line, lower_line, slope
+        except Exception as e:
+            print(f"Error calculating regression channel: {str(e)}")
+            return None, None, None, None
+    def calculate_signals(self, df: pd.DataFrame) -> tuple:
+        try:
+            df[['high', 'low', 'close', 'open', 'volume']] = df[['high', 'low', 'close', 'open', 'volume']].apply(pd.to_numeric)
+            middle_line, upper_line, lower_line, slope = self.calculate_regression_channel(df.tail(100))
+            if upper_line is None:
+                return 'HOLD', False
+            current_candle = df.iloc[-1]
+            trend_up = slope > 0
+            channel_height = upper_line[-1] - lower_line[-1]
+            quarter_height = channel_height / 4
+            bottom_quarter_upper_bound = lower_line[-1] + quarter_height
+            price_in_bottom_quarter = current_candle['close'] <= bottom_quarter_upper_bound and current_candle['close'] >= lower_line[-1]
+            is_bullish = current_candle['close'] > current_candle['open']
+            df['signal'] = 'HOLD'
+            if trend_up and price_in_bottom_quarter and is_bullish:
+                df.loc[df.index[-1], 'signal'] = 'BUY'
+            current_signal = df['signal'].iloc[-1]
+            signal_changed = False
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if current_signal not in self.signal_times or self.signal_times[current_signal]['time'] != current_time:
+                self.signal_times[current_signal] = {'signal': current_signal, 'time': current_time}
+                signal_changed = True
+            return current_signal, signal_changed
+        except Exception as e:
+            print(f"Error calculating signals: {str(e)}")
+            return 'HOLD', False
+    def handle_buy_signal(self, pair: TradingPair, current_price: float):
+        try:
+            symbol = pair.id.split('_')[0]
+            usdt_balance = self.get_account_balance('USDT')
+            symbol_balance = self.get_account_balance(symbol)
+            symbol_balance_usdt = symbol_balance * current_price
+            if symbol_balance_usdt < MIN_BALANCE_THRESHOLD:
+                if usdt_balance >= MARKET_BUY_AMOUNT:
+                    print(f"\nPosition value ({symbol_balance_usdt:.2f} USDT) below threshold. Placing market buy...", flush=True)
+                    self.place_market_buy(pair.id)
+                else:
+                    print(f"\nInsufficient USDT balance ({usdt_balance:.2f}) for market buy", flush=True)
+            else:
+                print(f"\nCurrent position value ({symbol_balance_usdt:.2f} USDT) above threshold. No action needed.", flush=True)
+        except Exception as e:
+            print(f"Error handling buy signal: {str(e)}", flush=True)
+    def get_non_zero_balances(self) -> List[Dict]:
+        try:
+            balances = []
+            for balance in self.spot_api.list_spot_accounts():
+                if float(balance.available) > 0 and balance.currency != 'USDT':
+                    amount = Decimal(str(balance.available))
+                    if amount * Decimal(str(self.all_pairs.get(f"{balance.currency}_USDT", TradingPair("","","","","","")).last_price)) > Decimal('5'):
+                        balances.append({'currency': balance.currency, 'available': amount})
+            return balances
+        except Exception as e:
+            print(f"Error fetching balances: {str(e)}", flush=True)
+            return []
+    def run(self):
+        try:
+            print("\nInitializing trading bot...", flush=True)
+            print("Bot will scan at minutes: 0, 15, 30, 45", flush=True)
+            self.fetch_all_market_data()
+            print(f"\nStarting initial market scan...", flush=True)
+            print("-" * 100)
+            print(f"{'Timestamp':<20} {'Pair':<12} {'Signal':<8} {'Price':>12} {'24h Volume':>15}")
+            print("-" * 100, flush=True)
+            first_scan = True
+            while True:
+                if datetime.now().minute % 15 == 0 or first_scan:
+                    first_scan = False
+                    try:
+                        sell_coins = self.get_non_zero_balances()
+                        if sell_coins: self.scan_and_sell(sell_coins)
+                        print(f"\nStarting market scan", flush=True)
+                        if not self.fetch_all_market_data():
+                            print("Failed to fetch market data. Will retry next scan.", flush=True)
+                            time.sleep(60)
+                            continue
+                        pairs = self.get_tradeable_pairs()
+                        for pair in pairs:
+                            try:
+                                kline_data = self.get_kline_data(pair.id)
+                                if not kline_data or len(kline_data) < LOOKBACK_PERIODS: continue
+                                df = pd.DataFrame(kline_data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open', 'total', 'amount'])
+                                current_signal, signal_changed = self.calculate_signals(df)
+                                current_price = float(df['close'].iloc[-1])
+                                print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<20} {pair.id:<12} {current_signal:<8} {current_price:>12.8f} {pair.volume_24h:>15.2f}", flush=True)
+                                if current_signal == 'BUY': self.handle_buy_signal(pair, current_price)
+                                time.sleep(0.2)
+                            except Exception as e:
+                                print(f"Error analyzing {pair.id}: {e}", flush=True)
+                                continue
+                        print(f"\nScan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    except Exception as e:
+                        print(f"Error during market scan: {e}", flush=True)
+                time.sleep(10)                    
+        except KeyboardInterrupt:
+            print("\nBot stopped by user.", flush=True)
+        except Exception as e:
+            print(f"Fatal error: {e}", flush=True)
 def main():
-    first_run = True
-    while True:
-        try:
-            if datetime.now().minute % 15 == 0 or first_run:
-                first_run = False
-                print("Starting scanner...", flush=True)
-                scanner = GateioScanner()
-                scanner.scan_market()
-                print("\nScanner finished. Waiting 15 minutes...", flush=True)
-        except Exception as e:
-            print(f"Error: {e}", flush=True)
-
-        time.sleep(10)
-
+    API_KEY = "c84d3616806f44e5651912c198094a1b"
+    API_SECRET = "32ebfc90ac917be0911561c09da2b6dea9adafc9a4c0587c375645073be2e506"
+    trader = GateTrader(API_KEY, API_SECRET)
+    trader.run()
 if __name__ == "__main__":
     main()
