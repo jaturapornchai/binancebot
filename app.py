@@ -8,10 +8,9 @@ from typing import List, Optional, Dict
 from gate_api import ApiClient, Configuration, SpotApi, Order, ApiException
 GREEN = '\033[32m'
 RESET = '\033[0m'
-MIN_VOLUME_USDT = 100_000
+MIN_VOLUME_USDT = 1_000
 MIN_BALANCE_THRESHOLD = 5
 MARKET_BUY_AMOUNT = 20
-LOOKBACK_PERIODS = 100
 @dataclass
 class TradingPair:
     id: str
@@ -30,11 +29,11 @@ class GateTrader:
         self.signal_times = {}
         self.all_pairs: Dict[str, TradingPair] = {}
         self.portfolio_coins = set()
-        self.last_scan_minute = -1
+        self.last_scan_hour = -1
     def fetch_all_market_data(self):
         try:
             print("\nFetching all market data...", flush=True)
-            pairs = {pair.id: TradingPair(id=pair.id,base=pair.base,quote=pair.quote,fee=pair.fee,min_base_amount=pair.min_base_amount,min_quote_amount=pair.min_quote_amount) for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1}
+            pairs = {pair.id: TradingPair(id=pair.id,base=pair.base,quote=pair.quote,fee=pair.fee,min_base_amount=pair.min_base_amount,min_quote_amount=pair.min_quote_amount) for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1 and not any(c.isdigit() for c in pair.id)}
             tickers = {t.currency_pair: (float(t.quote_volume), float(t.last)) for t in self.spot_api.list_tickers() if t.currency_pair.count('_USDT') == 1}
             for pair_id, (volume, price) in tickers.items():
                 if pair_id in pairs:
@@ -85,26 +84,22 @@ class GateTrader:
         except ApiException as e:
             print(f"Error getting balance for {currency}: {e}", flush=True)
             return 0.0
-    def get_kline_data(self, symbol: str, interval: str = '15m', limit: int = LOOKBACK_PERIODS + 10) -> List[dict]:
+    def get_kline_data(self, symbol: str) -> List[dict]:
         try:
-            return self.spot_api.list_candlesticks(currency_pair=symbol,interval='15m',limit=limit)
+            return self.spot_api.list_candlesticks(currency_pair=symbol, interval='1h', limit=144)
         except ApiException as e:
             print(f"Error getting kline data: {e}", flush=True)
             return []
     def check_sell_signal(self, currency: str) -> bool:
         try:
             kline_data = self.get_kline_data(f"{currency}_USDT")
-            if not kline_data or len(kline_data) < LOOKBACK_PERIODS: return False
+            if not kline_data or len(kline_data) < 2:
+                return False
             df = pd.DataFrame(kline_data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open', 'total', 'amount'])
             df[['high', 'low', 'close', 'open']] = df[['high', 'low', 'close', 'open']].apply(pd.to_numeric)
-            _, _, lower_line, _ = self.calculate_regression_channel(df.tail(100))
-            if lower_line is None:
-                return False
-            current_candle = df.iloc[-1]
-            previous_candle = df.iloc[-2]
-            # Check if price breaks below lower line
-            breaks_lower = current_candle['close'] < lower_line[-1] and previous_candle['close'] >= lower_line[-2]
-            return breaks_lower
+            first_hour_low = df.iloc[0]['low']
+            current_price = df.iloc[-1]['close']
+            return current_price < first_hour_low
         except Exception as e:
             print(f"Error checking sell signal for {currency}: {str(e)}", flush=True)
             return False
@@ -120,36 +115,17 @@ class GateTrader:
                 time.sleep(0.2)
             except Exception as e:
                 print(f"Error processing {currency}: {str(e)}", flush=True)
-    def calculate_regression_channel(self, df: pd.DataFrame, length: int = 100, dev_length: float = 2.0) -> tuple:
-        try:
-            y = df['close'].values
-            x = np.arange(len(y))
-            x = x[-length:]
-            y = y[-length:]
-            slope, intercept = np.polyfit(x, y, 1)
-            middle_line = slope * x + intercept
-            deviation = np.sqrt(np.sum((y - middle_line) ** 2) / length)
-            upper_line = middle_line + deviation * dev_length
-            lower_line = middle_line - deviation * dev_length
-            return middle_line, upper_line, lower_line, slope
-        except Exception as e:
-            print(f"Error calculating regression channel: {str(e)}")
-            return None, None, None, None
     def calculate_signals(self, df: pd.DataFrame) -> tuple:
         try:
             df[['high', 'low', 'close', 'open', 'volume']] = df[['high', 'low', 'close', 'open', 'volume']].apply(pd.to_numeric)
-            middle_line, upper_line, lower_line, slope = self.calculate_regression_channel(df.tail(100))
-            if upper_line is None:
+            total_candles = len(df)
+            is_new_coin = total_candles < 6
+            if not is_new_coin:
                 return 'HOLD', False
-            current_candle = df.iloc[-1]
-            trend_up = slope > 0
-            channel_height = upper_line[-1] - lower_line[-1]
-            quarter_height = channel_height / 4
-            bottom_quarter_upper_bound = lower_line[-1] + quarter_height
-            price_in_bottom_quarter = current_candle['close'] <= bottom_quarter_upper_bound and current_candle['close'] >= lower_line[-1]
-            is_bullish = current_candle['close'] > current_candle['open']
+            first_hour_low = df.iloc[0]['low']
+            current_price = df.iloc[-1]['close']
             df['signal'] = 'HOLD'
-            if trend_up and price_in_bottom_quarter and is_bullish:
+            if current_price > first_hour_low:
                 df.loc[df.index[-1], 'signal'] = 'BUY'
             current_signal = df['signal'].iloc[-1]
             signal_changed = False
@@ -192,7 +168,7 @@ class GateTrader:
     def run(self):
         try:
             print("\nInitializing trading bot...", flush=True)
-            print("Bot will scan at minutes: 0, 15, 30, 45", flush=True)
+            print("Bot will scan at the start of each hour", flush=True)
             self.fetch_all_market_data()
             print(f"\nStarting initial market scan...", flush=True)
             print("-" * 100)
@@ -200,11 +176,14 @@ class GateTrader:
             print("-" * 100, flush=True)
             first_scan = True
             while True:
-                if datetime.now().minute % 15 == 0 or first_scan:
+                current_hour = datetime.now().hour
+                if current_hour != self.last_scan_hour or first_scan:
                     first_scan = False
+                    self.last_scan_hour = current_hour
                     try:
                         sell_coins = self.get_non_zero_balances()
-                        if sell_coins: self.scan_and_sell(sell_coins)
+                        if sell_coins: 
+                            self.scan_and_sell(sell_coins)
                         print(f"\nStarting market scan", flush=True)
                         if not self.fetch_all_market_data():
                             print("Failed to fetch market data. Will retry next scan.", flush=True)
@@ -214,12 +193,14 @@ class GateTrader:
                         for pair in pairs:
                             try:
                                 kline_data = self.get_kline_data(pair.id)
-                                if not kline_data or len(kline_data) < LOOKBACK_PERIODS: continue
+                                if not kline_data:
+                                    continue
                                 df = pd.DataFrame(kline_data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open', 'total', 'amount'])
                                 current_signal, signal_changed = self.calculate_signals(df)
                                 current_price = float(df['close'].iloc[-1])
                                 print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S'):<20} {pair.id:<12} {current_signal:<8} {current_price:>12.8f} {pair.volume_24h:>15.2f}", flush=True)
-                                if current_signal == 'BUY': self.handle_buy_signal(pair, current_price)
+                                if current_signal == 'BUY': 
+                                    self.handle_buy_signal(pair, current_price)
                                 time.sleep(0.2)
                             except Exception as e:
                                 print(f"Error analyzing {pair.id}: {e}", flush=True)
@@ -227,7 +208,7 @@ class GateTrader:
                         print(f"\nScan completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                     except Exception as e:
                         print(f"Error during market scan: {e}", flush=True)
-                time.sleep(10)                    
+                time.sleep(60)
         except KeyboardInterrupt:
             print("\nBot stopped by user.", flush=True)
         except Exception as e:
