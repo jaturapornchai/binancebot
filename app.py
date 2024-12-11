@@ -8,7 +8,7 @@ from typing import List, Optional, Dict
 from gate_api import ApiClient, Configuration, SpotApi, Order, ApiException
 GREEN = '\033[32m'
 RESET = '\033[0m'
-MIN_VOLUME_USDT = 500_000
+MIN_VOLUME_USDT = 1_000_000
 MIN_BALANCE_THRESHOLD = 5 
 MARKET_BUY_AMOUNT = 30
 @dataclass
@@ -29,10 +29,23 @@ class GateTrader:
         self.signal_times = {}
         self.all_pairs: Dict[str, TradingPair] = {}
         self.portfolio_coins = set()
+    def has_number(self, text: str) -> bool:
+        return any(char.isdigit() for char in text)
     def fetch_all_market_data(self):
         try:
-            pairs = {pair.id: TradingPair(id=pair.id, base=pair.base, quote=pair.quote, fee=pair.fee, min_base_amount=pair.min_base_amount, min_quote_amount=pair.min_quote_amount) for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1}
-            tickers = {t.currency_pair: (float(t.quote_volume), float(t.last)) for t in self.spot_api.list_tickers() if t.currency_pair.count('_USDT') == 1}
+            pairs = {
+                pair.id: TradingPair(
+                    id=pair.id,
+                    base=pair.base,
+                    quote=pair.quote,
+                    fee=pair.fee,
+                    min_base_amount=pair.min_base_amount,
+                    min_quote_amount=pair.min_quote_amount
+                )
+                for pair in self.spot_api.list_currency_pairs()
+                if pair.id.count('_USDT') == 1 and not self.has_number(pair.base)
+            }
+            tickers = {t.currency_pair: (float(t.quote_volume), float(t.last)) for t in self.spot_api.list_tickers() if t.currency_pair in pairs}
             for pair_id, (volume, price) in tickers.items():
                 if pair_id in pairs:
                     pairs[pair_id].volume_24h = volume
@@ -77,89 +90,38 @@ class GateTrader:
         except ApiException as e:
             print(f"Error getting balance for {currency}: {e}", flush=True)
             return 0.0
-    def get_kline_data(self, symbol: str) -> List[dict]:
+    def calculate_signals(self, pair_id: str) -> tuple:
         try:
-            return self.spot_api.list_candlesticks(currency_pair=symbol, interval='1h', limit=144)
-        except ApiException as e:
-            print(f"Error getting kline data: {e}", flush=True)
-            return []
-
-    def calculate_signals(self, df: pd.DataFrame) -> tuple:
-        try:
-            df[['high', 'low', 'close', 'open', 'volume']] = df[['high', 'low', 'close', 'open', 'volume']].apply(pd.to_numeric)
-            if len(df) < 15:
+            candles = self.spot_api.list_candlesticks(currency_pair=pair_id, interval='1h', limit=502)
+            if len(candles) < 502:
                 return 'NO', False
-            df = df.reset_index(drop=True)
-            current_time = datetime.now()
-            current_candle = df.iloc[-1]
-            
-            # Calculate Bu-OB zone
-            lookback_period = 20  # จำนวนแท่งเทียนย้อนหลังที่จะตรวจสอบ
-            buob_zone = None
-            buob_high = None
-            buob_low = None
-
-            # หา Bu-OB zone
-            for i in range(len(df)-2, max(0, len(df)-lookback_period), -1):
-                candle = df.iloc[i]
-                next_candle = df.iloc[i+1]
-                
-                # ตรวจหาแท่งเทียนที่เป็น Bu-OB (แท่งสีแดงก่อนการพุ่งขึ้น)
-                if (candle['close'] < candle['open'] and  # แท่งสีแดง
-                    next_candle['close'] > next_candle['open'] and  # แท่งถัดไปสีเขียว
-                    next_candle['close'] > candle['open'] * 1.005):  # มีการพุ่งขึ้นเกิน 0.5%
-                    
-                    buob_high = candle['open']  # ขอบบนของโซน
-                    buob_low = candle['close']   # ขอบล่างของโซน
-                    buob_zone = i
-                    break
-            
-            if buob_zone is not None:
-                current_price = current_candle['close']
-                
-                # เช็คว่าราคาปัจจุบันอยู่ในโซน Bu-OB หรือไม่
-                if buob_low <= current_price <= buob_high:
-                    hours_since_buob = (current_time - pd.to_datetime(float(df.iloc[buob_zone]['timestamp']), unit='s')).total_seconds() / 3600
-                    
-                    if hours_since_buob <= 48:  # พิจารณาสัญญาณภายใน 48 ชั่วโมง
-                        print(f"Price in Bu-OB zone: {current_price:.8f}", flush=True)
-                        print(f"Bu-OB zone: {buob_low:.8f} - {buob_high:.8f}", flush=True)
-                        print(f"Found {hours_since_buob:.1f} hours ago", flush=True)
-                        
-                        current_signal = 'BUY'
-                        current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-                        signal_changed = current_signal not in self.signal_times or self.signal_times[current_signal]['time'] != current_time_str
-                        
-                        if signal_changed:
-                            self.signal_times[current_signal] = {
-                                'signal': current_signal,
-                                'time': current_time_str,
-                                'zone_low': buob_low,
-                                'zone_high': buob_high
-                            }
-                        return current_signal, signal_changed
-            
+            second_last_vol = float(candles[-2][6])
+            third_last_vol = float(candles[-3][6])
+            historical_vols = [float(c[6]) for c in candles[:-3]]
+            avg_volume = np.mean(historical_vols)
+            if avg_volume > 0:
+                vol_change = ((second_last_vol / avg_volume) - 1) * 100
+                if vol_change > 500 and second_last_vol > third_last_vol:
+                    print(f"Volume increase: {vol_change:.1f}% for {pair_id}", flush=True)
+                    print(f"Second last volume: {second_last_vol:,.0f} USDT", flush=True)
+                    print(f"Third last volume: {third_last_vol:,.0f} USDT", flush=True)
+                    print(f"Average volume: {avg_volume:,.0f} USDT", flush=True)
+                    return 'BUY', True
             return 'NO', False
         except Exception as e:
             print(f"Error calculating signals: {str(e)}", flush=True)
             return 'NO', False
-
-
-
     def check_sell_signal(self, currency: str) -> tuple[bool, float]:
         try:
-            kline_data = self.get_kline_data(f"{currency}_USDT")
-            if len(kline_data) < 15:
+            candles = self.spot_api.list_candlesticks(currency_pair=f"{currency}_USDT", interval='1h', limit=15)
+            if len(candles) < 15:
                 return False, 0.0
-            df = pd.DataFrame(kline_data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open', 'total', 'amount'])
-            df[['high', 'low', 'close', 'open']] = df[['high', 'low', 'close', 'open']].apply(pd.to_numeric)
-            current_candle = df.iloc[-1]
-            lookback_period = df.iloc[-15:-1]
-            prev_lowest = lookback_period['low'].min()
+            current_low = float(candles[-1][3])
+            prev_lowest = min(float(c[3]) for c in candles[-15:-1])
             current_balance = self.get_account_balance(currency)
-            if current_candle['low'] < prev_lowest:
+            if current_low < prev_lowest:
                 print(f"Sell signal for {currency}:", flush=True)
-                print(f"Current Low: {current_candle['low']:.8f}", flush=True)
+                print(f"Current Low: {current_low:.8f}", flush=True)
                 print(f"Previous 14 candles lowest: {prev_lowest:.8f}", flush=True)
                 return True, current_balance
             return False, 0.0
@@ -190,14 +152,12 @@ class GateTrader:
                             continue
                         for pair in self.get_tradeable_pairs():
                             try:
-                                df = pd.DataFrame(self.get_kline_data(pair.id), columns=['timestamp', 'volume', 'close', 'high', 'low', 'open', 'total', 'amount'])
-                                signal, changed = self.calculate_signals(df)
-                                current_price = float(df['close'].iloc[-1])
-                                print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {pair.id:<12} {signal:<8} {current_price:>12.8f} {pair.volume_24h:>15.2f}", flush=True)
+                                signal, changed = self.calculate_signals(pair.id)
+                                print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {pair.id:<12} {signal:<8} {pair.last_price:>12.8f} {pair.volume_24h:>15.2f}", flush=True)
                                 if signal == 'BUY':
                                     symbol = pair.id.split('_')[0]
                                     balance = self.get_account_balance(symbol)
-                                    value = balance * current_price
+                                    value = balance * pair.last_price
                                     if value < MIN_BALANCE_THRESHOLD and self.get_account_balance('USDT') >= MARKET_BUY_AMOUNT:
                                         self.place_market_buy(pair.id)
                                 time.sleep(0.2)
