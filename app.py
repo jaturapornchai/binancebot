@@ -21,6 +21,54 @@ class TradingPair:
     min_quote_amount: str
     volume_24h: float = 0.0
     last_price: float = 0.0
+def calculate_ema_signals(candles: list, fast_length: int = 9, slow_length: int = 20, long_length: int = 200, vol_threshold: float = 1.5) -> tuple:
+    try:
+        if len(candles) < long_length + 2:  # Need enough data for 200 EMA
+            return 'NO', False, 0
+            
+        # Extract data
+        closes = np.array([float(c[2]) for c in candles])
+        volumes = np.array([float(c[5]) for c in candles])
+        
+        # Calculate EMAs
+        ema_fast = pd.Series(closes).ewm(span=fast_length, adjust=False).mean()
+        ema_slow = pd.Series(closes).ewm(span=slow_length, adjust=False).mean()
+        ema_long = pd.Series(closes).ewm(span=long_length, adjust=False).mean()
+        
+        # Get current values
+        current_close = closes[-1]
+        current_fast = ema_fast.iloc[-1]
+        current_slow = ema_slow.iloc[-1]
+        current_long = ema_long.iloc[-1]
+        
+        # Get previous values
+        prev_fast = ema_fast.iloc[-2]
+        prev_slow = ema_slow.iloc[-2]
+        
+        # Check volume condition
+        avg_volume = np.mean(volumes[-20:])  # 20 period volume MA
+        current_volume = volumes[-1]
+        volume_surge = current_volume > (avg_volume * vol_threshold)
+        
+        # EMA Cross Up condition
+        cross_up = prev_fast < prev_slow and current_fast > current_slow
+        
+        # Price above long EMA
+        above_long_ema = current_close > current_long
+        
+        print(f"Close: {current_close:.4f}, 9 EMA: {current_fast:.4f}, 20 EMA: {current_slow:.4f}, 200 EMA: {current_long:.4f}")
+        print(f"Volume: {current_volume:.0f}, Avg Vol: {avg_volume:.0f}, Surge: {volume_surge}")
+        
+        # Buy signal: EMA cross up + volume surge + price above 200 EMA
+        if cross_up and volume_surge and above_long_ema:
+            print(f"BUY Signal: EMA Cross UP + Volume {current_volume/avg_volume:.1f}x + Above 200 EMA")
+            return 'BUY', True, current_close
+        
+        return 'NO', False, current_close
+            
+    except Exception as e:
+        print(f"Error in EMA calculation: {str(e)}")
+        return 'NO', False, 0
 class GateTrader:
     def __init__(self, api_key, api_secret):
         config = Configuration(key=api_key, secret=api_secret, host="https://api.gateio.ws/api/v4")
@@ -33,18 +81,7 @@ class GateTrader:
         return any(char.isdigit() for char in text)
     def fetch_all_market_data(self):
         try:
-            pairs = {
-                pair.id: TradingPair(
-                    id=pair.id,
-                    base=pair.base,
-                    quote=pair.quote,
-                    fee=pair.fee,
-                    min_base_amount=pair.min_base_amount,
-                    min_quote_amount=pair.min_quote_amount
-                )
-                for pair in self.spot_api.list_currency_pairs()
-                if pair.id.count('_USDT') == 1 and not self.has_number(pair.base)
-            }
+            pairs = {pair.id: TradingPair(id=pair.id, base=pair.base, quote=pair.quote, fee=pair.fee, min_base_amount=pair.min_base_amount, min_quote_amount=pair.min_quote_amount) for pair in self.spot_api.list_currency_pairs() if pair.id.count('_USDT') == 1 and not self.has_number(pair.base)}
             tickers = {t.currency_pair: (float(t.quote_volume), float(t.last)) for t in self.spot_api.list_tickers() if t.currency_pair in pairs}
             for pair_id, (volume, price) in tickers.items():
                 if pair_id in pairs:
@@ -92,42 +129,17 @@ class GateTrader:
             return 0.0
     def calculate_signals(self, pair_id: str) -> tuple:
         try:
-            candles = self.spot_api.list_candlesticks(currency_pair=pair_id, interval='1h', limit=502)
-            if len(candles) < 502:
+            # Need at least 200 candles for EMA 200
+            candles = self.spot_api.list_candlesticks(currency_pair=pair_id, interval='1h', limit=250)
+            if len(candles) < 250:
                 return 'NO', False
-            second_last_vol = float(candles[-2][6])
-            third_last_vol = float(candles[-3][6])
-            historical_vols = [float(c[6]) for c in candles[:-3]]
-            avg_volume = np.mean(historical_vols)
-            if avg_volume > 0:
-                vol_change = ((second_last_vol / avg_volume) - 1) * 100
-                if vol_change > 500 and second_last_vol > third_last_vol:
-                    print(f"Volume increase: {vol_change:.1f}% for {pair_id}", flush=True)
-                    print(f"Second last volume: {second_last_vol:,.0f} USDT", flush=True)
-                    print(f"Third last volume: {third_last_vol:,.0f} USDT", flush=True)
-                    print(f"Average volume: {avg_volume:,.0f} USDT", flush=True)
-                    return 'BUY', True
-            return 'NO', False
+            signal, changed, price = calculate_ema_signals(candles)
+            if signal == 'BUY':
+                print(f"{signal} signal for {pair_id} at {price:.2f}", flush=True)
+            return signal, changed
         except Exception as e:
             print(f"Error calculating signals: {str(e)}", flush=True)
             return 'NO', False
-    def check_sell_signal(self, currency: str) -> tuple[bool, float]:
-        try:
-            candles = self.spot_api.list_candlesticks(currency_pair=f"{currency}_USDT", interval='1h', limit=15)
-            if len(candles) < 15:
-                return False, 0.0
-            current_low = float(candles[-1][3])
-            prev_lowest = min(float(c[3]) for c in candles[-15:-1])
-            current_balance = self.get_account_balance(currency)
-            if current_low < prev_lowest:
-                print(f"Sell signal for {currency}:", flush=True)
-                print(f"Current Low: {current_low:.8f}", flush=True)
-                print(f"Previous 14 candles lowest: {prev_lowest:.8f}", flush=True)
-                return True, current_balance
-            return False, 0.0
-        except Exception as e:
-            print(f"Error checking sell signal for {currency}: {str(e)}", flush=True)
-            return False, 0.0
     def run(self):
         try:
             print("Bot started - scanning pairs", flush=True)
@@ -141,12 +153,6 @@ class GateTrader:
                 if (current_time.minute == 0) or first_scan:
                     first_scan = False
                     try:
-                        balances = [{'currency': b.currency, 'available': Decimal(str(b.available))} for b in self.spot_api.list_spot_accounts() if b.currency != 'USDT' and float(b.available) > 0 and float(b.available) * float(self.all_pairs.get(f"{b.currency}_USDT", TradingPair("","","","","","")).last_price) > 5]
-                        for balance in balances:
-                            should_sell, sell_amount = self.check_sell_signal(balance['currency'])
-                            if should_sell:
-                                self.place_market_sell(balance['currency'], Decimal(str(sell_amount)))
-                            time.sleep(0.2)
                         if not self.fetch_all_market_data():
                             time.sleep(60)
                             continue
@@ -154,12 +160,19 @@ class GateTrader:
                             try:
                                 signal, changed = self.calculate_signals(pair.id)
                                 print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {pair.id:<12} {signal:<8} {pair.last_price:>12.8f} {pair.volume_24h:>15.2f}", flush=True)
+                                symbol = pair.id.split('_')[0]
                                 if signal == 'BUY':
-                                    symbol = pair.id.split('_')[0]
                                     balance = self.get_account_balance(symbol)
                                     value = balance * pair.last_price
                                     if value < MIN_BALANCE_THRESHOLD and self.get_account_balance('USDT') >= MARKET_BUY_AMOUNT:
                                         self.place_market_buy(pair.id)
+                                elif signal == 'SELL':
+                                    balance = self.get_account_balance(symbol)
+                                    value = balance * pair.last_price
+                                    if balance > 0 and value >= 3.0:
+                                        self.place_market_sell(symbol, Decimal(str(balance)))
+                                    elif balance > 0:
+                                        print(f"Skipping sell for {symbol}: Order value {value:.2f} USDT is below minimum (3 USDT)", flush=True)
                                 time.sleep(0.2)
                             except Exception as e:
                                 print(f"Error analyzing {pair.id}: {e}", flush=True)
