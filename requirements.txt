@@ -4,3 +4,4 @@ requests
 python-binance
 scipy
 gate-api
+load_dotenv
