@@ -7,7 +7,7 @@ import numpy as np
 from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 
-class GateIORSIScanner:
+class GateIOBreakoutScanner:
     def __init__(self):
         load_dotenv()
         self.api_key = self._get_env_variable('GATEIO_API_KEY')
@@ -17,8 +17,8 @@ class GateIORSIScanner:
         self.leverage = 5
         self.order_amount = 20  # USD
         
-        # RSI parameters
-        self.rsi_period = 14
+        # Breakout parameters
+        self.lookback_period = 20  # จำนวนแท่งเทียนย้อนหลังที่ใช้หาแนวต้านแนวรับ
 
     def _get_env_variable(self, var_name: str) -> str:
         value = os.getenv(var_name)
@@ -94,48 +94,31 @@ class GateIORSIScanner:
             print(f"ไม่สามารถดึงข้อมูล candlesticks สำหรับ {contract}: {str(e)}", flush=True)
             return pd.DataFrame()
 
-    def calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
-        """คำนวณ RSI ตาม TradingView"""
+    def calculate_breakout_levels(self, df: pd.DataFrame) -> pd.DataFrame:
+        """คำนวณแนวต้านและแนวรับ"""
         try:
-            # คำนวณการเปลี่ยนแปลงของราคา
-            change = df['close'].diff()
-            
-            # ใช้ RMA แทน SMA สำหรับการคำนวณ
-            up = pd.Series(0.0, index=df.index)
-            down = pd.Series(0.0, index=df.index)
-            
-            # First value initialization
-            first_change = change.dropna().iloc[0]
-            up.iloc[self.rsi_period] = max(first_change, 0)
-            down.iloc[self.rsi_period] = max(-first_change, 0)
-            
-            # Calculate subsequent values
-            for i in range(self.rsi_period + 1, len(df)):
-                up.iloc[i] = (up.iloc[i-1] * (self.rsi_period - 1) + max(change.iloc[i], 0)) / self.rsi_period
-                down.iloc[i] = (down.iloc[i-1] * (self.rsi_period - 1) + max(-change.iloc[i], 0)) / self.rsi_period
-            
-            # คำนวณ RSI
-            df['RSI'] = np.where(down == 0, 100, 
-                               np.where(up == 0, 0, 
-                                      100 - (100 / (1 + up / down))))
+            # คำนวณแนวต้านและแนวรับจากข้อมูลย้อนหลัง
+            df['resistance'] = df['high'].rolling(window=self.lookback_period).max()
+            df['support'] = df['low'].rolling(window=self.lookback_period).min()
             
             return df
         except Exception as e:
-            print(f"ไม่สามารถคำนวณ RSI: {str(e)}", flush=True)
+            print(f"ไม่สามารถคำนวณแนวต้านแนวรับ: {str(e)}", flush=True)
             return df
 
-    def check_rsi_signal(self, current: pd.Series, previous: pd.Series) -> str:
-        """ตรวจสอบสัญญาณจาก RSI"""
+    def check_breakout_signal(self, current: pd.Series, previous: pd.Series) -> str:
+        """ตรวจสอบสัญญาณ Breakout"""
         try:
-            # ตรวจสอบสัญญาณ RSI
-            if current['RSI'] > 75:
-                return "LONG"  
-            elif current['RSI'] < 25:
-                return "SHORT"   
+            # ตรวจสอบ Breakout ขึ้น
+            if current['close'] > previous['resistance']:
+                return "LONG"
+            # ตรวจสอบ Breakout ลง    
+            elif current['close'] < previous['support']:
+                return "SHORT"
             return None
             
         except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการตรวจสอบ RSI: {str(e)}", flush=True)
+            print(f"เกิดข้อผิดพลาดในการตรวจสอบ Breakout: {str(e)}", flush=True)
             return None
 
     def set_leverage(self, contract: str) -> bool:
@@ -264,7 +247,7 @@ class GateIORSIScanner:
             return False
 
     def scan_market(self):
-        """สแกนตลาดและตรวจสอบสัญญาณ RSI"""
+        """สแกนตลาดและตรวจสอบสัญญาณ Breakout"""
         first_run = True
         try:
             while True:
@@ -283,20 +266,20 @@ class GateIORSIScanner:
                     for contract in contracts:
                         df = self.get_candlesticks(contract)
                         if not df.empty:
-                            df = self.calculate_rsi(df)
+                            df = self.calculate_breakout_levels(df)
                             current = df.iloc[-1]
                             previous = df.iloc[-2]
                             
-                            # ตรวจสอบสัญญาณจาก RSI
-                            signal = self.check_rsi_signal(current, previous)
+                            # ตรวจสอบสัญญาณ Breakout
+                            signal = self.check_breakout_signal(current, previous)
                             status = ""
                             
                             if signal == "LONG":
-                                status = f"🟢 LONG SIGNAL (RSI: {current['RSI']:.2f})"
+                                status = f"🟢 BREAKOUT UP (Resistance: {previous['resistance']:.2f})"
                             elif signal == "SHORT":
-                                status = f"🔴 SHORT SIGNAL (RSI: {current['RSI']:.2f})"
+                                status = f"🔴 BREAKOUT DOWN (Support: {previous['support']:.2f})"
                                 
-                            print(f"{contract:12} | Price: {current['close']:10.4f} | RSI: {current['RSI']:8.2f} | {status}", flush=True)
+                            print(f"{contract:12} | Price: {current['close']:10.4f} | R: {current['resistance']:8.2f} | S: {current['support']:8.2f} | {status}", flush=True)
                             
                             if signal:
                                 # ตรวจสอบ Position ปัจจุบัน
@@ -325,7 +308,7 @@ class GateIORSIScanner:
 
 def main():
     try:
-        scanner = GateIORSIScanner()
+        scanner = GateIOBreakoutScanner()
         print("เริ่มสแกนตลาด Futures...", flush=True)
         scanner.scan_market()
     except Exception as e:
