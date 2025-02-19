@@ -47,7 +47,7 @@ class GateIOBreakoutScanner:
                     volume = float(json_data['volume_24h'])
                     last_price = float(json_data['last'])
                     volume_usd = volume * last_price
-                    if volume_usd > 100000:
+                    if volume_usd > 75000:
                         valid_contracts.append(contract.contract)
             return valid_contracts
         except Exception as e:
@@ -106,15 +106,99 @@ class GateIOBreakoutScanner:
             print(f"ไม่สามารถคำนวณแนวต้านแนวรับ: {str(e)}", flush=True)
             return df
 
-    def check_breakout_signal(self, current: pd.Series, previous: pd.Series) -> str:
-        """ตรวจสอบสัญญาณ Breakout"""
+    def calculate_linear_regression(self, df: pd.DataFrame, length: int = 100) -> tuple:
+        """คำนวณ Linear Regression Channel
+        
+        Returns:
+            tuple: (slope, deviation) โดย slope > 0 คือแนวโน้มขึ้น, slope < 0 คือแนวโน้มลง
+        """
+        try:
+            # ใช้ข้อมูล close price length แท่งล่าสุด
+            prices = df['close'].tail(length).values
+            x = np.arange(len(prices))
+            
+            # คำนวณ Linear Regression
+            slope, intercept = np.polyfit(x, prices, 1)
+            
+            # คำนวณ Standard Deviation
+            reg_line = slope * x + intercept
+            deviation = np.std(prices - reg_line)
+            
+            return slope, deviation
+            
+        except Exception as e:
+            print(f"ไม่สามารถคำนวณ Linear Regression: {str(e)}", flush=True)
+            return 0, 0
+
+    def get_hourly_candlesticks(self, contract: str) -> pd.DataFrame:
+        """ดึงข้อมูล candlesticks ราย 15 นาที"""
+        try:
+            candles = self.futures_api.list_futures_candlesticks(
+                settle='usdt',
+                contract=contract,
+                interval='15m', 
+                limit=500
+            )
+            
+            if not candles:
+                return pd.DataFrame()
+
+            data = []
+            for candle in candles:
+                try:
+                    row = {
+                        'timestamp': float(candle.t),
+                        'open': float(candle.o),
+                        'high': float(candle.h),
+                        'low': float(candle.l),
+                        'close': float(candle.c),
+                        'volume': float(candle.v)
+                    }
+                    data.append(row)
+                except (AttributeError, ValueError, TypeError) as e:
+                    continue
+            
+            df = pd.DataFrame(data)
+            
+            if df.empty:
+                return df
+                
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            return df.sort_values('timestamp')
+            
+        except Exception as e:
+            print(f"ไม่สามารถดึงข้อมูล candlesticks ราย 15 นาทีสำหรับ {contract}: {str(e)}", flush=True)
+            return pd.DataFrame()
+
+    def check_breakout_signal(self, current: pd.Series, previous: pd.Series, contract: str) -> str:
+        """ตรวจสอบสัญญาณ Breakout พร้อมกับ Linear Regression Channel"""
         try:
             # ตรวจสอบ Breakout ขึ้น
             if current['close'] > previous['resistance']:
-                return "LONG"
+                # ดึงข้อมูลราย 15 นาทีเพื่อคำนวณ Linear Regression
+                hourly_df = self.get_hourly_candlesticks(contract)
+                if hourly_df.empty:
+                    return None
+                    
+                # คำนวณ Linear Regression จากข้อมูล
+                slope, deviation = self.calculate_linear_regression(hourly_df)
+                
+                # เปิด SHORT เมื่อ slope < 0 (แนวโน้มลง)
+                return "SHORT" if slope < 0 else None
+                
             # ตรวจสอบ Breakout ลง    
             elif current['close'] < previous['support']:
-                return "SHORT"
+                # ดึงข้อมูลราย 15 นาทีเพื่อคำนวณ Linear Regression
+                hourly_df = self.get_hourly_candlesticks(contract)
+                if hourly_df.empty:
+                    return None
+                    
+                # คำนวณ Linear Regression จากข้อมูล
+                slope, deviation = self.calculate_linear_regression(hourly_df)
+                
+                # เปิด LONG เมื่อ slope > 0 (แนวโน้มขึ้น)
+                return "LONG" if slope > 0 else None
+                
             return None
             
         except Exception as e:
@@ -254,10 +338,6 @@ class GateIOBreakoutScanner:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
                 if current_time.minute % 15 == 0 or first_run:
                     first_run = False
-                    # stop loss และ take profit
-                    print("-" * 80, flush=True)
-                    self.take_profit_or_stop_loss()
-                    print("-" * 80, flush=True)
                     # ดึงรายชื่อคู่เทรดเมื่อรันครั้งแรก 
                     print("\nกำลังดึงรายชื่อคู่เทรด...", flush=True)
                     contracts = self.get_futures_contracts()
@@ -271,7 +351,7 @@ class GateIOBreakoutScanner:
                             previous = df.iloc[-2]
                             
                             # ตรวจสอบสัญญาณ Breakout
-                            signal = self.check_breakout_signal(current, previous)
+                            signal = self.check_breakout_signal(current, previous, contract)
                             status = ""
                             
                             if signal == "LONG":
@@ -295,7 +375,12 @@ class GateIOBreakoutScanner:
                                         is_long=(signal == "LONG")
                                     )
                                     time.sleep(1) # รอให้ระบบประมวลผลการเปิด Position
-                    time.sleep(120)  # รอ 2 นาทีก่อนที่จะดึงข้อมูลใหม่            
+                    time.sleep(60)  # รอ 1 นาที
+                    # stop loss และ take profit
+                    print("-" * 80, flush=True)
+                    self.take_profit_or_stop_loss()
+                    print("-" * 80, flush=True)
+                    time.sleep(120)  # รอ 2 นาที
 
                 time.sleep(10)  # รอ 10 วินาทีก่อนที่จะดึงข้อมูลใหม่
 
