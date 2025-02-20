@@ -131,12 +131,12 @@ class GateIOBreakoutScanner:
             return 0, 0
 
     def get_hourly_candlesticks(self, contract: str) -> pd.DataFrame:
-        """ดึงข้อมูล candlesticks ราย 15 นาที"""
+        """ดึงข้อมูล candlesticks ราย 1 ชั่วโมง"""
         try:
             candles = self.futures_api.list_futures_candlesticks(
                 settle='usdt',
                 contract=contract,
-                interval='15m', 
+                interval='1h', 
                 limit=500
             )
             
@@ -183,7 +183,7 @@ class GateIOBreakoutScanner:
                 # คำนวณ Linear Regression จากข้อมูล
                 slope, deviation = self.calculate_linear_regression(hourly_df)
                 
-                # เปิด LONG เมื่อ slope < 0 (แนวโน้มลง)
+                # เปิด SHORT เมื่อ slope < 0 (แนวโน้มลง)
                 return "SHORT" if slope < 0 else None
                 
             # ตรวจสอบ Breakout ลง    
