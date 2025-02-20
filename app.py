@@ -183,7 +183,7 @@ class GateIOBreakoutScanner:
                 # คำนวณ Linear Regression จากข้อมูล
                 slope, deviation = self.calculate_linear_regression(hourly_df)
                 
-                # เปิด SHORT เมื่อ slope < 0 (แนวโน้มลง)
+                # เปิด LONG เมื่อ slope < 0 (แนวโน้มลง)
                 return "SHORT" if slope < 0 else None
                 
             # ตรวจสอบ Breakout ลง    
@@ -196,9 +196,8 @@ class GateIOBreakoutScanner:
                 # คำนวณ Linear Regression จากข้อมูล
                 slope, deviation = self.calculate_linear_regression(hourly_df)
                 
-                # เปิด LONG เมื่อ slope > 0 (แนวโน้มขึ้น)
+                # เปิด SHORT เมื่อ slope > 0 (แนวโน้มขึ้น)
                 return "LONG" if slope > 0 else None
-                
             return None
             
         except Exception as e:
