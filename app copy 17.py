@@ -19,11 +19,6 @@ class GateIOBreakoutScanner:
         
         # Breakout parameters
         self.lookback_period = 20  # จำนวนแท่งเทียนย้อนหลังที่ใช้หาแนวต้านแนวรับ
-        # Initialize OB/MB state tracking
-        self.bu_ob_triggered = False
-        self.be_ob_triggered = False
-        self.bu_mb_triggered = False
-        self.be_mb_triggered = False
 
     def _get_env_variable(self, var_name: str) -> str:
         value = os.getenv(var_name)
@@ -102,21 +97,35 @@ class GateIOBreakoutScanner:
     def calculate_breakout_levels(self, df: pd.DataFrame) -> pd.DataFrame:
         """คำนวณแนวต้านและแนวรับ"""
         try:
+            # คำนวณแนวต้านและแนวรับจากข้อมูลย้อนหลัง
             df['resistance'] = df['high'].rolling(window=self.lookback_period).max()
             df['support'] = df['low'].rolling(window=self.lookback_period).min()
+            
             return df
         except Exception as e:
             print(f"ไม่สามารถคำนวณแนวต้านแนวรับ: {str(e)}", flush=True)
             return df
 
     def calculate_linear_regression(self, df: pd.DataFrame, length: int = 100) -> tuple:
-        """คำนวณ Linear Regression Channel"""
+        """คำนวณ Linear Regression Channel
+        
+        Returns:
+            tuple: (slope, deviation) โดย slope > 0 คือแนวโน้มขึ้น, slope < 0 คือแนวโน้มลง
+        """
         try:
+            # ใช้ข้อมูล close price length แท่งล่าสุด
             prices = df['close'].tail(length).values
             x = np.arange(len(prices))
+            
+            # คำนวณ Linear Regression
             slope, intercept = np.polyfit(x, prices, 1)
-            deviation = np.std(prices - (slope * x + intercept))
+            
+            # คำนวณ Standard Deviation
+            reg_line = slope * x + intercept
+            deviation = np.std(prices - reg_line)
+            
             return slope, deviation
+            
         except Exception as e:
             print(f"ไม่สามารถคำนวณ Linear Regression: {str(e)}", flush=True)
             return 0, 0
@@ -158,55 +167,37 @@ class GateIOBreakoutScanner:
             return df.sort_values('timestamp')
             
         except Exception as e:
-            print(f"ไม่สามารถดึงข้อมูล candlesticks ราย 1 ชั่วโมงสำหรับ {contract}: {str(e)}", flush=True)
+            print(f"ไม่สามารถดึงข้อมูล candlesticks ราย 15 นาทีสำหรับ {contract}: {str(e)}", flush=True)
             return pd.DataFrame()
 
     def check_breakout_signal(self, current: pd.Series, previous: pd.Series, contract: str) -> str:
-        """ตรวจสอบสัญญาณ Breakout พร้อม Market Structure และ Order Blocks"""
+        """ตรวจสอบสัญญาณ Breakout พร้อมกับ Linear Regression Channel"""
         try:
-            # ดึงข้อมูลรายชั่วโมงเพื่อวิเคราะห์โครงสร้างตลาด
-            hourly_df = self.get_hourly_candlesticks(contract)
-            if hourly_df.empty:
-                return None
-
-            # คำนวณ Linear Regression
-            slope, deviation = self.calculate_linear_regression(hourly_df)
-            
-            # คำนวณ ZigZag และ Market Structure (Simplified)
-            zigzag_len = 9
-            df_high = hourly_df['high'].rolling(window=zigzag_len).max()
-            df_low = hourly_df['low'].rolling(window=zigzag_len).min()
-            
-            current_high = hourly_df['high'].iloc[-1]
-            current_low = hourly_df['low'].iloc[-1]
-            current_close = hourly_df['close'].iloc[-1]
-            prev_resistance = df_high.iloc[-2]
-            prev_support = df_low.iloc[-2]
-            
-            # Check for Bullish Order Block (BU-OB) - Price entering from below
-            if current_close > prev_resistance and not self.bu_ob_triggered:
-                prev_candle = hourly_df.iloc[-2]
-                if prev_candle['open'] > prev_candle['close']:  # Bearish candle before breakout
-                    self.bu_ob_triggered = True
-                    return "LONG"
-            
-            # Check for Bearish Order Block (BE-OB) - Price entering from above
-            if current_close < prev_support and not self.be_ob_triggered:
-                prev_candle = hourly_df.iloc[-2]
-                if prev_candle['open'] < prev_candle['close']:  # Bullish candle before breakdown
-                    self.be_ob_triggered = True
-                    return "SHORT"
-
-            # Check for Bullish Market Break (BU-MB) - Strong upward movement
-            if current_close > prev_resistance and slope > 0 and not self.bu_mb_triggered:
-                self.bu_mb_triggered = True
-                return "LONG"
+            # ตรวจสอบ Breakout ขึ้น
+            if current['close'] > previous['resistance']:
+                # ดึงข้อมูลราย 15 นาทีเพื่อคำนวณ Linear Regression
+                hourly_df = self.get_hourly_candlesticks(contract)
+                if hourly_df.empty:
+                    return None
+                    
+                # คำนวณ Linear Regression จากข้อมูล
+                slope, deviation = self.calculate_linear_regression(hourly_df)
                 
-            # Check for Bearish Market Break (BE-MB) - Strong downward movement
-            if current_close < prev_support and slope < 0 and not self.be_mb_triggered:
-                self.be_mb_triggered = True
-                return "SHORT"
-
+                # เปิด SHORT เมื่อ slope < 0 (แนวโน้มลง)
+                return "SHORT" if slope < 0 else None
+                
+            # ตรวจสอบ Breakout ลง    
+            elif current['close'] < previous['support']:
+                # ดึงข้อมูลราย 15 นาทีเพื่อคำนวณ Linear Regression
+                hourly_df = self.get_hourly_candlesticks(contract)
+                if hourly_df.empty:
+                    return None
+                    
+                # คำนวณ Linear Regression จากข้อมูล
+                slope, deviation = self.calculate_linear_regression(hourly_df)
+                
+                # เปิด SHORT เมื่อ slope > 0 (แนวโน้มขึ้น)
+                return "LONG" if slope > 0 else None
             return None
             
         except Exception as e:
@@ -253,35 +244,30 @@ class GateIOBreakoutScanner:
         """ปิด Position ที่มีอยู่"""
         try:
             if current_position:
-                current_size = float(current_position['size'])
+                current_size = float(current_position['size']) # ขนาด Position ที่มีอยู่
                 print(f"ปิด Position ของ {contract} (ขนาด: {current_size})", flush=True)
                 
                 if current_size > 0:
                     self.futures_api.create_futures_order('usdt', 
                         {
                             'contract': contract,
-                            'size': -current_size,
-                            'price': 0,
+                            'size': -current_size,  # ปิด Position ที่เป็น Long
+                            'price': 0,  # Market order
                             'tif': 'ioc',
-                            'reduce_only': True
+                            'reduce_only': True  # เป็นการปิด Position
                         }
                     )
                 else:
                     self.futures_api.create_futures_order('usdt', 
                         {
                             'contract': contract,
-                            'size': -current_size,
-                            'price': 0,
+                            'size': -current_size,  # ปิด Position ที่เป็น Short
+                            'price': 0,  # Market order
                             'tif': 'ioc',
-                            'reduce_only': True
+                            'reduce_only': True  # เป็นการปิด Position
                         }
                     )
                 print(f"ปิด Position ของ {contract} (ขนาด: {abs(current_size)}) สำเร็จ", flush=True)
-                # Reset OB/MB triggers when closing position
-                self.bu_ob_triggered = False
-                self.be_ob_triggered = False
-                self.bu_mb_triggered = False
-                self.be_mb_triggered = False
                 return True
                 
             return False
@@ -310,13 +296,14 @@ class GateIOBreakoutScanner:
             contract_size = usd_value / (price * contract_multiplier)
             contract_size = max(min_order_size, round(contract_size))
             
+            # สร้าง Order (ใช้เครื่องหมาย +/- ตามทิศทาง)
             entry_result = self.futures_api.create_futures_order('usdt', 
                 {
                     'contract': contract,
                     'size': contract_size if is_long else -contract_size,
-                    'price': 0,
+                    'price': 0,  # Market order
                     'tif': 'ioc',
-                    'reduce_only': False
+                    'reduce_only': False  # เป็นการเปิด Position ใหม่
                 }
             )
             
@@ -350,6 +337,7 @@ class GateIOBreakoutScanner:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
                 if current_time.minute % 15 == 0 or first_run:
                     first_run = False
+                    # ดึงรายชื่อคู่เทรดเมื่อรันครั้งแรก 
                     print("\nกำลังดึงรายชื่อคู่เทรด...", flush=True)
                     contracts = self.get_futures_contracts()
                     print(f"พบ {len(contracts)} คู่เทรด", flush=True)
@@ -361,34 +349,39 @@ class GateIOBreakoutScanner:
                             current = df.iloc[-1]
                             previous = df.iloc[-2]
                             
+                            # ตรวจสอบสัญญาณ Breakout
                             signal = self.check_breakout_signal(current, previous, contract)
                             status = ""
                             
                             if signal == "LONG":
-                                status = f"🟢 BU-OB/BU-MB DETECTED (R: {previous['resistance']:.2f})"
+                                status = f"🟢 BREAKOUT UP (Resistance: {previous['resistance']:.2f})"
                             elif signal == "SHORT":
-                                status = f"🔴 BE-OB/BE-MB DETECTED (S: {previous['support']:.2f})"
+                                status = f"🔴 BREAKOUT DOWN (Support: {previous['support']:.2f})"
                                 
                             print(f"{contract:12} | Price: {current['close']:10.4f} | R: {current['resistance']:8.2f} | S: {current['support']:8.2f} | {status}", flush=True)
                             
                             if signal:
+                                # ตรวจสอบ Position ปัจจุบัน
                                 current_position = self.check_existing_position(contract)
                                 
+                                # ถ้ามี Position อยู่ ให้ปิดก่อน
                                 if current_position is None:
+                                    # เปิด Position ใหม่ตามสัญญาณ
                                     print(f"ไม่มี Position ใน {contract} ให้เปิดใหม่", flush=True)
                                     self.create_order(
                                         contract=contract,
                                         size=self.order_amount,
                                         is_long=(signal == "LONG")
                                     )
-                                    time.sleep(1)
-                    time.sleep(60)
+                                    time.sleep(1) # รอให้ระบบประมวลผลการเปิด Position
+                    time.sleep(60)  # รอ 1 นาที
+                    # stop loss และ take profit
                     print("-" * 80, flush=True)
                     self.take_profit_or_stop_loss()
                     print("-" * 80, flush=True)
-                    time.sleep(120)
+                    time.sleep(120)  # รอ 2 นาที
 
-                time.sleep(10)
+                time.sleep(10)  # รอ 10 วินาทีก่อนที่จะดึงข้อมูลใหม่
 
         except KeyboardInterrupt:
             print("\nหยุดการสแกนตลาด", flush=True)
