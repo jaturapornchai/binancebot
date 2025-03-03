@@ -21,10 +21,11 @@ class GateIOLRC15mScanner:
             host="https://api.gateio.ws/api/v4"
         ))
         self.futures_api = FuturesApi(self.client)
-        self.leverage = 5
+        self.leverage = 3
         self.order_amount = 40
         self.lrc_length = 100  # Length for Linear Regression Channel
         self.dev_multiplier = 2.0  # Deviation multiplier
+        self.settle = 'usdt'
 
     def get_futures_contracts(self) -> list:
         try:
@@ -148,25 +149,27 @@ class GateIOLRC15mScanner:
            
         return None
 
-    def check_close_position(self, df: pd.DataFrame, position_type: str, current_price: float) -> bool:
+    def check_close_position(self, df: pd.DataFrame, position_type: str, current_price: float,position: dict) -> bool:
         if df.empty:
             return False
             
         latest = df.iloc[-1]
         # Get 5-minute timeframe data for RSI
-        df_5m = self.get_candlesticks_5m(df['contract'].iloc[0] if 'contract' in df.columns else "")
-        if not df_5m.empty:
-            df_5m = self.calculate_rsi(df_5m)
+        unrealised_pnl = float(position['unrealised_pnl'])
+        if unrealised_pnl > 1:
+            df_5m = self.get_candlesticks_5m(df['contract'].iloc[0] if 'contract' in df.columns else "")
             if not df_5m.empty:
-                latest_rsi = df_5m['rsi'].iloc[-1]
-                
-                # RSI conditions
-                if position_type == "SHORT" and latest_rsi < 25:
-                    print(f"Closing SHORT position due to RSI {latest_rsi} < 25")
-                    return True
-                if position_type == "LONG" and latest_rsi > 75:
-                    print(f"Closing LONG position due to RSI {latest_rsi} > 75")
-                    return True
+                df_5m = self.calculate_rsi(df_5m)
+                if not df_5m.empty:
+                    latest_rsi = df_5m['rsi'].iloc[-1]
+                    
+                    # RSI conditions
+                    if position_type == "SHORT" and latest_rsi < 25:
+                        print(f"Closing SHORT position due to RSI {latest_rsi} < 25")
+                        return True
+                    if position_type == "LONG" and latest_rsi > 75:
+                        print(f"Closing LONG position due to RSI {latest_rsi} > 75")
+                        return True
         
         # Existing LRC conditions
         if position_type == "LONG" and current_price < latest['lrc_mid']:
@@ -277,7 +280,7 @@ class GateIOLRC15mScanner:
                     
                     if current_price:
                         pos_type = "LONG" if float(pos['size']) > 0 else "SHORT"
-                        if self.check_close_position(df, pos_type, current_price):
+                        if self.check_close_position(df, pos_type, current_price, pos):
                             self.close_position(contract, pos)
                         else:
                             df_5m = self.get_candlesticks_5m(contract)
@@ -288,43 +291,37 @@ class GateIOLRC15mScanner:
                                   f"RSI(5m): {rsi if rsi is not None else 'N/A'}")
         except Exception as e:
             print(f"Error scanning positions: {str(e)}")
-
+                                  
     def get_futures_balance(self) -> dict:
+        """Fetch futures account balance (asset details)."""
         try:
-            accounts = self.futures_api.list_futures_accounts(settle='usdt')
-            if not accounts or len(accounts) == 0:
+            account = self.futures_api.list_futures_accounts(settle=self.settle)
+            if not account:
                 raise ValueError("No futures account found")
-            
-            account_json = self.client.sanitize_for_serialization(accounts[0])
-            
-            if not isinstance(account_json, dict):
-                account_json = {}
-            
             balance_info = {
-                'total': float(account_json.get('total', 0)),
-                'available': float(account_json.get('available', 0)),
-                'unrealized_pnl': float(account_json.get('unrealised_pnl', 0)),
-                'currency': account_json.get('currency', 'usdt'),
-                'update_time': datetime.fromtimestamp(
-                    float(account_json.get('update_time', time.time())),
-                    timezone.utc
-                ).strftime('%Y-%m-%d %H:%M:%S UTC')
+                'total': float(account.total or 0),           # Total balance (including unrealized PNL)
+                'available': float(account.available or 0),   # Available balance for trading
+                'unrealized_pnl': float(account.unrealised_pnl or 0),  # Unrealized profit/loss
+                'currency': account.currency or self.settle,  # Currency (e.g., USDT)
             }
-            
             return balance_info
-        
         except Exception as e:
             print(f"Error fetching futures balance: {str(e)}")
             return None
-                                    
+        
     def scan_market(self):
         first_run = True
         while True:
             try:
                 now = datetime.now(timezone.utc)
-                if now.minute in [0, 15, 30, 45] or first_run:                    
+                if now.minute % 15 == 0 or first_run:                    
                     first_run = False
                     balance_info = self.get_futures_balance()
+                    print(f"Balance: {balance_info['total']} {balance_info['currency']} | "
+                          f"Available: {balance_info['available']} {balance_info['currency']} | "
+                          f"Unrealized PNL: {balance_info['unrealized_pnl']} {balance_info['currency']}")
+                    self.order_amount = balance_info['total'] / 50
+                    print(f"Order amount: {self.order_amount}")
                     
                     contracts = self.get_futures_contracts()
                    
@@ -347,8 +344,13 @@ class GateIOLRC15mScanner:
                                   f"Mid: {latest['lrc_mid']} | "
                                   f"Signal: {signal or 'None'}")
                     time.sleep(60)
-               
-                self.scan_positions()
+                else:
+                    if now.minute % 15 == 0:
+                        first_run = True
+
+                    if now.minute % 2 == 0:
+                        self.scan_positions()
+
                 time.sleep(10)
                
             except Exception as e:
