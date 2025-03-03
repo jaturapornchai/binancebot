@@ -345,10 +345,10 @@ class GateIOLRC15mScanner:
                                   f"Signal: {signal or 'None'}")
                     time.sleep(60)
                 else:
-                    if now.minute % 15 == 0:
-                        first_run = True
-
-                    if now.minute % 2 == 0:
+                    if now.minute % 5 == 0:
+                        if now.minute % 15 == 0:
+                            first_run = True
+                            
                         self.scan_positions()
 
                 time.sleep(10)
