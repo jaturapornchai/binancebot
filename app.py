@@ -1,269 +1,364 @@
 import os
 import time
 import re
-from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
-class GateIOBreakoutScanner:
+from datetime import datetime, timezone
+
+class GateIOLRC15mScanner:
     def __init__(self):
         load_dotenv()
-        self.api_key = self._get_env_variable('GATEIO_API_KEY')
-        self.secret_key = self._get_env_variable('GATEIO_SECRET_KEY')
-        self.client = self._initialize_client()
+        self.api_key = os.getenv('GATEIO_API_KEY')
+        self.secret_key = os.getenv('GATEIO_SECRET_KEY')
+        if not self.api_key or not self.secret_key:
+            raise ValueError("Please set GATEIO_API_KEY and GATEIO_SECRET_KEY in .env file")
+       
+        self.client = ApiClient(Configuration(
+            key=self.api_key,
+            secret=self.secret_key,
+            host="https://api.gateio.ws/api/v4"
+        ))
         self.futures_api = FuturesApi(self.client)
         self.leverage = 5
-        self.order_amount = 20  # USD
-        self.lookback_period = 20  # จำนวนแท่งเทียนย้อนหลังที่ใช้หาแนวต้านแนวรับ
-    def _get_env_variable(self, var_name: str) -> str:
-        value = os.getenv(var_name)
-        if not value:
-            raise ValueError(f"กรุณากำหนดค่า {var_name} ใน .env file")
-        return value
-    def _initialize_client(self) -> ApiClient:
-        config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4")            
-        return ApiClient(config)
-    def get_futures_contracts(self) -> List[str]:
+        self.order_amount = 40
+        self.lrc_length = 100  # Length for Linear Regression Channel
+        self.dev_multiplier = 2.0  # Deviation multiplier
+
+    def get_futures_contracts(self) -> list:
         try:
-            ticket = self.futures_api.list_futures_tickers(settle='usdt')
+            tickers = self.futures_api.list_futures_tickers(settle='usdt')
             valid_contracts = []
             pattern = re.compile(r'^\D+_USDT$')
-            for contract in ticket:
-                if pattern.match(contract.contract):
-                    json_data = contract.to_dict()
-                    volume = float(json_data['volume_24h'])
-                    last_price = float(json_data['last'])
-                    volume_usd = volume * last_price
-                    if volume_usd > 75000:
-                        valid_contracts.append(contract.contract)
+            ignore_contracts = ['DOGS_USDT', 'USDC_USDT', 'HEI_USDT']
+           
+            for ticker in tickers:
+                contract = ticker.contract
+                if (pattern.match(contract) and
+                    contract not in ignore_contracts and
+                    float(ticker.volume_24h) * float(ticker.last) > 1000000):
+                    valid_contracts.append(contract)
             return valid_contracts
         except Exception as e:
-            print(f"ไม่สามารถดึงรายชื่อคู่เทรดได้: {str(e)}", flush=True)
+            print(f"Error fetching contracts: {str(e)}")
             return []
-    def get_candlesticks(self, contract: str) -> pd.DataFrame:
+
+    def get_candlesticks(self, contract: str, limit: int = 100) -> pd.DataFrame:
         try:
-            candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
+            candles = self.futures_api.list_futures_candlesticks(
+                settle='usdt',
+                contract=contract,
+                interval='15m',
+                limit=limit
+            )
             if not candles:
                 return pd.DataFrame()
-            data = []
-            for candle in candles:
-                try:
-                    row = {
-                        'timestamp': float(candle.t),
-                        'open': float(candle.o),
-                        'high': float(candle.h),
-                        'low': float(candle.l),
-                        'close': float(candle.c),
-                        'volume': float(candle.v)
-                    }
-                    data.append(row)
-                except (AttributeError, ValueError, TypeError) as e:
-                    continue
-            df = pd.DataFrame(data)
-            if df.empty:
-                return df
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+               
+            df = pd.DataFrame([{
+                'timestamp': float(c.t),
+                'open': float(c.o),
+                'high': float(c.h),
+                'low': float(c.l),
+                'close': float(c.c),
+                'volume': float(c.v)
+            } for c in candles])
+           
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
             return df.sort_values('timestamp')
         except Exception as e:
-            print(f"ไม่สามารถดึงข้อมูล candlesticks สำหรับ {contract}: {str(e)}", flush=True)
+            print(f"Error fetching candlesticks for {contract}: {str(e)}")
             return pd.DataFrame()
-    def get_hourly_candlesticks(self, contract: str) -> pd.DataFrame:
+
+    def get_candlesticks_5m(self, contract: str, limit: int = 100) -> pd.DataFrame:
         try:
-            candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='1h', limit=500)
+            candles = self.futures_api.list_futures_candlesticks(
+                settle='usdt',
+                contract=contract,
+                interval='5m',
+                limit=limit
+            )
             if not candles:
                 return pd.DataFrame()
-            data = []
-            for candle in candles:
-                try:
-                    row = {
-                        'timestamp': float(candle.t),
-                        'open': float(candle.o),
-                        'high': float(candle.h),
-                        'low': float(candle.l),
-                        'close': float(candle.c),
-                        'volume': float(candle.v)
-                    }
-                    data.append(row)
-                except (AttributeError, ValueError, TypeError) as e:
-                    continue
-            df = pd.DataFrame(data)
-            if df.empty:
-                return df
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+                
+            df = pd.DataFrame([{
+                'timestamp': float(c.t),
+                'open': float(c.o),
+                'high': float(c.h),
+                'low': float(c.l),
+                'close': float(c.c),
+                'volume': float(c.v)
+            } for c in candles])
+            
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
             return df.sort_values('timestamp')
         except Exception as e:
-            print(f"ไม่สามารถดึงข้อมูล candlesticks รายชั่วโมงสำหรับ {contract}: {str(e)}", flush=True)
+            print(f"Error fetching 5m candlesticks for {contract}: {str(e)}")
             return pd.DataFrame()
-    def calculate_breakout_levels(self, df: pd.DataFrame) -> pd.DataFrame:
-        try:
-            df['resistance'] = df['high'].rolling(window=self.lookback_period).max()
-            df['support'] = df['low'].rolling(window=self.lookback_period).min()
+
+    def calculate_lrc(self, df: pd.DataFrame) -> pd.DataFrame:
+        if len(df) < self.lrc_length:
             return df
-        except Exception as e:
-            print(f"ไม่สามารถคำนวณแนวต้านแนวรับ: {str(e)}", flush=True)
-            return df
-    def check_breakout_signal(self, current: pd.Series, previous: pd.Series, contract: str) -> Tuple[Optional[str], Optional[str]]:
-        try:
-            hourly_df = self.get_hourly_candlesticks(contract)
-            if hourly_df.empty:
-                return None, None
-            if current['close'] > previous['resistance']:
-                if current['open'] > current['close']:  # แท่งสีแดง = BU-OB
-                    return "LONG", "BU-OB"
-                else:  # แท่งสีเขียว = BU-BB
-                    return "LONG", "BU-BB"
-            elif current['close'] < previous['support']:
-                if current['open'] < current['close']:  # แท่งสีเขียว = BE-OB
-                    return "SHORT", "BE-OB"
-                else:  # แท่งสีแดง = BE-BB
-                    return "SHORT", "BE-BB"
-            return None, None
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการตรวจสอบสัญญาณ: {str(e)}", flush=True)
-            return None, None
+           
+        prices = df['close'].values
+        x = np.arange(len(prices))
+       
+        # Linear regression calculation
+        A = np.vstack([x, np.ones(len(x))]).T
+        slope, intercept = np.linalg.lstsq(A, prices, rcond=None)[0]
+       
+        # Calculate channel boundaries
+        mid_line = intercept + slope * x
+        deviations = prices - mid_line
+        std_dev = np.std(deviations) * self.dev_multiplier
+       
+        df['lrc_upper'] = mid_line + std_dev
+        df['lrc_lower'] = mid_line - std_dev
+        df['lrc_mid'] = mid_line  # Mid-line added explicitly
+       
+        return df.tail(1)  # Return only the latest values
+
+    def calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+        if len(df) < period:
+            return pd.DataFrame()
+            
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+        
+        return df.tail(1)  # Return only the latest value
+
+    def check_trading_signal(self, df: pd.DataFrame, current_price: float) -> str:
+        if df.empty:
+            return None
+           
+        latest = df.iloc[-1]
+        # LONG signal: latest candle crosses upper band and current price is above upper band
+        if (latest['high'] >= latest['lrc_upper'] and
+            current_price > latest['lrc_upper']):
+            return "LONG"
+           
+        # SHORT signal: latest candle crosses lower band and current price is below lower band
+        if (latest['low'] <= latest['lrc_lower'] and
+            current_price < latest['lrc_lower']):
+            return "SHORT"
+           
+        return None
+
+    def check_close_position(self, df: pd.DataFrame, position_type: str, current_price: float) -> bool:
+        if df.empty:
+            return False
+            
+        latest = df.iloc[-1]
+        # Get 5-minute timeframe data for RSI
+        df_5m = self.get_candlesticks_5m(df['contract'].iloc[0] if 'contract' in df.columns else "")
+        if not df_5m.empty:
+            df_5m = self.calculate_rsi(df_5m)
+            if not df_5m.empty:
+                latest_rsi = df_5m['rsi'].iloc[-1]
+                
+                # RSI conditions
+                if position_type == "SHORT" and latest_rsi < 25:
+                    print(f"Closing SHORT position due to RSI {latest_rsi} < 25")
+                    return True
+                if position_type == "LONG" and latest_rsi > 75:
+                    print(f"Closing LONG position due to RSI {latest_rsi} > 75")
+                    return True
+        
+        # Existing LRC conditions
+        if position_type == "LONG" and current_price < latest['lrc_mid']:
+            return True
+        if position_type == "SHORT" and current_price > latest['lrc_mid']:
+            return True
+            
+        return False
+
     def set_leverage(self, contract: str) -> bool:
         try:
-            self.futures_api.update_position_leverage(contract=contract, settle='usdt', leverage=str(self.leverage))
+            self.futures_api.update_position_leverage(
+                contract=contract,
+                settle='usdt',
+                leverage=str(self.leverage)
+            )
             return True
         except Exception as e:
-            print(f"ไม่สามารถตั้งค่า leverage: {str(e)}", flush=True)
+            print(f"Error setting leverage: {str(e)}")
             return False
-    def get_latest_price(self, symbol: str) -> Optional[float]:
+
+    def get_latest_price(self, contract: str) -> float:
         try:
-            ticker = self.futures_api.list_futures_tickers(settle='usdt')        
-            for t in ticker:
-                if t.contract == symbol:
-                    return float(t.last)
+            ticker = self.futures_api.list_futures_tickers(settle='usdt')
+            return float(next(t.last for t in ticker if t.contract == contract))
+        except Exception:
             return None
+
+    def check_existing_position(self, contract: str) -> dict:
+        try:
+            positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
+            return next((p for p in positions if p['contract'] == contract), None)
         except Exception as e:
-            print(f"ไม่สามารถดึงราคาล่าสุด: {str(e)}", flush=True)
+            print(f"Error checking position: {str(e)}")
             return None
-    def check_existing_position(self, contract: str) -> Optional[Dict]:
+
+    def close_position(self, contract: str, position: dict) -> bool:
         try:
-            positions = self.futures_api.list_positions(settle='usdt', holding=True)
-            positions = [p.to_dict() for p in positions]
-            for position in positions:
-                if position['contract'] == contract:
-                    return position
-            return None
-        except Exception as e:
-            print(f"ไม่สามารถตรวจสอบ Position: {str(e)}", flush=True)
-            return None
-    def close_position(self, contract: str, current_position: Dict) -> bool:
-        try:
-            if current_position:
-                current_size = float(current_position['size'])
-                print(f"ปิด Position ของ {contract} (ขนาด: {current_size})", flush=True)
-                if current_size > 0:
-                    self.futures_api.create_futures_order('usdt', {
-                        'contract': contract,
-                        'size': -current_size,
-                        'price': 0,
-                        'tif': 'ioc',
-                        'reduce_only': True
-                    })
-                else:
-                    self.futures_api.create_futures_order('usdt', {
-                        'contract': contract,
-                        'size': -current_size,
-                        'price': 0,
-                        'tif': 'ioc',
-                        'reduce_only': True
-                    })
-                print(f"ปิด Position ของ {contract} (ขนาด: {abs(current_size)}) สำเร็จ", flush=True)
+            if not position:
+                return False
+               
+            size = float(position['size'])
+            if size != 0:
+                self.futures_api.create_futures_order('usdt', {
+                    'contract': contract,
+                    'size': -size,
+                    'price': 0,
+                    'tif': 'ioc',
+                    'reduce_only': True
+                })
+                print(f"Closed position for {contract} (size: {abs(size)})")
                 return True
             return False
         except Exception as e:
-            print(f"ไม่สามารถปิด Position: {str(e)}", flush=True)
+            print(f"Error closing position: {str(e)}")
             return False
-    def create_order(self, contract: str, size: float, is_long: bool) -> Optional[Dict]:
+
+    def create_order(self, contract: str, size: float, is_long: bool) -> dict:
         try:
+            existing = self.check_existing_position(contract)
+            position_type = "LONG" if is_long else "SHORT"
+           
+            if existing:
+                current_size = float(existing['size'])
+                if (is_long and current_size < 0) or (not is_long and current_size > 0):
+                    self.close_position(contract, existing)
+                    time.sleep(2)
+                elif (is_long and current_size > 0) or (not is_long and current_size < 0):
+                    return None
+
             if not self.set_leverage(contract):
                 return None
-            position_type = "LONG" if is_long else "SHORT"
-            print(f"\nกำลังเปิด {position_type} Position: {contract}\n", flush=True)
-            contract_info = self.futures_api.get_futures_contract(contract=contract, settle='usdt')
+               
             price = self.get_latest_price(contract)
-            if price is None:
-                print(f"ไม่สามารถดึงราคาล่าสุดของ {contract}", flush=True)
-                return None
-            json_data = contract_info.to_dict()
-            contract_multiplier = float(json_data['quanto_multiplier'])
-            min_order_size = float(json_data['order_size_min'])
+            contract_info = self.futures_api.get_futures_contract(
+                contract=contract,
+                settle='usdt'
+            )
+            multiplier = float(contract_info.to_dict()['quanto_multiplier'])
+            min_size = float(contract_info.to_dict()['order_size_min'])
+           
             usd_value = size * self.leverage
-            contract_size = usd_value / (price * contract_multiplier)
-            contract_size = max(min_order_size, round(contract_size))
-            entry_result = self.futures_api.create_futures_order('usdt', {
+            contract_size = max(min_size, round(usd_value / (price * multiplier)))
+           
+            order = self.futures_api.create_futures_order('usdt', {
                 'contract': contract,
                 'size': contract_size if is_long else -contract_size,
                 'price': 0,
                 'tif': 'ioc',
                 'reduce_only': False
             })
-            return entry_result
+            print(f"Opened {position_type} position for {contract}")
+            return order
         except Exception as e:
-            print(f"ไม่สามารถเปิด Position: {str(e)}", flush=True)
+            print(f"Error creating order: {str(e)}")
             return None
-    def take_profit_or_stop_loss(self):
+
+    def scan_positions(self):
         try:
-            positions = self.futures_api.list_positions(settle='usdt', holding=True)
-            positions = [p.to_dict() for p in positions]
-            for position in positions:
-                unrealised_pnl = float(position['unrealised_pnl'])
-                print(f"{position['contract']} | Unrealised PnL: {unrealised_pnl}", flush=True)
-                if unrealised_pnl > 4 or unrealised_pnl < -4:
-                    self.close_position(position['contract'], position)
+            positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
+            for pos in positions:
+                contract = pos['contract']
+                df = self.get_candlesticks(contract)
+                if not df.empty:
+                    df['contract'] = contract
+                    df = self.calculate_lrc(df)
+                    current_price = self.get_latest_price(contract)
+                    
+                    if current_price:
+                        pos_type = "LONG" if float(pos['size']) > 0 else "SHORT"
+                        if self.check_close_position(df, pos_type, current_price):
+                            self.close_position(contract, pos)
+                        else:
+                            df_5m = self.get_candlesticks_5m(contract)
+                            rsi = self.calculate_rsi(df_5m)['rsi'].iloc[-1] if not df_5m.empty else None
+                            print(f"Position: {contract} | {pos_type} | "
+                                  f"Size: {abs(float(pos['size']))} | "
+                                  f"PNL: {pos['unrealised_pnl']} | "
+                                  f"RSI(5m): {rsi if rsi is not None else 'N/A'}")
         except Exception as e:
-            print(f"ไม่สามารถตรวจสอบ Position: {str(e)}", flush=True)
-            return False
+            print(f"Error scanning positions: {str(e)}")
+
+    def get_futures_balance(self) -> dict:
+        try:
+            accounts = self.futures_api.list_futures_accounts(settle='usdt')
+            if not accounts or len(accounts) == 0:
+                raise ValueError("No futures account found")
+            
+            account_json = self.client.sanitize_for_serialization(accounts[0])
+            
+            if not isinstance(account_json, dict):
+                account_json = {}
+            
+            balance_info = {
+                'total': float(account_json.get('total', 0)),
+                'available': float(account_json.get('available', 0)),
+                'unrealized_pnl': float(account_json.get('unrealised_pnl', 0)),
+                'currency': account_json.get('currency', 'usdt'),
+                'update_time': datetime.fromtimestamp(
+                    float(account_json.get('update_time', time.time())),
+                    timezone.utc
+                ).strftime('%Y-%m-%d %H:%M:%S UTC')
+            }
+            
+            return balance_info
+        
+        except Exception as e:
+            print(f"Error fetching futures balance: {str(e)}")
+            return None
+                                    
     def scan_market(self):
         first_run = True
-        try:
-            while True:
-                current_time = pd.Timestamp.now(tz='Asia/Bangkok')
-                if current_time.minute % 15 == 0 or first_run:
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                if now.minute in [0, 15, 30, 45] or first_run:                    
                     first_run = False
-                    print("\nกำลังดึงรายชื่อคู่เทรด...", flush=True)
+                    balance_info = self.get_futures_balance()
+                    
                     contracts = self.get_futures_contracts()
-                    print(f"พบ {len(contracts)} คู่เทรด", flush=True)
+                   
                     for contract in contracts:
                         df = self.get_candlesticks(contract)
                         if not df.empty:
-                            df = self.calculate_breakout_levels(df)
-                            current = df.iloc[-1]
-                            previous = df.iloc[-2]
-                            signal, signal_type = self.check_breakout_signal(current, previous, contract)
-                            status = ""
+                            df = self.calculate_lrc(df)
+                            current_price = self.get_latest_price(contract)
+                            signal = self.check_trading_signal(df, current_price)
+                           
                             if signal == "LONG":
-                                status = f"🟢 {signal_type} (Resistance: {previous['resistance']:.2f})"
+                                self.create_order(contract, self.order_amount, True)
                             elif signal == "SHORT":
-                                status = f"🔴 {signal_type} (Support: {previous['support']:.2f})"
-                            print(f"{contract:12} | Price: {current['close']:10.4f} | R: {current['resistance']:8.2f} | S: {current['support']:8.2f} | {status}", flush=True)
-                            if signal:
-                                current_position = self.check_existing_position(contract)
-                                if current_position is None:
-                                    print(f"ไม่มี Position ใน {contract} ให้เปิดใหม่", flush=True)
-                                    self.create_order(contract=contract, size=self.order_amount, is_long=(signal == "LONG"))
-                                    time.sleep(1)
+                                self.create_order(contract, self.order_amount, False)
+                           
+                            latest = df.iloc[-1]
+                            print(f"{contract} | Close: {latest['close']} | "
+                                  f"Upper: {latest['lrc_upper']} | "
+                                  f"Lower: {latest['lrc_lower']} | "
+                                  f"Mid: {latest['lrc_mid']} | "
+                                  f"Signal: {signal or 'None'}")
                     time.sleep(60)
-                    print("-" * 80, flush=True)
-                    self.take_profit_or_stop_loss()
-                    print("-" * 80, flush=True)
-                    time.sleep(120)
+               
+                self.scan_positions()
                 time.sleep(10)
-        except KeyboardInterrupt:
-            print("\nหยุดการสแกนตลาด", flush=True)
-        except Exception as e:
-            print(f"\nเกิดข้อผิดพลาด: {str(e)}", flush=True)
-            print("จะทำการสแกนใหม่ใน 1 นาที...", flush=True)
-            time.sleep(60)
+               
+            except Exception as e:
+                print(f"Error in scan loop: {str(e)}")
+                time.sleep(60)
+
 def main():
-    try:
-        scanner = GateIOBreakoutScanner()
-        print("เริ่มสแกนตลาด Futures...", flush=True)
-        scanner.scan_market()
-    except Exception as e:
-        print(f"เกิดข้อผิดพลาด: {str(e)}", flush=True)
+    scanner = GateIOLRC15mScanner()
+    print("Starting 15m LRC futures scanner with 5m RSI conditions...")
+    scanner.scan_market()
+
 if __name__ == "__main__":
     main()
