@@ -26,7 +26,6 @@ class GateIOLRC15mScanner:
         self.lrc_length = 100
         self.dev_multiplier = 2.0
         self.settle = 'usdt'
-        self.btc_trend = None
 
     def get_futures_contracts(self) -> list:
         try:
@@ -39,7 +38,7 @@ class GateIOLRC15mScanner:
                 contract = ticker.contract
                 if (pattern.match(contract) and
                     contract not in ignore_contracts and
-                    float(ticker.volume_24h) * float(ticker.last) > 1000000):
+                    float(ticker.volume_24h) * float(ticker.last) > 2000000):
                     valid_contracts.append(contract)
             return valid_contracts
         except Exception as e:
@@ -92,43 +91,20 @@ class GateIOLRC15mScanner:
        
         return df.tail(1)
 
-    def get_btc_trend(self) -> str:
-        """Check BTC_USDT linear regression trend direction"""
-        try:
-            df = self.get_candlesticks("BTC_USDT")
-            if df.empty:
-                return None
-                
-            prices = df['close'].values
-            x = np.arange(len(prices))
-            A = np.vstack([x, np.ones(len(x))]).T
-            slope, _ = np.linalg.lstsq(A, prices, rcond=None)[0]
-            
-            if slope > 0:
-                return "UP"
-            elif slope < 0:
-                return "DOWN"
-            return "FLAT"
-        except Exception as e:
-            print(f"Error checking BTC trend: {str(e)}", flush=True)
-            return None
-
     def check_trading_signal(self, df: pd.DataFrame, current_price: float) -> str:
         if df.empty:
             return None
             
         latest = df.iloc[-1]
         
-        # LONG signal: latest candle crosses upper band, current price above upper band, and BTC in uptrend
+        # LONG signal: latest candle crosses upper band, current price above upper band
         if (latest['high'] >= latest['lrc_upper'] and
-            current_price > latest['lrc_upper'] and
-            self.btc_trend == "UP"):
+            current_price > latest['lrc_upper']):
             return "LONG"
            
-        # SHORT signal: latest candle crosses lower band, current price below lower band, and BTC in downtrend
+        # SHORT signal: latest candle crosses lower band, current price below lower band
         if (latest['low'] <= latest['lrc_lower'] and
-            current_price < latest['lrc_lower'] and
-            self.btc_trend == "DOWN"):
+            current_price < latest['lrc_lower']):
             return "SHORT"
            
         return None
@@ -221,7 +197,7 @@ class GateIOLRC15mScanner:
             usd_value = size * self.leverage
             contract_size = max(min_size, round(usd_value / (price * multiplier)))
            
-           
+
             order = self.futures_api.create_futures_order('usdt', {
                 'contract': contract,
                 'size': contract_size if is_long else -contract_size,
@@ -277,8 +253,6 @@ class GateIOLRC15mScanner:
                 now = datetime.now(timezone.utc)
                 if now.minute % 15 == 0 or first_run:                    
                     first_run = False
-                    self.btc_trend = self.get_btc_trend()
-                    print(f"BTC trend: {self.btc_trend}", flush=True)
                     self.scan_positions()
                     balance_info = self.get_futures_balance()
                     print(f"Balance: {balance_info['total']} {balance_info['currency']} | "
@@ -309,11 +283,12 @@ class GateIOLRC15mScanner:
                                   f"Signal: {signal or 'None'}", flush=True)
                     time.sleep(60)
                 else:
-                    if now.minute % 2 == 0:
+                    if now.minute % 3 == 0:
                         if now.minute % 15 == 0:
                             first_run = True
-                        self.scan_positions()
-                time.sleep(30)
+                        else:
+                            self.scan_positions()
+                time.sleep(10)
                
             except Exception as e:
                 print(f"Error in scan loop: {str(e)}", flush=True)
@@ -321,7 +296,7 @@ class GateIOLRC15mScanner:
 
 def main():
     scanner = GateIOLRC15mScanner()
-    print("Starting 15m LRC futures scanner with BTC trend conditions...", flush=True)
+    print("Starting 15m LRC futures scanner...", flush=True)
     scanner.scan_market()
 
 if __name__ == "__main__":
