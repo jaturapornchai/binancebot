@@ -42,7 +42,7 @@ class GateIOLRC15mScanner:
                     valid_contracts.append(contract)
             return valid_contracts
         except Exception as e:
-            print(f"Error fetching contracts: {str(e)}")
+            print(f"Error fetching contracts: {str(e)}", flush=True)
             return []
 
     def get_candlesticks(self, contract: str, limit: int = 100) -> pd.DataFrame:
@@ -68,7 +68,7 @@ class GateIOLRC15mScanner:
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
             return df.sort_values('timestamp')
         except Exception as e:
-            print(f"Error fetching candlesticks for {contract}: {str(e)}")
+            print(f"Error fetching candlesticks for {contract}: {str(e)}", flush=True)
             return pd.DataFrame()
 
     def get_candlesticks_5m(self, contract: str, limit: int = 100) -> pd.DataFrame:
@@ -94,7 +94,7 @@ class GateIOLRC15mScanner:
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
             return df.sort_values('timestamp')
         except Exception as e:
-            print(f"Error fetching 5m candlesticks for {contract}: {str(e)}")
+            print(f"Error fetching 5m candlesticks for {contract}: {str(e)}", flush=True)
             return pd.DataFrame()
 
     def calculate_lrc(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -165,10 +165,10 @@ class GateIOLRC15mScanner:
                     
                     # RSI conditions
                     if position_type == "SHORT" and latest_rsi < 25:
-                        print(f"Closing SHORT position due to RSI {latest_rsi} < 25")
+                        print(f"Closing SHORT position due to RSI {latest_rsi} < 25", flush=True)
                         return True
                     if position_type == "LONG" and latest_rsi > 75:
-                        print(f"Closing LONG position due to RSI {latest_rsi} > 75")
+                        print(f"Closing LONG position due to RSI {latest_rsi} > 75", flush=True)
                         return True
         
         # Existing LRC conditions
@@ -188,7 +188,7 @@ class GateIOLRC15mScanner:
             )
             return True
         except Exception as e:
-            print(f"Error setting leverage: {str(e)}")
+            print(f"Error setting leverage: {str(e)}", flush=True)
             return False
 
     def get_latest_price(self, contract: str) -> float:
@@ -203,7 +203,7 @@ class GateIOLRC15mScanner:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
             return next((p for p in positions if p['contract'] == contract), None)
         except Exception as e:
-            print(f"Error checking position: {str(e)}")
+            print(f"Error checking position: {str(e)}", flush=True)
             return None
 
     def close_position(self, contract: str, position: dict) -> bool:
@@ -220,11 +220,11 @@ class GateIOLRC15mScanner:
                     'tif': 'ioc',
                     'reduce_only': True
                 })
-                print(f"Closed position for {contract} (size: {abs(size)})")
+                print(f"Closed position for {contract} (size: {abs(size)})", flush=True)
                 return True
             return False
         except Exception as e:
-            print(f"Error closing position: {str(e)}")
+            print(f"Error closing position: {str(e)}", flush=True)
             return False
 
     def create_order(self, contract: str, size: float, is_long: bool) -> dict:
@@ -261,10 +261,10 @@ class GateIOLRC15mScanner:
                 'tif': 'ioc',
                 'reduce_only': False
             })
-            print(f"Opened {position_type} position for {contract}")
+            print(f"Opened {position_type} position for {contract}", flush=True)
             return order
         except Exception as e:
-            print(f"Error creating order: {str(e)}")
+            print(f"Error creating order: {str(e)}", flush=True)
             return None
 
     def scan_positions(self):
@@ -288,9 +288,9 @@ class GateIOLRC15mScanner:
                             print(f"Position: {contract} | {pos_type} | "
                                   f"Size: {abs(float(pos['size']))} | "
                                   f"PNL: {pos['unrealised_pnl']} | "
-                                  f"RSI(5m): {rsi if rsi is not None else 'N/A'}")
+                                  f"RSI(5m): {rsi if rsi is not None else 'N/A'}", flush=True)
         except Exception as e:
-            print(f"Error scanning positions: {str(e)}")
+            print(f"Error scanning positions: {str(e)}", flush=True)
                                   
     def get_futures_balance(self) -> dict:
         """Fetch futures account balance (asset details)."""
@@ -306,7 +306,7 @@ class GateIOLRC15mScanner:
             }
             return balance_info
         except Exception as e:
-            print(f"Error fetching futures balance: {str(e)}")
+            print(f"Error fetching futures balance: {str(e)}", flush=True)
             return None
         
     def scan_market(self):
@@ -316,12 +316,13 @@ class GateIOLRC15mScanner:
                 now = datetime.now(timezone.utc)
                 if now.minute % 15 == 0 or first_run:                    
                     first_run = False
+                    self.scan_positions()
                     balance_info = self.get_futures_balance()
                     print(f"Balance: {balance_info['total']} {balance_info['currency']} | "
                           f"Available: {balance_info['available']} {balance_info['currency']} | "
-                          f"Unrealized PNL: {balance_info['unrealized_pnl']} {balance_info['currency']}")
+                          f"Unrealized PNL: {balance_info['unrealized_pnl']} {balance_info['currency']}", flush=True)
                     self.order_amount = balance_info['total'] / 50
-                    print(f"Order amount: {self.order_amount}")
+                    print(f"Order amount: {self.order_amount}", flush=True)
                     
                     contracts = self.get_futures_contracts()
                    
@@ -342,25 +343,27 @@ class GateIOLRC15mScanner:
                                   f"Upper: {latest['lrc_upper']} | "
                                   f"Lower: {latest['lrc_lower']} | "
                                   f"Mid: {latest['lrc_mid']} | "
-                                  f"Signal: {signal or 'None'}")
+                                  f"Signal: {signal or 'None'}", flush=True)
                     time.sleep(60)
                 else:
                     if now.minute % 5 == 0:
                         if now.minute % 15 == 0:
                             first_run = True
-                            
+
                         self.scan_positions()
 
-                time.sleep(10)
+                time.sleep(30)
                
             except Exception as e:
-                print(f"Error in scan loop: {str(e)}")
+                print(f"Error in scan loop: {str(e)}", flush=True)
                 time.sleep(60)
 
 def main():
     scanner = GateIOLRC15mScanner()
-    print("Starting 15m LRC futures scanner with 5m RSI conditions...")
+    print("Starting 15m LRC futures scanner with 5m RSI conditions...", flush=True)
     scanner.scan_market()
 
 if __name__ == "__main__":
     main()
+
+print("Done", flush=True)
