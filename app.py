@@ -23,9 +23,10 @@ class GateIOLRC15mScanner:
         self.futures_api = FuturesApi(self.client)
         self.leverage = 5
         self.order_amount = 40
-        self.lrc_length = 100  # Length for Linear Regression Channel
-        self.dev_multiplier = 2.0  # Deviation multiplier
+        self.lrc_length = 100
+        self.dev_multiplier = 2.0
         self.settle = 'usdt'
+        self.btc_trend = None
 
     def get_futures_contracts(self) -> list:
         try:
@@ -78,58 +79,66 @@ class GateIOLRC15mScanner:
         prices = df['close'].values
         x = np.arange(len(prices))
        
-        # Linear regression calculation
         A = np.vstack([x, np.ones(len(x))]).T
         slope, intercept = np.linalg.lstsq(A, prices, rcond=None)[0]
        
-        # Calculate channel boundaries
         mid_line = intercept + slope * x
         deviations = prices - mid_line
         std_dev = np.std(deviations) * self.dev_multiplier
        
         df['lrc_upper'] = mid_line + std_dev
         df['lrc_lower'] = mid_line - std_dev
-        df['lrc_mid'] = mid_line  # Mid-line added explicitly
+        df['lrc_mid'] = mid_line
        
-        return df.tail(1)  # Return only the latest values
+        return df.tail(1)
 
-    def calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-        if len(df) < period:
-            return pd.DataFrame()
+    def get_btc_trend(self) -> str:
+        """Check BTC_USDT linear regression trend direction"""
+        try:
+            df = self.get_candlesticks("BTC_USDT")
+            if df.empty:
+                return None
+                
+            prices = df['close'].values
+            x = np.arange(len(prices))
+            A = np.vstack([x, np.ones(len(x))]).T
+            slope, _ = np.linalg.lstsq(A, prices, rcond=None)[0]
             
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        return df.tail(1)  # Return only the latest value
+            if slope > 0:
+                return "UP"
+            elif slope < 0:
+                return "DOWN"
+            return "FLAT"
+        except Exception as e:
+            print(f"Error checking BTC trend: {str(e)}", flush=True)
+            return None
 
     def check_trading_signal(self, df: pd.DataFrame, current_price: float) -> str:
         if df.empty:
             return None
-           
+            
         latest = df.iloc[-1]
-        # LONG signal: latest candle crosses upper band and current price is above upper band
+        
+        # LONG signal: latest candle crosses upper band, current price above upper band, and BTC in uptrend
         if (latest['high'] >= latest['lrc_upper'] and
-            current_price > latest['lrc_upper']):
+            current_price > latest['lrc_upper'] and
+            self.btc_trend == "UP"):
             return "LONG"
            
-        # SHORT signal: latest candle crosses lower band and current price is below lower band
+        # SHORT signal: latest candle crosses lower band, current price below lower band, and BTC in downtrend
         if (latest['low'] <= latest['lrc_lower'] and
-            current_price < latest['lrc_lower']):
+            current_price < latest['lrc_lower'] and
+            self.btc_trend == "DOWN"):
             return "SHORT"
            
         return None
 
-    def check_close_position(self, df: pd.DataFrame, position_type: str, current_price: float,position: dict) -> bool:
+    def check_close_position(self, df: pd.DataFrame, position_type: str, current_price: float, position: dict) -> bool:
         if df.empty:
             return False
             
         latest = df.iloc[-1]
         
-        # Existing LRC conditions
         if position_type == "LONG" and current_price < latest['lrc_mid']:
             return True
         if position_type == "SHORT" and current_price > latest['lrc_mid']:
@@ -230,6 +239,7 @@ class GateIOLRC15mScanner:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
             for pos in positions:
                 contract = pos['contract']
+                print(f"Scanning position for {contract}...", flush=True)
                 df = self.get_candlesticks(contract)
                 if not df.empty:
                     df['contract'] = contract
@@ -244,16 +254,15 @@ class GateIOLRC15mScanner:
             print(f"Error scanning positions: {str(e)}", flush=True)
                                   
     def get_futures_balance(self) -> dict:
-        """Fetch futures account balance (asset details)."""
         try:
             account = self.futures_api.list_futures_accounts(settle=self.settle)
             if not account:
                 raise ValueError("No futures account found")
             balance_info = {
-                'total': float(account.total or 0),           # Total balance (including unrealized PNL)
-                'available': float(account.available or 0),   # Available balance for trading
-                'unrealized_pnl': float(account.unrealised_pnl or 0),  # Unrealized profit/loss
-                'currency': account.currency or self.settle,  # Currency (e.g., USDT)
+                'total': float(account.total or 0),
+                'available': float(account.available or 0),
+                'unrealized_pnl': float(account.unrealised_pnl or 0),
+                'currency': account.currency or self.settle,
             }
             return balance_info
         except Exception as e:
@@ -267,6 +276,8 @@ class GateIOLRC15mScanner:
                 now = datetime.now(timezone.utc)
                 if now.minute % 15 == 0 or first_run:                    
                     first_run = False
+                    self.btc_trend = self.get_btc_trend()
+                    print(f"BTC trend: {self.btc_trend}", flush=True)
                     self.scan_positions()
                     balance_info = self.get_futures_balance()
                     print(f"Balance: {balance_info['total']} {balance_info['currency']} | "
@@ -300,9 +311,7 @@ class GateIOLRC15mScanner:
                     if now.minute % 2 == 0:
                         if now.minute % 15 == 0:
                             first_run = True
-
                         self.scan_positions()
-
                 time.sleep(30)
                
             except Exception as e:
@@ -311,10 +320,8 @@ class GateIOLRC15mScanner:
 
 def main():
     scanner = GateIOLRC15mScanner()
-    print("Starting 15m LRC futures scanner with 5m RSI conditions...", flush=True)
+    print("Starting 15m LRC futures scanner with BTC trend conditions...", flush=True)
     scanner.scan_market()
 
 if __name__ == "__main__":
     main()
-
-print("Done", flush=True)
