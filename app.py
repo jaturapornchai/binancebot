@@ -221,6 +221,7 @@ class GateIOLRC15mScanner:
             usd_value = size * self.leverage
             contract_size = max(min_size, round(usd_value / (price * multiplier)))
            
+           
             order = self.futures_api.create_futures_order('usdt', {
                 'contract': contract,
                 'size': contract_size if is_long else -contract_size,
