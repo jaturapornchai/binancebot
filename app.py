@@ -156,7 +156,7 @@ class GateIOLRC15mScanner:
         latest = df.iloc[-1]
         # Get 5-minute timeframe data for RSI
         unrealised_pnl = float(position['unrealised_pnl'])
-        if unrealised_pnl > 1:
+        if unrealised_pnl > 5:
             df_5m = self.get_candlesticks_5m(df['contract'].iloc[0] if 'contract' in df.columns else "")
             if not df_5m.empty:
                 df_5m = self.calculate_rsi(df_5m)
