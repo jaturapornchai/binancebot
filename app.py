@@ -21,7 +21,7 @@ class GateIOLRC15mScanner:
             host="https://api.gateio.ws/api/v4"
         ))
         self.futures_api = FuturesApi(self.client)
-        self.leverage = 3
+        self.leverage = 5
         self.order_amount = 40
         self.lrc_length = 100  # Length for Linear Regression Channel
         self.dev_multiplier = 2.0  # Deviation multiplier
@@ -156,7 +156,7 @@ class GateIOLRC15mScanner:
         latest = df.iloc[-1]
         # Get 5-minute timeframe data for RSI
         unrealised_pnl = float(position['unrealised_pnl'])
-        if unrealised_pnl > 5:
+        if unrealised_pnl > 15:
             df_5m = self.get_candlesticks_5m(df['contract'].iloc[0] if 'contract' in df.columns else "")
             if not df_5m.empty:
                 df_5m = self.calculate_rsi(df_5m)
@@ -321,7 +321,7 @@ class GateIOLRC15mScanner:
                     print(f"Balance: {balance_info['total']} {balance_info['currency']} | "
                           f"Available: {balance_info['available']} {balance_info['currency']} | "
                           f"Unrealized PNL: {balance_info['unrealized_pnl']} {balance_info['currency']}", flush=True)
-                    self.order_amount = balance_info['total'] / 50
+                    self.order_amount = balance_info['total'] / 75
                     print(f"Order amount: {self.order_amount}", flush=True)
                     
                     contracts = self.get_futures_contracts()
