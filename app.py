@@ -100,7 +100,7 @@ class GateIOLRC15mScanner:
         # LONG signal: latest candle crosses upper band, current price above upper band
         if (latest['high'] >= latest['lrc_upper'] and
             current_price > latest['lrc_upper']):
-            return "LONG"
+            return "LONGX"
            
         # SHORT signal: latest candle crosses lower band, current price below lower band
         if (latest['low'] <= latest['lrc_lower'] and
