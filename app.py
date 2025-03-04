@@ -71,32 +71,6 @@ class GateIOLRC15mScanner:
             print(f"Error fetching candlesticks for {contract}: {str(e)}", flush=True)
             return pd.DataFrame()
 
-    def get_candlesticks_5m(self, contract: str, limit: int = 100) -> pd.DataFrame:
-        try:
-            candles = self.futures_api.list_futures_candlesticks(
-                settle='usdt',
-                contract=contract,
-                interval='5m',
-                limit=limit
-            )
-            if not candles:
-                return pd.DataFrame()
-                
-            df = pd.DataFrame([{
-                'timestamp': float(c.t),
-                'open': float(c.o),
-                'high': float(c.h),
-                'low': float(c.l),
-                'close': float(c.c),
-                'volume': float(c.v)
-            } for c in candles])
-            
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
-            return df.sort_values('timestamp')
-        except Exception as e:
-            print(f"Error fetching 5m candlesticks for {contract}: {str(e)}", flush=True)
-            return pd.DataFrame()
-
     def calculate_lrc(self, df: pd.DataFrame) -> pd.DataFrame:
         if len(df) < self.lrc_length:
             return df
@@ -154,22 +128,6 @@ class GateIOLRC15mScanner:
             return False
             
         latest = df.iloc[-1]
-        # Get 5-minute timeframe data for RSI
-        unrealised_pnl = float(position['unrealised_pnl'])
-        if unrealised_pnl > 15:
-            df_5m = self.get_candlesticks_5m(df['contract'].iloc[0] if 'contract' in df.columns else "")
-            if not df_5m.empty:
-                df_5m = self.calculate_rsi(df_5m)
-                if not df_5m.empty:
-                    latest_rsi = df_5m['rsi'].iloc[-1]
-                    
-                    # RSI conditions
-                    if position_type == "SHORT" and latest_rsi < 25:
-                        print(f"Closing SHORT position due to RSI {latest_rsi} < 25", flush=True)
-                        return True
-                    if position_type == "LONG" and latest_rsi > 75:
-                        print(f"Closing LONG position due to RSI {latest_rsi} > 75", flush=True)
-                        return True
         
         # Existing LRC conditions
         if position_type == "LONG" and current_price < latest['lrc_mid']:
@@ -282,13 +240,6 @@ class GateIOLRC15mScanner:
                         pos_type = "LONG" if float(pos['size']) > 0 else "SHORT"
                         if self.check_close_position(df, pos_type, current_price, pos):
                             self.close_position(contract, pos)
-                        else:
-                            df_5m = self.get_candlesticks_5m(contract)
-                            rsi = self.calculate_rsi(df_5m)['rsi'].iloc[-1] if not df_5m.empty else None
-                            print(f"Position: {contract} | {pos_type} | "
-                                  f"Size: {abs(float(pos['size']))} | "
-                                  f"PNL: {pos['unrealised_pnl']} | "
-                                  f"RSI(5m): {rsi if rsi is not None else 'N/A'}", flush=True)
         except Exception as e:
             print(f"Error scanning positions: {str(e)}", flush=True)
                                   
@@ -346,7 +297,7 @@ class GateIOLRC15mScanner:
                                   f"Signal: {signal or 'None'}", flush=True)
                     time.sleep(60)
                 else:
-                    if now.minute % 5 == 0:
+                    if now.minute % 2 == 0:
                         if now.minute % 15 == 0:
                             first_run = True
 
