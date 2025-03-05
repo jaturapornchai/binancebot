@@ -295,7 +295,6 @@ class GateIOLRC15mScanner:
                             first_run = True
                         else:
                             self.scan_positions()
-                            time.sleep(30)
                 time.sleep(10)
 
             except Exception as e:
