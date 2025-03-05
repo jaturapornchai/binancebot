@@ -105,7 +105,7 @@ class GateIOLRC15mScanner:
             latest['low'] <= latest['lrc_ct'] and
             latest['close'] > latest['open'] and
             current_price > latest['lrc_ct']):
-            return "LONG"
+            return "LONGX"
 
         # SHORT signal
         if (latest['high'] >= latest['lrc_cb'] and
