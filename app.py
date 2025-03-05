@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 
 class GateIOLRC15mScanner:
     def __init__(self):
+        """Initialize the scanner with API credentials from .env file."""
         load_dotenv()
         self.api_key = os.getenv('GATEIO_API_KEY')
         self.secret_key = os.getenv('GATEIO_SECRET_KEY')
         if not self.api_key or not self.secret_key:
             raise ValueError("Please set GATEIO_API_KEY and GATEIO_SECRET_KEY in .env file")
-
+     
         self.client = ApiClient(Configuration(
             key=self.api_key,
             secret=self.secret_key,
@@ -23,22 +24,21 @@ class GateIOLRC15mScanner:
         self.futures_api = FuturesApi(self.client)
         self.leverage = 5
         self.order_amount = 40
-        self.lrc_length = 100
-        self.dev_multiplier = 2.0
         self.settle = 'usdt'
 
     def get_futures_contracts(self) -> list:
+        """Fetch a list of valid futures contracts with sufficient trading volume."""
         try:
             tickers = self.futures_api.list_futures_tickers(settle='usdt')
             valid_contracts = []
             pattern = re.compile(r'^\D+_USDT$')
             ignore_contracts = ['DOGS_USDT', 'USDC_USDT', 'HEI_USDT']
-
+         
             for ticker in tickers:
                 contract = ticker.contract
                 if (pattern.match(contract) and
                     contract not in ignore_contracts and
-                    float(ticker.volume_24h) * float(ticker.last) > 1000000):
+                    float(ticker.volume_24h) * float(ticker.last) > 2000000):
                     valid_contracts.append(contract)
             np.random.shuffle(valid_contracts)
             return valid_contracts
@@ -47,6 +47,7 @@ class GateIOLRC15mScanner:
             return []
 
     def get_candlesticks(self, contract: str, limit: int = 100) -> pd.DataFrame:
+        """Retrieve 15-minute candlestick data for a given contract."""
         try:
             candles = self.futures_api.list_futures_candlesticks(
                 settle='usdt',
@@ -56,7 +57,7 @@ class GateIOLRC15mScanner:
             )
             if not candles:
                 return pd.DataFrame()
-
+             
             df = pd.DataFrame([{
                 'timestamp': float(c.t),
                 'open': float(c.o),
@@ -65,71 +66,62 @@ class GateIOLRC15mScanner:
                 'close': float(c.c),
                 'volume': float(c.v)
             } for c in candles])
-
+         
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
             return df.sort_values('timestamp')
         except Exception as e:
             print(f"Error fetching candlesticks for {contract}: {str(e)}", flush=True)
             return pd.DataFrame()
 
-    def calculate_lrc(self, df: pd.DataFrame) -> pd.DataFrame:
-        if len(df) < self.lrc_length:
-            return df
+    def calculate_heikin_ashi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Heikin Ashi candlestick values from regular OHLC data."""
+        ha_df = df.copy()
+        ha_df['HA_close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+        
+        ha_df['HA_open'] = df['open'].copy()
+        
+        for i in range(1, len(df)):
+            ha_df.loc[ha_df.index[i], 'HA_open'] = (
+                ha_df.loc[ha_df.index[i-1], 'HA_open'] + ha_df.loc[ha_df.index[i-1], 'HA_close']
+            ) / 2
+        
+        ha_df['HA_high'] = ha_df[['high', 'HA_open', 'HA_close']].max(axis=1)
+        ha_df['HA_low'] = ha_df[['low', 'HA_open', 'HA_close']].min(axis=1)
+        
+        return ha_df
 
-        prices = df['close'].values
-        x = np.arange(len(prices))
-
-        A = np.vstack([x, np.ones(len(x))]).T
-        slope, intercept = np.linalg.lstsq(A, prices, rcond=None)[0]
-
-        mid_line = intercept + slope * x
-        deviations = prices - mid_line
-        std_dev = np.std(deviations) * self.dev_multiplier
-
-        df['lrc_upper'] = mid_line + std_dev  # T
-        df['lrc_lower'] = mid_line - std_dev  # B
-        df['lrc_mid'] = mid_line  # C
-        df['lrc_ct'] = (df['lrc_upper'] + df['lrc_mid']) / 2  # CT
-        df['lrc_cb'] = (df['lrc_mid'] + df['lrc_lower']) / 2  # CB
-
-        return df.tail(1)
-
-    def check_trading_signal(self, df: pd.DataFrame, current_price: float) -> str:
-        if df.empty:
+    def check_trading_signal(self, ha_df: pd.DataFrame) -> str:
+        """Determine the trading signal based on the latest Heikin Ashi candles."""
+        if len(ha_df) < 2:
             return None
-
-        latest = df.iloc[-1]
-
-        # LONG signal
-        if (latest['high'] >= latest['lrc_ct'] and
-            latest['low'] <= latest['lrc_ct'] and
-            latest['close'] > latest['open'] and
-            current_price > latest['lrc_ct']):
-            return "LONGX"
-
-        # SHORT signal
-        if (latest['high'] >= latest['lrc_cb'] and
-            latest['low'] <= latest['lrc_cb'] and
-            latest['close'] < latest['open'] and
-            current_price < latest['lrc_cb']):
+         
+        latest = ha_df.iloc[-1]  # T1
+        previous = ha_df.iloc[-2]  # T0
+     
+        if latest['HA_close'] > latest['HA_open'] and previous['HA_close'] < previous['HA_open']:
+            return "LONG"
+        elif latest['HA_close'] < latest['HA_open'] and previous['HA_close'] > previous['HA_open']:
             return "SHORT"
-
+         
         return None
 
-    def check_close_position(self, df: pd.DataFrame, position_type: str, current_price: float, position: dict) -> bool:
-        if df.empty:
+    def check_close_position(self, ha_df: pd.DataFrame, position: dict) -> bool:
+        """Check if an existing position should be closed based on Heikin Ashi reversal."""
+        if ha_df.empty:
             return False
-
-        latest = df.iloc[-1]
-
-        if position_type == "LONG" and current_price < latest['lrc_mid']:
+         
+        latest = ha_df.iloc[-1]
+        pos_type = "LONG" if float(position['size']) > 0 else "SHORT"
+     
+        if pos_type == "LONG" and latest['HA_close'] < latest['HA_open']:
             return True
-        if position_type == "SHORT" and current_price > latest['lrc_mid']:
+        if pos_type == "SHORT" and latest['HA_close'] > latest['HA_open']:
             return True
-
+         
         return False
 
     def set_leverage(self, contract: str) -> bool:
+        """Set the leverage for a specific contract."""
         try:
             self.futures_api.update_position_leverage(
                 contract=contract,
@@ -142,6 +134,7 @@ class GateIOLRC15mScanner:
             return False
 
     def get_latest_price(self, contract: str) -> float:
+        """Get the latest price for a given contract."""
         try:
             ticker = self.futures_api.list_futures_tickers(settle='usdt')
             return float(next(t.last for t in ticker if t.contract == contract))
@@ -149,6 +142,7 @@ class GateIOLRC15mScanner:
             return None
 
     def check_existing_position(self, contract: str) -> dict:
+        """Check if there is an existing position for a contract."""
         try:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
             return next((p for p in positions if p['contract'] == contract), None)
@@ -157,10 +151,11 @@ class GateIOLRC15mScanner:
             return None
 
     def close_position(self, contract: str, position: dict) -> bool:
+        """Close an existing position for a contract."""
         try:
             if not position:
                 return False
-
+             
             size = float(position['size'])
             if size != 0:
                 self.futures_api.create_futures_order('usdt', {
@@ -178,21 +173,11 @@ class GateIOLRC15mScanner:
             return False
 
     def create_order(self, contract: str, size: float, is_long: bool) -> dict:
+        """Create a new futures order (LONG or SHORT)."""
         try:
-            existing = self.check_existing_position(contract)
-            position_type = "LONG" if is_long else "SHORT"
-
-            if existing:
-                current_size = float(existing['size'])
-                if (is_long and current_size < 0) or (not is_long and current_size > 0):
-                    self.close_position(contract, existing)
-                    time.sleep(2)
-                elif (is_long and current_size > 0) or (not is_long and current_size < 0):
-                    return None
-
             if not self.set_leverage(contract):
                 return None
-
+             
             price = self.get_latest_price(contract)
             contract_info = self.futures_api.get_futures_contract(
                 contract=contract,
@@ -200,10 +185,10 @@ class GateIOLRC15mScanner:
             )
             multiplier = float(contract_info.to_dict()['quanto_multiplier'])
             min_size = float(contract_info.to_dict()['order_size_min'])
-
+         
             usd_value = size * self.leverage
             contract_size = max(min_size, round(usd_value / (price * multiplier)))
-
+         
             order = self.futures_api.create_futures_order('usdt', {
                 'contract': contract,
                 'size': contract_size if is_long else -contract_size,
@@ -211,6 +196,7 @@ class GateIOLRC15mScanner:
                 'tif': 'ioc',
                 'reduce_only': False
             })
+            position_type = "LONG" if is_long else "SHORT"
             print(f"Opened {position_type} position for {contract}", flush=True)
             return order
         except Exception as e:
@@ -218,6 +204,7 @@ class GateIOLRC15mScanner:
             return None
 
     def scan_positions(self):
+        """Scan and manage existing positions based on Heikin Ashi signals."""
         try:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
             for pos in positions:
@@ -225,17 +212,14 @@ class GateIOLRC15mScanner:
                 print(f"Scanning position for {contract}...", flush=True)
                 df = self.get_candlesticks(contract)
                 if not df.empty:
-                    df = self.calculate_lrc(df)
-                    current_price = self.get_latest_price(contract)
-
-                    if current_price:
-                        pos_type = "LONG" if float(pos['size']) > 0 else "SHORT"
-                        if self.check_close_position(df, pos_type, current_price, pos):
-                            self.close_position(contract, pos)
+                    ha_df = self.calculate_heikin_ashi(df)
+                    if self.check_close_position(ha_df, pos):
+                        self.close_position(contract, pos)
         except Exception as e:
             print(f"Error scanning positions: {str(e)}", flush=True)
 
     def get_futures_balance(self) -> dict:
+        """Retrieve the futures account balance."""
         try:
             account = self.futures_api.list_futures_accounts(settle=self.settle)
             if not account:
@@ -252,6 +236,7 @@ class GateIOLRC15mScanner:
             return None
 
     def scan_market(self):
+        """Main loop to scan the market and execute trades every 15 minutes."""
         first_run = True
         while True:
             try:
@@ -265,46 +250,44 @@ class GateIOLRC15mScanner:
                           f"Unrealized PNL: {balance_info['unrealized_pnl']} {balance_info['currency']}", flush=True)
                     self.order_amount = balance_info['total'] / 75
                     print(f"Order amount: {self.order_amount}", flush=True)
-
+                     
                     contracts = self.get_futures_contracts()
-
+                     
                     for contract in contracts:
                         df = self.get_candlesticks(contract)
                         if not df.empty:
-                            df = self.calculate_lrc(df)
-                            current_price = self.get_latest_price(contract)
-                            signal = self.check_trading_signal(df, current_price)
-
+                            ha_df = self.calculate_heikin_ashi(df)
+                            signal = self.check_trading_signal(ha_df)
+                             
+                            existing = self.check_existing_position(contract)
                             if signal == "LONG":
-                                self.create_order(contract, self.order_amount, True)
+                                if existing and float(existing['size']) < 0:  # Has SHORT position
+                                    self.close_position(contract, existing)
+                                    time.sleep(2)
+                                if not existing or float(existing['size']) == 0:
+                                    self.create_order(contract, self.order_amount, True)
                             elif signal == "SHORT":
-                                self.create_order(contract, self.order_amount, False)
-
-                            latest = df.iloc[-1]
-                            print(f"{contract} | Close: {latest['close']} | "
-                                  f"Upper: {latest['lrc_upper']} | "
-                                  f"Lower: {latest['lrc_lower']} | "
-                                  f"Mid: {latest['lrc_mid']} | "
-                                  f"CT: {latest['lrc_ct']} | "
-                                  f"CB: {latest['lrc_cb']} | "
-                                  f"Signal: {signal or 'None'}", flush=True)
+                                if existing and float(existing['size']) > 0:  # Has LONG position
+                                    self.close_position(contract, existing)
+                                    time.sleep(2)
+                                if not existing or float(existing['size']) == 0:
+                                    self.create_order(contract, self.order_amount, False)
+                             
+                            latest = ha_df.iloc[-1]
+                            print(f"{contract} | HA_Close: {latest['HA_close']} | "
+                                  f"HA_Open: {latest['HA_open']} | Signal: {signal or 'None'}", flush=True)
                     time.sleep(60)
                 else:
-                    if now.minute % 3 == 0:
-                        if now.minute % 15 == 0:
-                            first_run = True
-                        else:
-                            self.scan_positions()
-                            time.sleep(30)
-                time.sleep(10)
-
+                    time.sleep(10)
+             
             except Exception as e:
                 print(f"Error in scan loop: {str(e)}", flush=True)
                 time.sleep(60)
 
 def main():
+    """Entry point to start the scanner."""
     scanner = GateIOLRC15mScanner()
-    print("Starting 15m LRC futures scanner...", flush=True)
+    print("Starting 15m Heikin Ashi futures scanner...", flush=True)
     scanner.scan_market()
 
 if __name__ == "__main__":
