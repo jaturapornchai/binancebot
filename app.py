@@ -38,8 +38,10 @@ class GateIOLRC15mScanner:
                 contract = ticker.contract
                 if (pattern.match(contract) and
                     contract not in ignore_contracts and
-                    float(ticker.volume_24h) * float(ticker.last) > 2000000):
+                    float(ticker.volume_24h) * float(ticker.last) > 1000000):
                     valid_contracts.append(contract)
+            # randomize the order of contracts
+            np.random.shuffle(valid_contracts)
             return valid_contracts
         except Exception as e:
             print(f"Error fetching contracts: {str(e)}", flush=True)
@@ -100,7 +102,7 @@ class GateIOLRC15mScanner:
         # LONG signal: latest candle crosses upper band, current price above upper band
         if (latest['high'] >= latest['lrc_upper'] and
             current_price > latest['lrc_upper']):
-            return "LONGX"
+            return "LONG"
            
         # SHORT signal: latest candle crosses lower band, current price below lower band
         if (latest['low'] <= latest['lrc_lower'] and
