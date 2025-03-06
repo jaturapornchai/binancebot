@@ -119,7 +119,7 @@ class GateIOSmoothedHeikenAshi15mScanner:
         T0_color = df['color'].iloc[-2]  # Previous candle
         
         if T1_color == 'green' and T0_color != 'green':
-            return 'LONG'
+            return 'LONGX'
         elif T1_color == 'red' and T0_color != 'red':
             return 'SHORT'
         return None
