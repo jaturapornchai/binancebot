@@ -9,14 +9,13 @@ from datetime import datetime, timezone
 
 class GateIOLinearRegressionChannelScanner:
     def __init__(self):
-        # Load API credentials from .env file
+        """Initialize the scanner with API credentials and default settings."""
         load_dotenv()
         self.api_key = os.getenv('GATEIO_API_KEY')
         self.secret_key = os.getenv('GATEIO_SECRET_KEY')
         if not self.api_key or not self.secret_key:
             raise ValueError("Please set GATEIO_API_KEY and GATEIO_SECRET_KEY in .env file")
         
-        # Initialize Gate.io API client
         self.client = ApiClient(Configuration(
             key=self.api_key,
             secret=self.secret_key,
@@ -24,15 +23,14 @@ class GateIOLinearRegressionChannelScanner:
         ))
         self.futures_api = FuturesApi(self.client)
         
-        # Trading parameters
         self.leverage = 5
-        self.order_amount = 40  # Initial order size in USD
-        self.len = 100  # Length for Linear Regression Channel
-        self.devlen = 2.0  # Deviation multiplier
-        self.settle = 'usdt'  # Settlement currency
+        self.order_amount = 40
+        self.len = 100
+        self.devlen = 2.0
+        self.settle = 'usdt'
 
     def get_futures_contracts(self) -> list:
-        """Fetch a list of valid USDT-settled futures contracts."""
+        """Retrieve a list of valid futures contracts with sufficient volume."""
         try:
             tickers = self.futures_api.list_futures_tickers(settle='usdt')
             valid_contracts = []
@@ -45,14 +43,14 @@ class GateIOLinearRegressionChannelScanner:
                     contract not in ignore_contracts and
                     float(ticker.volume_24h) * float(ticker.last) > 1000000):
                     valid_contracts.append(contract)
-            np.random.shuffle(valid_contracts)  # Randomize for variety
+            np.random.shuffle(valid_contracts)
             return valid_contracts
         except Exception as e:
             print(f"Error fetching contracts: {str(e)}", flush=True)
             return []
 
     def get_candlesticks(self, contract: str, limit: int = 100) -> pd.DataFrame:
-        """Fetch 15-minute candlestick data for a given contract."""
+        """Fetch candlestick data for a given contract."""
         try:
             candles = self.futures_api.list_futures_candlesticks(
                 settle='usdt',
@@ -79,7 +77,7 @@ class GateIOLinearRegressionChannelScanner:
             return pd.DataFrame()
 
     def get_linear_regression_channel(self, df: pd.DataFrame) -> dict:
-        """Calculate Linear Regression Channel for the given DataFrame."""
+        """Calculate the Linear Regression Channel for the given data."""
         if len(df) < self.len:
             return None
         
@@ -90,13 +88,13 @@ class GateIOLinearRegressionChannelScanner:
         residuals = src - (slope * x + intercept)
         dev = np.std(residuals)
         
-        T = endy + dev * self.devlen  # Upper channel line (T)
-        B = endy - dev * self.devlen  # Lower channel line (B)
+        T = endy + dev * self.devlen
+        B = endy - dev * self.devlen
         
         return {'T': T, 'B': B, 'slope': slope}
 
     def set_leverage(self, contract: str) -> bool:
-        """Set leverage for a contract."""
+        """Set leverage for a specific contract."""
         try:
             self.futures_api.update_position_leverage(
                 contract=contract,
@@ -109,7 +107,7 @@ class GateIOLinearRegressionChannelScanner:
             return False
 
     def get_latest_price(self, contract: str) -> float:
-        """Fetch the latest price for a contract."""
+        """Get the latest price for a contract."""
         try:
             ticker = self.futures_api.list_futures_tickers(settle='usdt')
             return float(next(t.last for t in ticker if t.contract == contract))
@@ -126,7 +124,7 @@ class GateIOLinearRegressionChannelScanner:
             return None
 
     def close_position(self, contract: str, position: dict) -> bool:
-        """Close an existing position."""
+        """Close an existing position for a contract."""
         try:
             if not position:
                 return False
@@ -153,7 +151,6 @@ class GateIOLinearRegressionChannelScanner:
             if not self.set_leverage(contract):
                 return None
             
-            # Calculate order size
             price = self.get_latest_price(contract)
             contract_info = self.futures_api.get_futures_contract(
                 contract=contract,
@@ -165,7 +162,6 @@ class GateIOLinearRegressionChannelScanner:
             usd_value = size * self.leverage
             contract_size = max(min_size, round(usd_value / (price * multiplier)))
             
-            # Place order
             order = self.futures_api.create_futures_order('usdt', {
                 'contract': contract,
                 'size': contract_size if is_long else -contract_size,
@@ -180,29 +176,47 @@ class GateIOLinearRegressionChannelScanner:
             return None
 
     def scan_positions(self):
-        """Scan and manage existing positions."""
+        """Scan and manage existing positions based on channel conditions."""
         try:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
+            # sort
+            positions = sorted(positions, key=lambda x: x['contract'])
             for pos in positions:
                 contract = pos['contract']
-                print(f"Scanning position for {contract}...", flush=True)
                 df = self.get_candlesticks(contract)
-                if not df.empty:
+                if not df.empty and len(df) >= self.len:
                     channel = self.get_linear_regression_channel(df)
                     if channel:
                         latest_price = self.get_latest_price(contract)
                         pos_size = float(pos['size'])
+                        lowest_close_14 = df['close'].tail(14).min()
+                        highest_close_14 = df['close'].tail(14).max()
+                        latest_close = df['close'].iloc[-1]
+                        print(f"{contract}... Latest Close: {latest_close:.4f} | Lowest Close 14: {lowest_close_14:.4f} | "
+                              f"Highest Close 14: {highest_close_14:.4f}", flush=True)
+
                         if pos_size > 0:  # Long position
-                            if latest_price < channel['B']:
+                            if latest_price < channel['B'] or latest_close < lowest_close_14:
+                                print(f"Closing LONG position for {contract}: "
+                                      f"Price {latest_price:.4f} < B {channel['B']:.4f} or "
+                                      f"Close {latest_close:.4f} < Lowest Close 14 {lowest_close_14:.4f}", flush=True)
                                 self.close_position(contract, pos)
                         elif pos_size < 0:  # Short position
-                            if latest_price > channel['T']:
+                            if latest_price > channel['T'] or latest_close > highest_close_14:
+                                print(f"Closing SHORT position for {contract}: "
+                                      f"Price {latest_price:.4f} > T {channel['T']:.4f} or "
+                                      f"Close {latest_close:.4f} > Highest Close 14 {highest_close_14:.4f}", flush=True)
                                 self.close_position(contract, pos)
         except Exception as e:
             print(f"Error scanning positions: {str(e)}", flush=True)
 
+        print("Position scan completed", flush=True)
+        # new line
+        print("", flush=True)
+        
+
     def get_futures_balance(self) -> dict:
-        """Fetch futures account balance."""
+        """Retrieve the current futures account balance."""
         try:
             account = self.futures_api.list_futures_accounts(settle=self.settle)
             if not account:
@@ -231,7 +245,7 @@ class GateIOLinearRegressionChannelScanner:
                     print(f"Balance: {balance_info['total']} {balance_info['currency']} | "
                           f"Available: {balance_info['available']} {balance_info['currency']} | "
                           f"Unrealized PNL: {balance_info['unrealized_pnl']} {balance_info['currency']}", flush=True)
-                    self.order_amount = balance_info['total'] / 75  # Adjust order size dynamically
+                    self.order_amount = balance_info['total'] / 75
                     print(f"Order amount: {self.order_amount}", flush=True)
                     
                     contracts = self.get_futures_contracts()
@@ -262,15 +276,14 @@ class GateIOLinearRegressionChannelScanner:
                                             self.close_position(contract, existing)
                                             time.sleep(2)
                                     
-                                    # Check if already have position in the same direction
-                                    if (signal == "LONG" and (not existing or float(existing['size']) <= 0)) or \
-                                       (signal == "SHORT" and (not existing or float(existing['size']) >= 0)):
+                                    if (signal == "LONG" and (not existing or pos_size <= 0)) or \
+                                       (signal == "SHORT" and (not existing or pos_size >= 0)):
                                         is_long = signal == "LONG"
                                         self.create_order(contract, self.order_amount, is_long)
                                 
                                 print(f"{contract} | T: {channel['T']:.4f} | B: {channel['B']:.4f} | "
                                       f"Latest Price: {latest_price:.4f} | Signal: {signal or 'None'}", flush=True)
-                    time.sleep(60)  # Wait after completing a scan
+                    time.sleep(60)
                 if now.minute % 3 == 0:
                     if now.minute % 15 == 0:
                         first_run = True
@@ -278,13 +291,13 @@ class GateIOLinearRegressionChannelScanner:
                         self.scan_positions()
                         time.sleep(60)
 
-                time.sleep(10)  # Check every 10 seconds
+                time.sleep(10)
             except Exception as e:
                 print(f"Error in scan loop: {str(e)}", flush=True)
                 time.sleep(60)
 
 def main():
-    """Entry point for the trading system."""
+    """Entry point to start the scanner."""
     scanner = GateIOLinearRegressionChannelScanner()
     print("Starting 15m Linear Regression Channel futures scanner...", flush=True)
     scanner.scan_market()
