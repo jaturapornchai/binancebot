@@ -189,8 +189,8 @@ class GateIOLinearRegressionChannelScanner:
                     if channel:
                         latest_price = self.get_latest_price(contract)
                         pos_size = float(pos['size'])
-                        lowest_close_14 = df['close'].tail(14).min()
-                        highest_close_14 = df['close'].tail(14).max()
+                        lowest_close_14 = df['close'].tail(28).min()
+                        highest_close_14 = df['close'].tail(28).max()
                         latest_close = df['close'].iloc[-1]
                         print(f"{contract}... Latest Close: {latest_close:.4f} | Lowest Close 14: {lowest_close_14:.4f} | "
                               f"Highest Close 14: {highest_close_14:.4f}", flush=True)
