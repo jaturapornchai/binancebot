@@ -264,7 +264,8 @@ class GateIOLinearRegressionChannelScanner:
                                 
                                 signal = None
                                 if high_touches_T and is_green and latest_price > channel['T']:
-                                    signal = "LONG"
+                                    signal = None
+                                    # signal = "LONG"
                                 elif low_touches_B and is_red and latest_price < channel['B']:
                                     signal = "SHORT"
                                 
