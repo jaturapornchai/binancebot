@@ -245,7 +245,7 @@ class GateIOLinearRegressionChannelScanner:
                     print(f"Balance: {balance_info['total']} {balance_info['currency']} | "
                           f"Available: {balance_info['available']} {balance_info['currency']} | "
                           f"Unrealized PNL: {balance_info['unrealized_pnl']} {balance_info['currency']}", flush=True)
-                    self.order_amount = balance_info['total'] / 75
+                    self.order_amount = balance_info['total'] / 100
                     print(f"Order amount: {self.order_amount}", flush=True)
                     
                     contracts = self.get_futures_contracts()
