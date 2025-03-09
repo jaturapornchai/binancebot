@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from datetime import datetime, timezone
 
+
 class GateIOLinearRegressionChannelScanner:
     def __init__(self):
         """Initialize the scanner with API credentials and default settings."""
@@ -77,7 +78,7 @@ class GateIOLinearRegressionChannelScanner:
             return pd.DataFrame()
 
     def get_linear_regression_channel(self, df: pd.DataFrame) -> dict:
-        """Calculate the Linear Regression Channel for the given data."""
+        """Calculate the Linear Regression Channel with center line for the given data."""
         if len(df) < self.len:
             return None
         
@@ -88,10 +89,11 @@ class GateIOLinearRegressionChannelScanner:
         residuals = src - (slope * x + intercept)
         dev = np.std(residuals)
         
-        T = endy + dev * self.devlen
-        B = endy - dev * self.devlen
+        T = endy + dev * self.devlen  # Top line
+        B = endy - dev * self.devlen  # Bottom line
+        C = endy                      # Center line
         
-        return {'T': T, 'B': B, 'slope': slope}
+        return {'T': T, 'B': B, 'C': C, 'slope': slope}
 
     def set_leverage(self, contract: str) -> bool:
         """Set leverage for a specific contract."""
@@ -176,10 +178,9 @@ class GateIOLinearRegressionChannelScanner:
             return None
 
     def scan_positions(self):
-        """Scan and manage existing positions based on channel conditions."""
+        """Scan and manage existing positions based on channel center line conditions."""
         try:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
-            # sort
             positions = sorted(positions, key=lambda x: x['contract'])
             for pos in positions:
                 contract = pos['contract']
@@ -189,31 +190,25 @@ class GateIOLinearRegressionChannelScanner:
                     if channel:
                         latest_price = self.get_latest_price(contract)
                         pos_size = float(pos['size'])
-                        lowest_close_14 = df['close'].tail(14).min()
-                        highest_close_14 = df['close'].tail(14).max()
                         latest_close = df['close'].iloc[-1]
-                        print(f"{contract}... Latest Close: {latest_close:.4f} | Lowest Close 14: {lowest_close_14:.4f} | "
-                              f"Highest Close 14: {highest_close_14:.4f}", flush=True)
+                        print(f"{contract}... Latest Price: {latest_price:.4f} | "
+                              f"Center Line: {channel['C']:.4f}", flush=True)
 
                         if pos_size > 0:  # Long position
-                            if latest_price < channel['B'] or latest_close < lowest_close_14:
+                            if latest_price < channel['C']:
                                 print(f"Closing LONG position for {contract}: "
-                                      f"Price {latest_price:.4f} < B {channel['B']:.4f} or "
-                                      f"Close {latest_close:.4f} < Lowest Close 14 {lowest_close_14:.4f}", flush=True)
+                                      f"Price {latest_price:.4f} < C {channel['C']:.4f}", flush=True)
                                 self.close_position(contract, pos)
                         elif pos_size < 0:  # Short position
-                            if latest_price > channel['T'] or latest_close > highest_close_14:
+                            if latest_price > channel['C']:
                                 print(f"Closing SHORT position for {contract}: "
-                                      f"Price {latest_price:.4f} > T {channel['T']:.4f} or "
-                                      f"Close {latest_close:.4f} > Highest Close 14 {highest_close_14:.4f}", flush=True)
+                                      f"Price {latest_price:.4f} > C {channel['C']:.4f}", flush=True)
                                 self.close_position(contract, pos)
         except Exception as e:
             print(f"Error scanning positions: {str(e)}", flush=True)
 
         print("Position scan completed", flush=True)
-        # new line
         print("", flush=True)
-        
 
     def get_futures_balance(self) -> dict:
         """Retrieve the current futures account balance."""
@@ -263,8 +258,10 @@ class GateIOLinearRegressionChannelScanner:
                                 low_touches_B = latest['low'] <= channel['B']
                                 
                                 signal = None
+                                # Long signal: touches T, green candle, price above T
                                 if high_touches_T and is_green and latest_price > channel['T']:
                                     signal = "LONG"
+                                # Short signal: touches B, red candle, price below B
                                 elif low_touches_B and is_red and latest_price < channel['B']:
                                     signal = "SHORT"
                                 
@@ -272,17 +269,25 @@ class GateIOLinearRegressionChannelScanner:
                                     existing = self.check_existing_position(contract)
                                     if existing:
                                         pos_size = float(existing['size'])
-                                        if (signal == "LONG" and pos_size < 0) or (signal == "SHORT" and pos_size > 0):
+                                        # Close opposite position if exists
+                                        if (signal == "LONG" and pos_size < 0) or \
+                                           (signal == "SHORT" and pos_size > 0):
                                             self.close_position(contract, existing)
                                             time.sleep(2)
                                     
-                                    if (signal == "LONG" and (not existing or pos_size <= 0)) or \
-                                       (signal == "SHORT" and (not existing or pos_size >= 0)):
-                                        is_long = signal == "LONG"
-                                        self.create_order(contract, self.order_amount, is_long)
+                                    # Open new position if none exists or after closing opposite position
+                                    if signal == "LONG":
+                                        existing = self.check_existing_position(contract)
+                                        if not existing or float(existing['size']) <= 0:
+                                            self.create_order(contract, self.order_amount, True)
+                                    elif signal == "SHORT":
+                                        existing = self.check_existing_position(contract)
+                                        if not existing or float(existing['size']) >= 0:
+                                            self.create_order(contract, self.order_amount, False)
                                 
-                                print(f"{contract} | T: {channel['T']:.4f} | B: {channel['B']:.4f} | "
-                                      f"Latest Price: {latest_price:.4f} | Signal: {signal or 'None'}", flush=True)
+                                print(f"{contract} | T: {channel['T']:.4f} | C: {channel['C']:.4f} | "
+                                      f"B: {channel['B']:.4f} | Latest Price: {latest_price:.4f} | "
+                                      f"Signal: {signal or 'None'}", flush=True)
                     time.sleep(60)
                 if now.minute % 3 == 0:
                     if now.minute % 15 == 0:
