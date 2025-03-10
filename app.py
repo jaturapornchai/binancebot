@@ -261,31 +261,20 @@ class GateIOLinearRegressionChannelScanner:
                                 low_touches_B = last_candle['low'] <= channel['B']
                                 touches_C = (last_candle['low'] <= channel['C'] <= last_candle['high'])
                                 
-                                signal = None
                                 # Modified signal detection for SHORT position using previous candle
                                 if (is_red and 
                                     (high_touches_T or touches_C or low_touches_B) and 
                                     latest_price < channel['T']):
-                                    signal = "SHORT"
-                                
-                                if signal:
                                     existing = self.check_existing_position(contract)
-                                    if existing:
-                                        pos_size = float(existing['size'])
-                                        # Close opposite position (long) if exists
-                                        if signal == "SHORT" and pos_size > 0:
-                                            self.close_position(contract, existing)
-                                            time.sleep(2)
-                                    
                                     # Open new short position if none exists or after closing long position
-                                    if signal == "SHORT":
-                                        existing = self.check_existing_position(contract)
-                                        if not existing or float(existing['size']) >= 0:
-                                            self.create_order(contract, self.order_amount, False)
+                                    if not existing:
+                                        print(f"Opening SHORT position for {contract}", flush=True)
+                                        self.create_order(contract, self.order_amount, False)      
+                                    else:
+                                        print(f"SHORT position already exists for {contract}", flush=True)                                  
                                 
                                 print(f"{contract} | T: {channel['T']:.4f} | C: {channel['C']:.4f} | "
-                                      f"B: {channel['B']:.4f} | Latest Price: {latest_price:.4f} | "
-                                      f"Signal: {signal or 'None'}", flush=True)
+                                      f"B: {channel['B']:.4f} | Latest Price: {latest_price:.4f}", flush=True)
                     time.sleep(60)
                 if now.minute % 3 == 0:
                     if now.minute % 15 == 0:
