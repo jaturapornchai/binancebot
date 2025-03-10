@@ -276,13 +276,6 @@ class GateIOLinearRegressionChannelScanner:
                                 print(f"{contract} | T: {channel['T']:.4f} | C: {channel['C']:.4f} | "
                                       f"B: {channel['B']:.4f} | Latest Price: {latest_price:.4f}", flush=True)
                     time.sleep(60)
-                if now.minute % 3 == 0:
-                    if now.minute % 15 == 0:
-                        first_run = True
-                    else:
-                        self.scan_positions()
-                        time.sleep(60)
-
                 time.sleep(10)
             except Exception as e:
                 print(f"Error in scan loop: {str(e)}", flush=True)
