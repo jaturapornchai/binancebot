@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from datetime import datetime, timezone
 
-
 class GateIOLinearRegressionChannelScanner:
     def __init__(self):
         """Initialize the scanner with API credentials and default settings."""
@@ -178,7 +177,9 @@ class GateIOLinearRegressionChannelScanner:
             return None
 
     def scan_positions(self):
-        """Scan and manage existing positions based on channel center line conditions."""
+        """Scan and manage existing positions based on channel conditions."""
+        print("", flush=True)
+        print("*** Scanning positions...", flush=True)
         try:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
             positions = sorted(positions, key=lambda x: x['contract'])
@@ -190,24 +191,26 @@ class GateIOLinearRegressionChannelScanner:
                     if channel:
                         latest_price = self.get_latest_price(contract)
                         pos_size = float(pos['size'])
-                        latest_close = df['close'].iloc[-1]
                         print(f"{contract}... Latest Price: {latest_price:.4f} | "
-                              f"Center Line: {channel['C']:.4f}", flush=True)
+                              f"T: {channel['T']:.4f} | C: {channel['C']:.4f} | "
+                              f"B: {channel['B']:.4f}", flush=True)
 
-                        if pos_size > 0:  # Long position
+                        # Modified condition: Close short position if price > T
+                        if pos_size < 0:  # Short position
+                            if latest_price > channel['T']:
+                                print(f"Closing SHORT position for {contract}: "
+                                      f"Price {latest_price:.4f} > T {channel['T']:.4f}", flush=True)
+                                self.close_position(contract, pos)
+                        # Keep existing condition for long positions
+                        elif pos_size > 0:  # Long position
                             if latest_price < channel['C']:
                                 print(f"Closing LONG position for {contract}: "
                                       f"Price {latest_price:.4f} < C {channel['C']:.4f}", flush=True)
                                 self.close_position(contract, pos)
-                        elif pos_size < 0:  # Short position
-                            if latest_price > channel['C']:
-                                print(f"Closing SHORT position for {contract}: "
-                                      f"Price {latest_price:.4f} > C {channel['C']:.4f}", flush=True)
-                                self.close_position(contract, pos)
         except Exception as e:
             print(f"Error scanning positions: {str(e)}", flush=True)
 
-        print("Position scan completed", flush=True)
+        print("*** Position scan completed", flush=True)
         print("", flush=True)
 
     def get_futures_balance(self) -> dict:
@@ -250,37 +253,32 @@ class GateIOLinearRegressionChannelScanner:
                         if not df.empty and len(df) >= self.len:
                             channel = self.get_linear_regression_channel(df)
                             if channel:
-                                latest = df.iloc[-1]
+                                # Use previous candle (-1) instead of latest
+                                last_candle = df.iloc[-2]  # Changed from iloc[-1] to iloc[-2]
                                 latest_price = self.get_latest_price(contract)
-                                is_green = latest['close'] > latest['open']
-                                is_red = latest['close'] < latest['open']
-                                high_touches_T = latest['high'] >= channel['T']
-                                low_touches_B = latest['low'] <= channel['B']
+                                is_red = last_candle['close'] < last_candle['open']
+                                high_touches_T = last_candle['high'] >= channel['T']
+                                low_touches_B = last_candle['low'] <= channel['B']
+                                touches_C = (last_candle['low'] <= channel['C'] <= last_candle['high'])
                                 
                                 signal = None
-                                # Long signal: touches T, green candle, price above T
-                                if high_touches_T and is_green and latest_price > channel['T']:
-                                    signal = "LONG"
-                                # Short signal: touches B, red candle, price below B
-                                elif low_touches_B and is_red and latest_price < channel['B']:
+                                # Modified signal detection for SHORT position using previous candle
+                                if (is_red and 
+                                    (high_touches_T or touches_C or low_touches_B) and 
+                                    latest_price < channel['T']):
                                     signal = "SHORT"
                                 
                                 if signal:
                                     existing = self.check_existing_position(contract)
                                     if existing:
                                         pos_size = float(existing['size'])
-                                        # Close opposite position if exists
-                                        if (signal == "LONG" and pos_size < 0) or \
-                                           (signal == "SHORT" and pos_size > 0):
+                                        # Close opposite position (long) if exists
+                                        if signal == "SHORT" and pos_size > 0:
                                             self.close_position(contract, existing)
                                             time.sleep(2)
                                     
-                                    # Open new position if none exists or after closing opposite position
-                                    if signal == "LONG":
-                                        existing = self.check_existing_position(contract)
-                                        if not existing or float(existing['size']) <= 0:
-                                            self.create_order(contract, self.order_amount, True)
-                                    elif signal == "SHORT":
+                                    # Open new short position if none exists or after closing long position
+                                    if signal == "SHORT":
                                         existing = self.check_existing_position(contract)
                                         if not existing or float(existing['size']) >= 0:
                                             self.create_order(contract, self.order_amount, False)
