@@ -109,17 +109,25 @@ class GateIOLRC15mScanner:
             
         latest = df.iloc[-1]
         
+        # ตรวจสอบประเภทของแท่งเทียน (Bullish/Bearish)
+        is_bullish = latest['close'] > latest['open']
+        is_bearish = latest['close'] < latest['open']
+        
         # สัญญาณ LONG:
         # - แท่งเทียนสูงสุดแตะเส้นบนพอดี
+        # - ต้องเป็นแท่งเทียนขาขึ้น (Bullish Candle)
         # - ราคาล่าสุดสูงกว่าเส้นบน
         if (abs(latest['high'] - latest['lrc_top']) < 0.0001 and
+            is_bullish and
             current_price > latest['lrc_top']):
             return "LONG"
             
         # สัญญาณ SHORT:
         # - แท่งเทียนต่ำสุดแตะเส้นล่างพอดี
+        # - ต้องเป็นแท่งเทียนขาลง (Bearish Candle)
         # - ราคาล่าสุดต่ำกว่าเส้นล่าง
         if (abs(latest['low'] - latest['lrc_bottom']) < 0.0001 and
+            is_bearish and
             current_price < latest['lrc_bottom']):
             return "SHORT"
             
@@ -280,7 +288,7 @@ class GateIOLRC15mScanner:
         while True:
             try:
                 now = datetime.now(timezone.utc)
-                if now.minute % 15 == 0 or first_run:                   
+                if now.minute % 15 == 0 or first_run:                  
                     first_run = False
                     self.scan_positions()
                     balance_info = self.get_futures_balance()
@@ -317,17 +325,20 @@ class GateIOLRC15mScanner:
                             first_run = True
                         else:
                             self.scan_positions()
+                            time.sleep(60)
                 time.sleep(10)
                 
             except Exception as e:
                 print(f"เกิดข้อผิดพลาดในวงจรสแกน: {str(e)}", flush=True)
                 time.sleep(60)
 
+
 def main():
     # ฟังก์ชันหลัก
     scanner = GateIOLRC15mScanner()
     print("เริ่มสแกนเนอร์ฟิวเจอร์ส LRC 15 นาที...", flush=True)
     scanner.scan_market()
+
 
 if __name__ == "__main__":
     main()
