@@ -1,344 +1,142 @@
 import os
 import time
 import re
+from typing import List, Dict
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
-from datetime import datetime, timezone
-
-
-class GateIOLRC15mScanner:
+class GateIOShortScanner:
     def __init__(self):
-        # โหลดข้อมูลจากไฟล์ .env
-        load_dotenv()
-        self.api_key = os.getenv('GATEIO_API_KEY')
-        self.secret_key = os.getenv('GATEIO_SECRET_KEY')
-        if not self.api_key or not self.secret_key:
-            raise ValueError("กรุณาตั้งค่า GATEIO_API_KEY และ GATEIO_SECRET_KEY ในไฟล์ .env")
-        
-        # ตั้งค่า API client
-        self.client = ApiClient(Configuration(
-            key=self.api_key,
-            secret=self.secret_key,
-            host="https://api.gateio.ws/api/v4"
-        ))
-        self.futures_api = FuturesApi(self.client)
-        self.leverage = 5  # ค่าเลเวอเรจเริ่มต้น
-        self.order_amount = 40  # ขนาดคำสั่งเริ่มต้น
-        self.lrc_length = 100  # ความยาวของ LRC
-        self.dev_multiplier = 2.0  # ตัวคูณส่วนเบี่ยงเบน
-        self.settle = 'usdt'  # สกุลเงินสำหรับการชำระ
-
-    def get_futures_contracts(self) -> list:
-        # ดึงรายการสัญญาฟิวเจอร์ส
-        try:
-            tickers = self.futures_api.list_futures_tickers(settle='usdt')
-            valid_contracts = []
-            pattern = re.compile(r'^\D+_USDT$')
-            ignore_contracts = ['DOGS_USDT', 'USDC_USDT', 'HEI_USDT']
-            
-            for ticker in tickers:
-                contract = ticker.contract
-                if (pattern.match(contract) and
-                    contract not in ignore_contracts and
-                    float(ticker.volume_24h) * float(ticker.last) > 1000000):
-                    valid_contracts.append(contract)
-            # สุ่มลำดับของสัญญา
-            np.random.shuffle(valid_contracts)
-            return valid_contracts
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการดึงสัญญา: {str(e)}", flush=True)
-            return []
-
-    def get_candlesticks(self, contract: str, limit: int = 100) -> pd.DataFrame:
-        # ดึงข้อมูลแท่งเทียน
-        try:
-            candles = self.futures_api.list_futures_candlesticks(
-                settle='usdt',
-                contract=contract,
-                interval='15m',
-                limit=limit
-            )
-            if not candles:
-                return pd.DataFrame()
-                
-            df = pd.DataFrame([{
-                'timestamp': float(c.t),
-                'open': float(c.o),
-                'high': float(c.h),
-                'low': float(c.l),
-                'close': float(c.c),
-                'volume': float(c.v)
-            } for c in candles])
-            
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
-            return df.sort_values('timestamp')
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการดึงแท่งเทียนสำหรับ {contract}: {str(e)}", flush=True)
-            return pd.DataFrame()
-
-    def calculate_lrc(self, df: pd.DataFrame) -> pd.DataFrame:
-        # คำนวณ Linear Regression Channel
-        if len(df) < self.lrc_length:
-            return df
-        
-        prices = df['close'].values
-        x = np.arange(len(prices))
-        
-        # คำนวณการถดถอยเชิงเส้น
-        A = np.vstack([x, np.ones(len(x))]).T
-        slope, intercept = np.linalg.lstsq(A, prices, rcond=None)[0]
-        
-        # คำนวณเส้นกลาง
-        mid_line = intercept + slope * x
-        deviations = prices - mid_line
-        std_dev = np.std(deviations) * self.dev_multiplier
-        
-        # คำนวณสามเส้น: บน (T), กลาง (C), ล่าง (B)
-        df['lrc_top'] = mid_line + std_dev      # T
-        df['lrc_bottom'] = mid_line - std_dev   # B
-        df['lrc_center'] = mid_line             # C
-        
-        return df.tail(1)
-
-    def check_trading_signal(self, df: pd.DataFrame, current_price: float) -> str:
-        # ตรวจสอบสัญญาณการซื้อขาย
-        if df.empty:
-            return None
-            
-        latest = df.iloc[-1]
-        
-        # ตรวจสอบประเภทของแท่งเทียน (Bullish/Bearish)
-        is_bullish = latest['close'] > latest['open']
-        is_bearish = latest['close'] < latest['open']
-        
-        # สัญญาณ LONG:
-        # - แท่งเทียนสูงสุดแตะเส้นบนพอดี
-        # - ต้องเป็นแท่งเทียนขาขึ้น (Bullish Candle)
-        # - ราคาล่าสุดสูงกว่าเส้นบน
-        if (abs(latest['high'] - latest['lrc_top']) < 0.0001 and
-            is_bullish and
-            current_price > latest['lrc_top']):
-            return "LONG"
-            
-        # สัญญาณ SHORT:
-        # - แท่งเทียนต่ำสุดแตะเส้นล่างพอดี
-        # - ต้องเป็นแท่งเทียนขาลง (Bearish Candle)
-        # - ราคาล่าสุดต่ำกว่าเส้นล่าง
-        if (abs(latest['low'] - latest['lrc_bottom']) < 0.0001 and
-            is_bearish and
-            current_price < latest['lrc_bottom']):
-            return "SHORT"
-            
-        return None
-
-    def check_close_position(self, df: pd.DataFrame, position_type: str, current_price: float, position: dict) -> bool:
-        # ตรวจสอบเงื่อนไขการปิดสถานะ
-        if df.empty:
-            return False
-            
-        latest = df.iloc[-1]
-        
-        # ปิด LONG ถ้าราคาต่ำกว่าเส้นกลาง
-        if position_type == "LONG" and current_price < latest['lrc_center']:
-            return True
-            
-        # ปิด SHORT ถ้าราคาสูงกว่าเส้นกลาง
-        if position_type == "SHORT" and current_price > latest['lrc_center']:
-            return True
-            
-        return False
-
+        load_dotenv() #โหลดตัวแปรจาก .env
+        self.api_key = os.getenv('GATEIO_API_KEY') #ดึง API key
+        self.secret_key = os.getenv('GATEIO_SECRET_KEY') #ดึง Secret key
+        if not self.api_key or not self.secret_key: raise ValueError("ต้องกำหนด GATEIO_API_KEY และ GATEIO_SECRET_KEY ใน .env") #ตรวจสอบ key
+        config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4") #ตั้งค่า API
+        self.client = ApiClient(config) #สร้าง client
+        self.futures_api = FuturesApi(self.client) #เชื่อมต่อ Futures API
+        self.leverage = 5 #กำหนด leverage 5 เท่า
+        self.order_amount = 20 #ขนาดออเดอร์ 20 USD
+        self.lookback_period = 100 #ระยะย้อนหลัง 100 แท่ง
+    def get_futures_contracts(self) -> List[str]:
+        ticket = self.futures_api.list_futures_tickers(settle='usdt') #ดึงรายชื่อ futures
+        valid_contracts = [] #ลิสต์เก็บสัญญาที่ผ่านเงื่อนไข
+        pattern = re.compile(r'^\D+_USDT$') #pattern ชื่อสัญญา
+        for contract in ticket: #วนลูปทุกสัญญา
+            if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']: #กรอง _USDT ไม่เอา USDC, DOGS
+                json_data = contract.to_dict() #แปลงเป็น dict
+                if float(json_data['volume_24h']) * float(json_data['last']) > 500000: #volume > 500,000 USD
+                    valid_contracts.append(contract.contract) #เพิ่มสัญญา
+        return valid_contracts #คืนลิสต์สัญญา
+    def get_candlesticks(self, contract: str) -> pd.DataFrame:
+        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='5m', limit=500) #ดึงแท่งเทียน 5 นาที 500 แท่ง
+        if not candles: return pd.DataFrame() #ถ้าไม่มีข้อมูล คืนว่าง
+        data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles] #แปลงข้อมูล
+        df = pd.DataFrame(data) #สร้าง DataFrame
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s') #แปลง timestamp
+        return df.sort_values('timestamp') #เรียงตามเวลา
+    def calculate_linear_regression(self, df: pd.DataFrame) -> pd.DataFrame:
+        if len(df) < self.lookback_period: return df #ถ้าข้อมูลน้อยเกิน คืนเดิม
+        def calc_lr(values): #ฟังก์ชันคำนวณ LR
+            x = np.arange(len(values)) #array index
+            slope, intercept = np.polyfit(x, values, 1) #คำนวณ slope, intercept
+            return slope * (self.lookback_period - 1) + intercept #ค่าสุดท้ายของเส้น
+        df['middle_line'] = df['close'].rolling(window=self.lookback_period).apply(calc_lr, raw=True) #เส้นกลาง
+        df['dev'] = df['close'].rolling(window=self.lookback_period).std() * 2 #deviation 2SD
+        df['upper_line'] = df['middle_line'] + df['dev'] #เส้นบน
+        df['lower_line'] = df['middle_line'] - df['dev'] #เส้นล่าง
+        return df.dropna() #ลบ NaN
+    def check_trading_signal(self, df: pd.DataFrame) -> str:
+        if len(df) < 2: return None #ถ้าน้อยกว่า 2 แท่ง คืน None
+        current = df.iloc[-1] #แท่งล่าสุด
+        previous = df.iloc[-2] #แท่งก่อนหน้า
+        if previous['high'] >= previous['upper_line'] and current['close'] < current['upper_line']: return "SELL" #SELL: ทะลุเส้นบนและต่ำกว่า
+        if previous['low'] <= previous['lower_line'] and current['close'] > current['lower_line']: return "BUY" #BUY: ทะลุเส้นล่างและสูงกว่า
+        return None #ไม่มีสัญญาณ
     def set_leverage(self, contract: str) -> bool:
-        # ตั้งค่าเลเวอเรจ
         try:
-            self.futures_api.update_position_leverage(
-                contract=contract,
-                settle='usdt',
-                leverage=str(self.leverage)
-            )
-            return True
+            self.futures_api.update_position_leverage(contract=contract, settle='usdt', leverage=str(self.leverage)) #ตั้ง leverage
+            return True #สำเร็จ
         except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการตั้งค่าเลเวอเรจ: {str(e)}", flush=True)
+            print(f"ตั้ง leverage ไม่ได้: {str(e)}", flush=True) #ผิดพลาด
             return False
-
     def get_latest_price(self, contract: str) -> float:
-        # ดึงราคาล่าสุด
+        ticker = self.futures_api.list_futures_tickers(settle='usdt') #ดึง ticker
+        for t in ticker: #หาสัญญา
+            if t.contract == contract: return float(t.last) #คืนราคาล่าสุด
+        return None #ไม่พบ
+    def check_existing_position(self, contract: str) -> Dict:
+        positions = self.futures_api.list_positions(settle='usdt', holding=True) #ดึง position
+        for p in positions: #วนลูป
+            if p.contract == contract: return p.to_dict() #พบ position
+        return None #ไม่พบ
+    def close_position(self, contract: str, position: Dict) -> bool:
         try:
-            ticker = self.futures_api.list_futures_tickers(settle='usdt')
-            return float(next(t.last for t in ticker if t.contract == contract))
-        except Exception:
-            return None
-
-    def check_existing_position(self, contract: str) -> dict:
-        # ตรวจสอบสถานะที่มีอยู่
-        try:
-            positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
-            return next((p for p in positions if p['contract'] == contract), None)
+            size = float(position['size']) #ขนาด position
+            if size < 0: #ถ้าเป็น Short
+                self.futures_api.create_futures_order('usdt', {'contract': contract, 'size': abs(size), 'price': 0, 'tif': 'ioc', 'reduce_only': True}) #ปิด Short
+                print(f"ปิด Short Position {contract} ขนาด {abs(size)}", flush=True) #แจ้งปิด
+                return True #สำเร็จ
+            return False #ไม่ใช่ Short
         except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการตรวจสอบสถานะ: {str(e)}", flush=True)
-            return None
-
-    def close_position(self, contract: str, position: dict) -> bool:
-        # ปิดสถานะ
-        try:
-            if not position:
-                return False
-                
-            size = float(position['size'])
-            if size != 0:
-                self.futures_api.create_futures_order('usdt', {
-                    'contract': contract,
-                    'size': -size,
-                    'price': 0,
-                    'tif': 'ioc',
-                    'reduce_only': True
-                })
-                print(f"ปิดสถานะสำหรับ {contract} (ขนาด: {abs(size)})", flush=True)
-                return True
+            print(f"ปิด Position ไม่ได้: {str(e)}", flush=True) #ผิดพลาด
             return False
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการปิดสถานะ: {str(e)}", flush=True)
-            return False
-
-    def create_order(self, contract: str, size: float, is_long: bool) -> dict:
-        # สร้างคำสั่งซื้อขาย
+    def create_short_order(self, contract: str) -> Dict:
         try:
-            existing = self.check_existing_position(contract)
-            position_type = "LONG" if is_long else "SHORT"
-            
-            if existing:
-                current_size = float(existing['size'])
-                # ถ้ามีสถานะตรงข้ามอยู่ ให้ปิดก่อน
-                if (is_long and current_size < 0) or (not is_long and current_size > 0):
-                    self.close_position(contract, existing)
-                    time.sleep(2)
-                # ถ้ามีสถานะทิศทางเดียวกันอยู่แล้ว ให้ข้าม
-                elif (is_long and current_size > 0) or (not is_long and current_size < 0):
-                    return None
-
-            if not self.set_leverage(contract):
-                return None
-                
-            price = self.get_latest_price(contract)
-            contract_info = self.futures_api.get_futures_contract(
-                contract=contract,
-                settle='usdt'
-            )
-            multiplier = float(contract_info.to_dict()['quanto_multiplier'])
-            min_size = float(contract_info.to_dict()['order_size_min'])
-            
-            usd_value = size * self.leverage
-            contract_size = max(min_size, round(usd_value / (price * multiplier)))
-            
-            order = self.futures_api.create_futures_order('usdt', {
-                'contract': contract,
-                'size': contract_size if is_long else -contract_size,
-                'price': 0,
-                'tif': 'ioc',
-                'reduce_only': False
-            })
-            print(f"เปิดสถานะ {position_type} สำหรับ {contract}", flush=True)
-            return order
+            if not self.set_leverage(contract): return None #ตั้ง leverage
+            price = self.get_latest_price(contract) #ราคาล่าสุด
+            if not price: return None #ไม่มีราคา
+            contract_info = self.futures_api.get_futures_contract(contract=contract, settle='usdt') #ข้อมูลสัญญา
+            multiplier = float(contract_info.to_dict()['quanto_multiplier']) #ตัวคูณ
+            min_size = float(contract_info.to_dict()['order_size_min']) #ขนาดขั้นต่ำ
+            usd_value = self.order_amount * self.leverage #มูลค่า USD
+            size = max(min_size, round(usd_value / (price * multiplier))) #คำนวณ size
+            order = self.futures_api.create_futures_order('usdt', {'contract': contract, 'size': -size, 'price': 0, 'tif': 'ioc', 'reduce_only': False}) #เปิด Short
+            print(f"เปิด Short Position: {contract} ขนาด {size}", flush=True) #แจ้งเปิด
+            return order #คืนออเดอร์
         except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการสร้างคำสั่ง: {str(e)}", flush=True)
+            print(f"เปิด Short ไม่ได้: {str(e)}", flush=True) #ผิดพลาด
             return None
-
     def scan_positions(self):
-        # สแกนสถานะที่เปิดอยู่
         try:
-            positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
-            for pos in positions:
-                contract = pos['contract']
-                print(f"กำลังสแกนสถานะสำหรับ {contract}...", flush=True)
-                df = self.get_candlesticks(contract)
-                if not df.empty:
-                    df['contract'] = contract
-                    df = self.calculate_lrc(df)
-                    current_price = self.get_latest_price(contract)
-                    
-                    if current_price:
-                        pos_type = "LONG" if float(pos['size']) > 0 else "SHORT"
-                        if self.check_close_position(df, pos_type, current_price, pos):
-                            self.close_position(contract, pos)
+            positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)] #ดึง position
+            for pos in positions: #วนลูป position
+                contract = pos['contract'] #ชื่อสัญญา
+                df = self.get_candlesticks(contract) #ดึงแท่งเทียน
+                if not df.empty: #ถ้ามีข้อมูล
+                    df = self.calculate_linear_regression(df) #คำนวณ LR
+                    signal = self.check_trading_signal(df) #ตรวจสัญญาณ
+                    current = df.iloc[-1] #แท่งล่าสุด
+                    if float(pos['size']) < 0 and (signal == "BUY" or current['close'] > current['upper_line']): #ถ้า Short และ (สัญญาณ BUY หรือ ราคา > เส้นบน)
+                        print(f"ตรวจพบสัญญาณปิด Short: {contract}", flush=True) #แจ้งปิด
+                        self.close_position(contract, pos) #ปิด Short
+                    print(f"Position: {contract:12} | Size: {abs(float(pos['size'])):8.4f} | Entry: {float(pos['entry_price']):10.4f} | PNL: {float(pos['unrealised_pnl']):10.4f}", flush=True) #แสดง position
         except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการสแกนสถานะ: {str(e)}", flush=True)
-
-    def get_futures_balance(self) -> dict:
-        # ดึงข้อมูลยอดเงินในบัญชีฟิวเจอร์ส
-        try:
-            account = self.futures_api.list_futures_accounts(settle=self.settle)
-            if not account:
-                raise ValueError("ไม่พบบัญชีฟิวเจอร์ส")
-            balance_info = {
-                'total': float(account.total or 0),
-                'available': float(account.available or 0),
-                'unrealized_pnl': float(account.unrealised_pnl or 0),
-                'currency': account.currency or self.settle,
-            }
-            return balance_info
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการดึงยอดเงิน: {str(e)}", flush=True)
-            return None
-
+            print(f"สแกน position ผิดพลาด: {str(e)}", flush=True) #ผิดพลาด
     def scan_market(self):
-        # สแกนตลาด
-        first_run = True
-        while True:
-            try:
-                now = datetime.now(timezone.utc)
-                if now.minute % 15 == 0 or first_run:                  
-                    first_run = False
-                    self.scan_positions()
-                    balance_info = self.get_futures_balance()
-                    print(f"ยอดเงิน: {balance_info['total']} {balance_info['currency']} | "
-                          f"ใช้ได้: {balance_info['available']} {balance_info['currency']} | "
-                          f"กำไร/ขาดทุนที่ยังไม่รับรู้: {balance_info['unrealized_pnl']} {balance_info['currency']}", flush=True)
-                    self.order_amount = balance_info['total'] / 75
-                    print(f"ขนาดคำสั่ง: {self.order_amount}", flush=True)
-                    
-                    contracts = self.get_futures_contracts()
-                    
-                    for contract in contracts:
-                        df = self.get_candlesticks(contract)
-                        if not df.empty:
-                            df = self.calculate_lrc(df)
-                            current_price = self.get_latest_price(contract)
-                            signal = self.check_trading_signal(df, current_price)
-                            
-                            if signal == "LONG":
-                                self.create_order(contract, self.order_amount, True)
-                            elif signal == "SHORT":
-                                self.create_order(contract, self.order_amount, False)
-                            
-                            latest = df.iloc[-1]
-                            print(f"{contract} | ปิด: {latest['close']} | "
-                                  f"บน: {latest['lrc_top']} | "
-                                  f"กลาง: {latest['lrc_center']} | "
-                                  f"ล่าง: {latest['lrc_bottom']} | "
-                                  f"สัญญาณ: {signal or 'ไม่มี'}", flush=True)
-                    time.sleep(60)
-                else:
-                    if now.minute % 3 == 0:
-                        if now.minute % 15 == 0:
-                            first_run = True
-                        else:
-                            self.scan_positions()
-                            time.sleep(60)
-                time.sleep(10)
-                
-            except Exception as e:
-                print(f"เกิดข้อผิดพลาดในวงจรสแกน: {str(e)}", flush=True)
-                time.sleep(60)
-
-
+        first_run = True #รอบแรก
+        while True: #วนลูปตลอด
+            current_time = pd.Timestamp.now(tz='Asia/Bangkok') #เวลาไทย
+            if current_time.minute % 5 == 0 or first_run: #ทุก 5 นาทีหรือรอบแรก
+                first_run = False #ไม่ใช่รอบแรก
+                self.scan_positions() #สแกน position
+                contracts = self.get_futures_contracts() #ดึงสัญญา
+                print(f"พบ {len(contracts)} คู่เทรด", flush=True) #แสดงจำนวน
+                for contract in contracts: #วนลูปสัญญา
+                    if self.check_existing_position(contract): continue #มี position ข้าม
+                    df = self.get_candlesticks(contract) #ดึงแท่งเทียน
+                    if not df.empty: #ถ้ามีข้อมูล
+                        df = self.calculate_linear_regression(df) #คำนวณ LR
+                        signal = self.check_trading_signal(df) #ตรวจสัญญาณ
+                        if signal == "SELL": #ถ้า SELL
+                            self.create_short_order(contract) #เปิด Short
+                        status = "🔴 SELL" if signal == "SELL" else "🟢 BUY" if signal == "BUY" else "" #สถานะ
+                        print(f"{contract:12} | Close: {df.iloc[-1]['close']:10.4f} | Upper: {df.iloc[-1]['upper_line']:10.4f} | Lower: {df.iloc[-1]['lower_line']:10.4f} | {status}", flush=True) #แสดงข้อมูล
+                time.sleep(30) 
+            time.sleep(10) 
 def main():
-    # ฟังก์ชันหลัก
-    scanner = GateIOLRC15mScanner()
-    print("เริ่มสแกนเนอร์ฟิวเจอร์ส LRC 15 นาที...", flush=True)
-    scanner.scan_market()
-
-
+    scanner = GateIOShortScanner() #สร้าง scanner
+    print("เริ่มสแกนตลาด Futures (Short เท่านั้น)...", flush=True) #แจ้งเริ่ม
+    scanner.scan_market() #เริ่มสแกน
 if __name__ == "__main__":
-    main()
+    main() #รันหลัก
