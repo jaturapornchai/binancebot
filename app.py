@@ -29,7 +29,7 @@ class GateIOSwingTradeScanner:
         for contract in ticket:
             if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
                 json_data = contract.to_dict()
-                if float(json_data['volume_24h']) * float(json_data['last']) > 1000000:
+                if float(json_data['volume_24h']) * float(json_data['last']) > 500000:
                     valid_contracts.append(contract.contract)
         print(f"พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา", flush=True)
         return valid_contracts
@@ -98,19 +98,21 @@ class GateIOSwingTradeScanner:
         return df.dropna()
     
     def check_trading_signal(self, df: pd.DataFrame, latest_price: float) -> str:
-        """ตรวจสอบสัญญาณการซื้อขายตามเงื่อนไขที่กำหนด"""
+        """ตรวจสอบสัญญาณการซื้อขายตามเงื่อนไขที่กำหนดใหม่"""
         if len(df) < 2 or 'upper_line' not in df.columns: return None
         
         current = df.iloc[-1]
         
-        # BUY: แท่งเทียนล่าสุดทับเส้นล่าง และเป็นแท่งเขียว และราคาล่าสุดสูงกว่าเส้นล่าง
-        if current['low'] <= current['lower_line'] and current['is_bullish'] and latest_price > current['lower_line']:
-            print(f"สัญญาณ BUY: ราคาล่าสุด={latest_price:.4f}, เส้นล่าง={current['lower_line']:.4f}", flush=True)
+        # BUY: แท่งเทียนล่าสุดเป็นแท่งเขียว และ ((แท่งเทียนทับเส้นล่างพอดี และราคาล่าสุดสูงกว่าเส้นล่าง) หรือ (แท่งเทียนทับเส้นบนพอดี และราคาล่าสุดสูงกว่าเส้นบน))
+        if current['is_bullish'] and ((current['low'] <= current['lower_line'] and latest_price > current['lower_line']) or 
+                                      (current['high'] >= current['upper_line'] and latest_price > current['upper_line'])):
+            print(f"สัญญาณ BUY: ราคาล่าสุด={latest_price:.4f}, เส้นล่าง={current['lower_line']:.4f}, เส้นบน={current['upper_line']:.4f}", flush=True)
             return "BUY"
         
-        # SELL: แท่งเทียนล่าสุดทับเส้นบน และเป็นแท่งแดง และราคาล่าสุดต่ำกว่าเส้นบน
-        if current['high'] >= current['upper_line'] and current['is_bearish'] and latest_price < current['upper_line']:
-            print(f"สัญญาณ SELL: ราคาล่าสุด={latest_price:.4f}, เส้นบน={current['upper_line']:.4f}", flush=True)
+        # SELL: แท่งเทียนล่าสุดเป็นแท่งแดง และ ((แท่งเทียนทับเส้นบนพอดี และราคาล่าสุดต่ำกว่าเส้นบน) หรือ (แท่งเทียนทับเส้นล่างพอดี และราคาล่าสุดต่ำกว่าเส้นล่าง))
+        if current['is_bearish'] and ((current['high'] >= current['upper_line'] and latest_price < current['upper_line']) or 
+                                      (current['low'] <= current['lower_line'] and latest_price < current['lower_line'])):
+            print(f"สัญญาณ SELL: ราคาล่าสุด={latest_price:.4f}, เส้นบน={current['upper_line']:.4f}, เส้นล่าง={current['lower_line']:.4f}", flush=True)
             return "SELL"
         
         return None
@@ -197,7 +199,7 @@ class GateIOSwingTradeScanner:
             return None
             
     def scan_positions(self):
-        """สแกน positions ที่มีอยู่และปิดตามเงื่อนไข"""
+        """สแกน positions ที่มีอยู่และปิดตามเงื่อนไขใหม่"""
         try:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
             print(f"สแกน {len(positions)} positions ที่เปิดอยู่", flush=True)
@@ -212,14 +214,17 @@ class GateIOSwingTradeScanner:
                     current_price = self.get_latest_price(contract)
                     current = df.iloc[-1]
                     
-                    # ปิด long position ถ้า position เป็น long และ (แท่งเทียนล่าสุดสัมผัสเส้นบน หรือราคาล่าสุดต่ำกว่าเส้นล่าง)
-                    if size > 0 and (current['high'] >= current['upper_line'] or current_price < current['lower_line']):
-                        print(f"สัญญาณปิด LONG: {contract} ราคาล่าสุด={current_price:.4f}, เส้นบน={current['upper_line']:.4f}, เส้นล่าง={current['lower_line']:.4f}", flush=True)
+                    # ตรวจสอบสัญญาณการเทรด
+                    signal = self.check_trading_signal(df, current_price)
+                    
+                    # ปิด long position ถ้า position เป็น long และเกิดสัญญาณ SELL
+                    if size > 0 and signal == "SELL":
+                        print(f"สัญญาณปิด LONG: {contract} เนื่องจากเกิดสัญญาณ SELL", flush=True)
                         self.close_position(contract, pos)
                     
-                    # ปิด short position ถ้า position เป็น short และ (แท่งเทียนล่าสุดสัมผัสเส้นล่าง หรือราคาล่าสุดสูงกว่าเส้นบน)
-                    if size < 0 and (current['low'] <= current['lower_line'] or current_price > current['upper_line']):
-                        print(f"สัญญาณปิด SHORT: {contract} ราคาล่าสุด={current_price:.4f}, เส้นบน={current['upper_line']:.4f}, เส้นล่าง={current['lower_line']:.4f}", flush=True)
+                    # ปิด short position ถ้า position เป็น short และเกิดสัญญาณ BUY
+                    if size < 0 and signal == "BUY":
+                        print(f"สัญญาณปิด SHORT: {contract} เนื่องจากเกิดสัญญาณ BUY", flush=True)
                         self.close_position(contract, pos)
         except Exception as e:
             print(f"เกิดข้อผิดพลาดในการสแกน positions: {str(e)}", flush=True)
@@ -274,6 +279,13 @@ class GateIOSwingTradeScanner:
                 
                 # รอ 30 วินาทีก่อนสแกนรอบถัดไป
                 time.sleep(30)
+            if current_time.minute % 3 == 0:
+                if current_time.minute % 15 == 0:
+                    first_run = True
+                else:
+                    # สแกน positions ที่มีอยู่เพื่อปิดตามเงื่อนไข
+                    self.scan_positions()
+                    time.sleep(60)
             
             # ตรวจสอบทุก 10 วินาที
             time.sleep(10)
