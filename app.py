@@ -261,6 +261,7 @@ class GateIOSwingTradeScanner:
                     signal = self.check_trading_signal(df, current_price)
                     existing_pos = self.check_existing_position(contract)
                     
+                    """
                     if signal == "BUY":
                         # ถ้ามี position short ให้ปิดก่อน
                         if existing_pos and float(existing_pos['size']) < 0:
@@ -269,8 +270,9 @@ class GateIOSwingTradeScanner:
                         # ถ้าไม่มี position ให้เปิด long เลย
                         elif not existing_pos:
                             self.create_long_order(contract)
+                    """
                     
-                    elif signal == "SELL":
+                    if signal == "SELL":
                         # ถ้ามี position long ให้ปิดก่อน
                         if existing_pos and float(existing_pos['size']) > 0:
                             if self.close_position(contract, existing_pos):
