@@ -281,16 +281,6 @@ class GateIOSwingTradeScanner:
                 
                 # รอ 30 วินาทีก่อนสแกนรอบถัดไป
                 time.sleep(30)
-
-            if current_time.minute % 3 == 0:
-                if current_time.minute % 15 == 0:
-                    first_run = True
-                else:
-                    # สแกน positions ที่มีอยู่เพื่อปิดตามเงื่อนไข
-                    print(f"********* สแกนตลาด ณ เวลา {current_time}", flush=True)
-                    self.scan_positions()
-                    print("รอ 60 วินาทีก่อนสแกนรอบถัดไป...", flush=True)
-                    time.sleep(60)
             
             # ตรวจสอบทุก 10 วินาที
             time.sleep(10)
