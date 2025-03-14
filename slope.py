@@ -17,7 +17,7 @@ class GateIOSwingTradeScanner:
         self.client = ApiClient(config)
         self.futures_api = FuturesApi(self.client)
         self.leverage = 2  # ค่า leverage ที่ใช้ - เปลี่ยนเป็น 2 ตามที่ต้องการ
-        self.order_amount = 1500  # จำนวนเงิน USD ที่ใช้ต่อออเดอร์ - เปลี่ยนเป็น 1500 ตามที่ต้องการ
+        self.order_amount = 1000  # จำนวนเงิน USD ที่ใช้ต่อออเดอร์ - เปลี่ยนเป็น 1000 ตามที่ต้องการ
         self.lookback_period = 100  # จำนวนแท่งที่ใช้ในการคำนวณ Linear Regression
         self.dev_multiplier = 2.0  # ตัวคูณของค่าเบี่ยงเบนมาตรฐาน
         self.all_slopes = {}  # เก็บค่า slope ของทุกเหรียญ
