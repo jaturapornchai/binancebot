@@ -1,7 +1,7 @@
 import os
 import time
 import re
-from typing import List, Dict, Tuple
+from typing import List, Dict
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -16,136 +16,84 @@ class GateIOSwingTradeScanner:
         config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4")
         self.client = ApiClient(config)
         self.futures_api = FuturesApi(self.client)
-        self.leverage = 2  # ค่า leverage ที่ใช้ - เปลี่ยนเป็น 2 ตามที่ต้องการ
-        self.order_amount = 1500  # จำนวนเงิน USD ที่ใช้ต่อออเดอร์ - เปลี่ยนเป็น 1500 ตามที่ต้องการ
+        self.leverage = 5  # ค่า leverage ที่ใช้
+        self.order_amount = 10  # จำนวนเงิน USD ที่ใช้ต่อออเดอร์
         self.lookback_period = 100  # จำนวนแท่งที่ใช้ในการคำนวณ Linear Regression
-        self.dev_multiplier = 2.0  # ตัวคูณของค่าเบี่ยงเบนมาตรฐาน
-        self.all_slopes = {}  # เก็บค่า slope ของทุกเหรียญ
-        self.target_symbol = "BTC_USDT"  # ซื้อขายเฉพาะ BTC_USDT
-    
+        self.profit_threshold = 3.0  # เปอร์เซ็นต์กำไรสำหรับการปิด position โดยอัตโนมัติ
+        
     def get_futures_contracts(self) -> List[str]:
-        """ดึงรายการสัญญา Futures ที่มีปริมาณซื้อขายมากกว่า 1 ล้าน USD ใน 24 ชั่วโมง"""
-        try:
-            ticket = self.futures_api.list_futures_tickers(settle='usdt')
-            valid_contracts = []
-            pattern = re.compile(r'^\D+_USDT$')
-            for contract in ticket:
-                if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
-                    json_data = contract.to_dict()
-                    if float(json_data['volume_24h']) * float(json_data['last']) > 500000:
-                        valid_contracts.append(contract.contract)
-            print(f"พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา", flush=True)
-            return valid_contracts
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการดึงรายการสัญญา: {str(e)}", flush=True)
-            return []
+        """ดึงรายการสัญญา Futures ที่มีปริมาณซื้อขายมากกว่า 1,000,000 USD ใน 24 ชั่วโมง"""
+        ticket = self.futures_api.list_futures_tickers(settle='usdt')
+        valid_contracts = []
+        pattern = re.compile(r'^\D+_USDT$')
+        for contract in ticket:
+            if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
+                json_data = contract.to_dict()
+                if float(json_data['volume_24h']) * float(json_data['last']) > 1000000:
+                    valid_contracts.append(contract.contract)
+        print(f"พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา", flush=True)
+        return valid_contracts
     
     def get_candlesticks(self, contract: str) -> pd.DataFrame:
         """ดึงข้อมูลแท่งเทียนของสัญญา"""
-        try:
-            candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
-            if not candles: return pd.DataFrame()
-            data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
-            df = pd.DataFrame(data)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-            return df.sort_values('timestamp')
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียนของ {contract}: {str(e)}", flush=True)
-            return pd.DataFrame()
+        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
+        if not candles: return pd.DataFrame()
+        data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
+        df = pd.DataFrame(data)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+        return df.sort_values('timestamp')
     
     def calculate_linear_regression(self, contract: str, df: pd.DataFrame) -> pd.DataFrame:
-        """คำนวณ Linear Regression และช่องราคา"""
-        if len(df) < self.lookback_period: return pd.DataFrame()
+        """คำนวณ Linear Regression และเก็บค่า slope ปัจจุบันและก่อนหน้า"""
+        if len(df) < self.lookback_period + 1: return pd.DataFrame()  # ต้องการอย่างน้อย lookback_period + 1 แท่ง
         
-        # คำนวณค่าเฉลี่ย (mid) ของราคาปิด
-        df['middle'] = df['close'].rolling(self.lookback_period).mean()
-        
-        # คำนวณ slope ของเส้น linear regression
+        # คำนวณค่า slope ของเส้น linear regression
         x = np.arange(self.lookback_period)
         df['slope'] = df['close'].rolling(self.lookback_period).apply(
-            lambda y: np.polyfit(x, y, 1)[0] if len(y) == self.lookback_period else np.nan, raw=True)
+            lambda y: np.polyfit(x, y, 1)[0], raw=True)
         
-        # คำนวณค่า intercept (จุดตัดแกน y)
-        df['intercept'] = df['middle'] - df['slope'] * (self.lookback_period // 2)
+        # เก็บค่า slope ก่อนหน้า
+        df['slope_prev'] = df['slope'].shift(1)
         
-        # คำนวณจุดสิ้นสุดของเส้น regression
-        df['end_line'] = df['intercept'] + df['slope'] * (self.lookback_period - 1)
-        
-        # คำนวณค่าเบี่ยงเบนมาตรฐานตามสูตร
-        def calculate_deviation(prices):
-            if len(prices) < self.lookback_period:
-                return np.nan
-            
-            y_actual = prices.values
-            x_values = np.arange(len(y_actual))
-            
-            # คำนวณ slope และ intercept ด้วย linear regression
-            slope, intercept = np.polyfit(x_values, y_actual, 1)
-            
-            # คำนวณค่าทำนายจาก regression line
-            y_pred = slope * x_values + intercept
-            
-            # คำนวณผลรวมกำลังสองของความแตกต่าง
-            squared_diff_sum = np.sum(np.power(y_actual - y_pred, 2))
-            
-            # คำนวณ standard deviation
-            dev = np.sqrt(squared_diff_sum / len(y_actual))
-            return dev
-        
-        # ใช้ rolling window เพื่อคำนวณค่าเบี่ยงเบน
-        df['dev'] = df['close'].rolling(self.lookback_period).apply(
-            calculate_deviation, raw=False) * self.dev_multiplier
-        
-        # สร้างเส้นบนและเส้นล่างของ channel
-        df['upper_line'] = df['end_line'] + df['dev']
-        df['lower_line'] = df['end_line'] - df['dev']
-        
-        # เพิ่มคอลัมน์เพื่อระบุว่าแท่งเทียนเป็นสีเขียวหรือแดง (bullish/bearish)
-        df['is_bullish'] = df['close'] > df['open']
-        df['is_bearish'] = df['close'] < df['open']
-        
-        # เก็บค่า slope ล่าสุดของเหรียญนี้
-        if not df.empty and not np.isnan(df.iloc[-1]['slope']):
-            self.all_slopes[contract] = df.iloc[-1]['slope']
-        
-        print(f"{contract} - แท่งเทียนจำนวน {len(df)} แท่ง, slope={df.iloc[-1]['slope']:.6f}, dev={df.iloc[-1]['dev']:.4f}, Upper: {df.iloc[-1]['upper_line']:.4f}, Lower: {df.iloc[-1]['lower_line']:.4f}", flush=True)
+        print(f"{contract} - แท่งเทียนจำนวน {len(df)} แท่ง, slope_now={df.iloc[-1]['slope']:.6f}, slope_last={df.iloc[-1]['slope_prev']:.6f}", flush=True)
         return df.dropna()
     
-    def calculate_average_slope(self) -> float:
-        """คำนวณค่าเฉลี่ย slope ของทุกเหรียญและแสดงรายละเอียด"""
-        if not self.all_slopes:
-            print("ไม่พบข้อมูล slope ของเหรียญใดๆ", flush=True)
-            return 0.0
+    def check_trading_signal(self, df: pd.DataFrame) -> str:
+        """ตรวจสอบสัญญาณการซื้อขายโดยเปรียบเทียบ slope ปัจจุบันกับก่อนหน้า"""
+        if len(df) < 2 or 'slope' not in df.columns or 'slope_prev' not in df.columns: return None
         
-        total_slope = sum(self.all_slopes.values())
-        avg_slope = total_slope / len(self.all_slopes)
+        current = df.iloc[-1]
         
-        # เรียงลำดับเหรียญตาม slope จากมากไปน้อย
-        sorted_slopes = {k: v for k, v in sorted(self.all_slopes.items(), key=lambda item: item[1], reverse=True)}
+        # BUY: ความลาดชันปัจจุบันเพิ่มขึ้นจากก่อนหน้า
+        if current['slope'] > current['slope_prev']:
+            print(f"สัญญาณ BUY: slope_now={current['slope']:.6f}, slope_last={current['slope_prev']:.6f}", flush=True)
+            return "BUY"
         
-        # แบ่งกลุ่มตามค่า slope
-        uptrend_coins = {k: v for k, v in sorted_slopes.items() if v > 0}
-        downtrend_coins = {k: v for k, v in sorted_slopes.items() if v < 0}
+        # SELL: ความลาดชันปัจจุบันลดลงจากก่อนหน้า
+        if current['slope'] < current['slope_prev']:
+            print(f"สัญญาณ SELL: slope_now={current['slope']:.6f}, slope_last={current['slope_prev']:.6f}", flush=True)
+            return "SELL"
         
-        print("\n====================================================", flush=True)
-        print(f"สรุปค่า Slope ของทุกเหรียญ", flush=True)
-        print("====================================================", flush=True)
-        print(f"จำนวนเหรียญทั้งหมด: {len(self.all_slopes)}", flush=True)
-        print(f"ค่าเฉลี่ย Slope: {avg_slope:.6f}", flush=True)
-        print(f"จำนวนเหรียญที่อยู่ใน Uptrend (Slope > 0): {len(uptrend_coins)}", flush=True)
-        print(f"จำนวนเหรียญที่อยู่ใน Downtrend (Slope < 0): {len(downtrend_coins)}", flush=True)
-        
-        if sorted_slopes:
-            print("\nเหรียญที่มี Slope สูงสุด 5 อันดับ:", flush=True)
-            for i, (coin, slope) in enumerate(list(sorted_slopes.items())[:5]):
-                print(f"{i+1}. {coin}: {slope:.6f}", flush=True)
+        return None
+    
+    def calculate_profit_percentage(self, position: Dict) -> float:
+        """คำนวณเปอร์เซ็นต์กำไรของ position"""
+        try:
+            entry_price = float(position['entry_price'])
+            mark_price = float(position['mark_price'])
+            size = float(position['size'])
             
-            print("\nเหรียญที่มี Slope ต่ำสุด 5 อันดับ:", flush=True)
-            for i, (coin, slope) in enumerate(list(sorted_slopes.items())[-5:]):
-                print(f"{i+1}. {coin}: {slope:.6f}", flush=True)
-        
-        print("====================================================", flush=True)
-        return avg_slope
+            if size > 0:  # Long position
+                profit_percentage = (mark_price - entry_price) / entry_price * 100
+            elif size < 0:  # Short position
+                profit_percentage = (entry_price - mark_price) / entry_price * 100
+            else:
+                profit_percentage = 0
+                
+            return profit_percentage
+        except Exception as e:
+            print(f"เกิดข้อผิดพลาดในการคำนวณกำไร: {str(e)}", flush=True)
+            return 0
     
     def set_leverage(self, contract: str) -> bool:
         """ตั้งค่า leverage สำหรับสัญญา"""
@@ -159,31 +107,23 @@ class GateIOSwingTradeScanner:
             
     def get_latest_price(self, contract: str) -> float:
         """ดึงราคาล่าสุดของสัญญา"""
-        try:
-            ticker = self.futures_api.list_futures_tickers(settle='usdt')
-            for t in ticker:
-                if t.contract == contract: return float(t.last)
-            print(f"ไม่พบราคาสำหรับ {contract}", flush=True)
-            return None
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการดึงราคาล่าสุดของ {contract}: {str(e)}", flush=True)
-            return None
+        ticker = self.futures_api.list_futures_tickers(settle='usdt')
+        for t in ticker:
+            if t.contract == contract: return float(t.last)
+        print(f"ไม่พบราคาสำหรับ {contract}", flush=True)
+        return None
     
     def check_existing_position(self, contract: str) -> Dict:
         """ตรวจสอบว่ามี position เปิดอยู่หรือไม่"""
-        try:
-            positions = self.futures_api.list_positions(settle='usdt', holding=True)
-            for p in positions:
-                if p.contract == contract:
-                    position_info = p.to_dict()
-                    size = float(position_info['size'])
-                    position_type = "LONG" if size > 0 else "SHORT" if size < 0 else "NONE"
-                    print(f"พบ position {position_type} สำหรับ {contract}: ขนาด={abs(size)}", flush=True)
-                    return position_info
-            return None
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการตรวจสอบ position ของ {contract}: {str(e)}", flush=True)
-            return None
+        positions = self.futures_api.list_positions(settle='usdt', holding=True)
+        for p in positions:
+            if p.contract == contract:
+                position_info = p.to_dict()
+                size = float(position_info['size'])
+                position_type = "LONG" if size > 0 else "SHORT" if size < 0 else "NONE"
+                print(f"พบ position {position_type} สำหรับ {contract}: ขนาด={abs(size)}", flush=True)
+                return position_info
+        return None
     
     def close_position(self, contract: str, position: Dict) -> bool:
         """ปิด position ที่มีอยู่"""
@@ -212,7 +152,7 @@ class GateIOSwingTradeScanner:
             usd_value = self.order_amount * self.leverage
             size = max(min_size, round(usd_value / (price * multiplier)))
             order = self.futures_api.create_futures_order('usdt', {'contract': contract, 'size': size, 'price': 0, 'tif': 'ioc', 'reduce_only': False})
-            print(f"เปิด position LONG: {contract} ขนาด={size} ($1,000)", flush=True)
+            print(f"เปิด position LONG: {contract} ขนาด={size}", flush=True)
             return order
         except Exception as e:
             print(f"ไม่สามารถเปิด LONG สำหรับ {contract}: {str(e)}", flush=True)
@@ -230,87 +170,100 @@ class GateIOSwingTradeScanner:
             usd_value = self.order_amount * self.leverage
             size = max(min_size, round(usd_value / (price * multiplier)))
             order = self.futures_api.create_futures_order('usdt', {'contract': contract, 'size': -size, 'price': 0, 'tif': 'ioc', 'reduce_only': False})
-            print(f"เปิด position SHORT: {contract} ขนาด={size} ($1,000)", flush=True)
+            print(f"เปิด position SHORT: {contract} ขนาด={size}", flush=True)
             return order
         except Exception as e:
             print(f"ไม่สามารถเปิด SHORT สำหรับ {contract}: {str(e)}", flush=True)
             return None
-    
+            
+    def scan_positions(self):
+        """สแกน positions ที่มีอยู่และปิดตามเงื่อนไขใหม่ (สัญญาณ reverse หรือกำไรเกิน 3%)"""
+        try:
+            positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
+            print(f"สแกน {len(positions)} positions ที่เปิดอยู่", flush=True)
+            for pos in positions:
+                contract = pos['contract']
+                df = self.get_candlesticks(contract)
+                if not df.empty:
+                    df = self.calculate_linear_regression(contract, df)
+                    if df.empty: continue
+                    
+                    size = float(pos['size'])
+                    signal = self.check_trading_signal(df)
+                    profit_percentage = self.calculate_profit_percentage(pos)
+                    
+                    # แสดงข้อมูลกำไร/ขาดทุนปัจจุบัน
+                    position_type = "LONG" if size > 0 else "SHORT"
+                    print(f"{contract} {position_type} - กำไร/ขาดทุนปัจจุบัน: {profit_percentage:.2f}%", flush=True)
+                    
+                    # ปิด long position ถ้า position เป็น long และ (มีสัญญาณ SELL หรือมีกำไรมากกว่า 10%)
+                    if size > 0 and (signal == "SELL" or profit_percentage >= self.profit_threshold):
+                        close_reason = "สัญญาณ SELL" if signal == "SELL" else f"กำไรถึงเป้า {profit_percentage:.2f}%"
+                        print(f"สัญญาณปิด LONG: {contract} เนื่องจาก{close_reason}", flush=True)
+                        self.close_position(contract, pos)
+                    
+                    # ปิด short position ถ้า position เป็น short และ (มีสัญญาณ BUY หรือมีกำไรมากกว่า 10%)
+                    if size < 0 and (signal == "BUY" or profit_percentage >= self.profit_threshold):
+                        close_reason = "สัญญาณ BUY" if signal == "BUY" else f"กำไรถึงเป้า {profit_percentage:.2f}%"
+                        print(f"สัญญาณปิด SHORT: {contract} เนื่องจาก{close_reason}", flush=True)
+                        self.close_position(contract, pos)
+        except Exception as e:
+            print(f"เกิดข้อผิดพลาดในการสแกน positions: {str(e)}", flush=True)
+            
     def scan_market(self):
-        """สแกนตลาดเพื่อวิเคราะห์และทำการซื้อขายตามเงื่อนไขที่กำหนด"""
+        """สแกนตลาดเพื่อหาโอกาสในการเทรดตามเงื่อนไขใหม่"""
         first_run = True
         while True:
-            try:
-                current_time = pd.Timestamp.now(tz='Asia/Bangkok')
-                if current_time.minute % 15 == 0 or first_run:
-                    print(f"\nเริ่มสแกนตลาด ณ เวลา {current_time}", flush=True)
-                    print("====================================================", flush=True)
-                    self.all_slopes = {}  # รีเซ็ตข้อมูล slope ในแต่ละรอบ
-                    first_run = False
-                    
-                    # ดึงรายการสัญญาที่มีสภาพคล่องดี
-                    contracts = self.get_futures_contracts()
-                    
-                    # สแกนทุกสัญญาเพื่อคำนวณ slope
-                    print("\nกำลังคำนวณค่า slope ของแต่ละเหรียญ...", flush=True)
-                    for contract in contracts:
-                        df = self.get_candlesticks(contract)
-                        if df.empty: continue
-                        
-                        df = self.calculate_linear_regression(contract, df)
-                        if df.empty: continue
-                    
-                    # คำนวณและแสดงค่าเฉลี่ย slope
-                    avg_slope = self.calculate_average_slope()
-                    
-                    # ตรวจสอบ position ปัจจุบันของ BTC_USDT
-                    btc_position = self.check_existing_position(self.target_symbol)
-                    
-                    # ใช้เงื่อนไขใหม่ในการซื้อขาย
-                    print("\n====================================================", flush=True)
-                    print(f"กำลังตรวจสอบเงื่อนไขการซื้อขาย {self.target_symbol}...", flush=True)
-                    print(f"ค่าเฉลี่ย Slope: {avg_slope:.6f}", flush=True)
-                    
-                    # เงื่อนไขการปิด position
-                    if btc_position:
-                        size = float(btc_position['size'])
-                        # ถ้ามี position เป็น long และค่าเฉลี่ย slope < 0.1 ให้ปิด position
-                        if size > 0 and avg_slope < 0.1:
-                            print(f"ปิด LONG เนื่องจากค่าเฉลี่ย slope ({avg_slope:.6f}) น้อยกว่า 0.1", flush=True)
-                            self.close_position(self.target_symbol, btc_position)
-                            btc_position = None  # อัพเดทสถานะ position หลังจากปิด
-                        
-                        # ถ้ามี position เป็น short และค่าเฉลี่ย slope > -0.1 ให้ปิด position
-                        elif size < 0 and avg_slope > -0.1:
-                            print(f"ปิด SHORT เนื่องจากค่าเฉลี่ย slope ({avg_slope:.6f}) มากกว่า -0.1", flush=True)
-                            self.close_position(self.target_symbol, btc_position)
-                            btc_position = None  # อัพเดทสถานะ position หลังจากปิด
-                    
-                    # เงื่อนไขการเปิด position ใหม่
-                    if not btc_position:  # ถ้าไม่มี position อยู่
-                        # ถ้าค่าเฉลี่ย slope > 0.1 ให้เปิด long
-                        if avg_slope > 0.1:
-                            print(f"เปิด LONG เนื่องจากค่าเฉลี่ย slope ({avg_slope:.6f}) มากกว่า 0.1", flush=True)
-                            self.create_long_order(self.target_symbol)
-                        
-                        # ถ้าค่าเฉลี่ย slope < -0.1 ให้เปิด short
-                        elif avg_slope < -0.1:
-                            print(f"เปิด SHORT เนื่องจากค่าเฉลี่ย slope ({avg_slope:.6f}) น้อยกว่า -0.1", flush=True)
-                            self.create_short_order(self.target_symbol)
-                    
-                    # รอ 30 วินาทีก่อนสแกนรอบถัดไป
-                    print(f"\nการสแกนเสร็จสิ้น รอถึงช่วงเวลาถัดไป...", flush=True)
-                    time.sleep(30)
+            current_time = pd.Timestamp.now(tz='Asia/Bangkok')
+            if current_time.minute % 15 == 0 or first_run:
+                print(f"เริ่มสแกนตลาด ณ เวลา {current_time}", flush=True)
+                first_run = False
                 
-                # ตรวจสอบทุก 10 วินาที
-                time.sleep(10)
-            except Exception as e:
-                print(f"เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}", flush=True)
-                time.sleep(30)  # รอเวลาในกรณีเกิดข้อผิดพลาด
+                # สแกน positions ที่มีอยู่เพื่อปิดตามเงื่อนไข
+                self.scan_positions()
+                
+                # ดึงรายการสัญญาที่มีสภาพคล่องดี
+                contracts = self.get_futures_contracts()
+                
+                # สแกนทุกสัญญาเพื่อตรวจหาสัญญาณการเทรดใหม่
+                for contract in contracts:
+                    df = self.get_candlesticks(contract)
+                    if df.empty: continue
+                    
+                    df = self.calculate_linear_regression(contract, df)
+                    if df.empty: continue
+                    
+                    # ตรวจหาสัญญาณการเทรด
+                    signal = self.check_trading_signal(df)
+                    existing_pos = self.check_existing_position(contract)
+                    
+                    if signal == "BUY":
+                        # ถ้ามี position short ให้ปิดก่อน
+                        if existing_pos and float(existing_pos['size']) < 0:
+                            if self.close_position(contract, existing_pos):
+                                self.create_long_order(contract)
+                        # ถ้าไม่มี position ให้เปิด long เลย
+                        elif not existing_pos:
+                            self.create_long_order(contract)
+                    
+                    elif signal == "SELL":
+                        # ถ้ามี position long ให้ปิดก่อน
+                        if existing_pos and float(existing_pos['size']) > 0:
+                            if self.close_position(contract, existing_pos):
+                                self.create_short_order(contract)
+                        # ถ้าไม่มี position ให้เปิด short เลย
+                        elif not existing_pos:
+                            self.create_short_order(contract)
+                
+                # รอ 30 วินาทีก่อนสแกนรอบถัดไป
+                time.sleep(30)
+            
+            # ตรวจสอบทุก 10 วินาที
+            time.sleep(10)
 
 def main():
     scanner = GateIOSwingTradeScanner()
-    print("เริ่มต้นระบบวิเคราะห์และซื้อขาย Futures...", flush=True)
+    print("เริ่มต้นระบบสแกนตลาด Futures ด้วย Linear Regression Slope...", flush=True)
     scanner.scan_market()
 
 if __name__ == "__main__":
