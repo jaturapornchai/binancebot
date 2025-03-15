@@ -45,87 +45,120 @@ class GateIOLinearRegressionTrader:
         df['candle_color'] = np.where(df['close'] >= df['open'], 1, 0)  # 1=เขียว, 0=แดง
         return df.sort_values('timestamp')
     
-    def calculate_linear_regression_channel(self, df: pd.DataFrame) -> pd.DataFrame:
+    def calculate_linear_regression_channel(self, df: pd.DataFrame) -> Dict:
         """คำนวณ Linear Regression Channel ตามวิธีใน TradingView"""
         if len(df) < self.lookback_period: 
             print(f"ข้อมูลไม่เพียงพอ ต้องการอย่างน้อย {self.lookback_period} แท่ง แต่มีเพียง {len(df)} แท่ง", flush=True)
-            return pd.DataFrame()
+            return {}
             
         # ใช้เฉพาะข้อมูล lookback_period ล่าสุด
         df = df.iloc[-self.lookback_period:].copy().reset_index(drop=True)
         
-        # สร้าง x และ y สำหรับการคำนวณ
-        x = np.arange(len(df))
-        y = df['close'].values
+        # ข้อมูลแท่งเทียนล่าสุด
+        latest_candle = df.iloc[-1].copy()
         
-        # คำนวณเส้น Linear Regression
-        slope, intercept = np.polyfit(x, y, 1)
+        # คำนวณ Linear Regression Channel ตาม TradingView script
+        src = df['close'].values
+        len_period = self.lookback_period
         
-        # คำนวณจุดเริ่มต้นและจุดสิ้นสุดของเส้นกลาง
-        start_middle = intercept
-        end_middle = intercept + slope * (len(df) - 1)
+        # คำนวณค่า mid
+        mid = np.sum(src) / len_period
         
-        # คำนวณค่าเบี่ยงเบนมาตรฐาน
-        y_pred = intercept + slope * x
-        dev = np.sqrt(np.sum((y - y_pred) ** 2) / len(df))
+        # คำนวณค่า slope ตามวิธีการของ TradingView
+        # slope = linreg(src, len, 0) - linreg(src, len, 1)
+        # ต้องจำลองฟังก์ชั่น linreg ของ TradingView
+        x = np.arange(len_period)
+        slope_now = np.polyfit(x, src, 1)[0]
+        slope_prev = np.polyfit(np.arange(1, len_period+1), np.append(src[0], src[:-1]), 1)[0]
+        slope = slope_now - slope_prev
         
-        # คำนวณเส้นบนและเส้นล่างของ channel
-        start_upper = start_middle + dev * self.deviation
-        end_upper = end_middle + dev * self.deviation
-        start_lower = start_middle - dev * self.deviation
-        end_lower = end_middle - dev * self.deviation
+        # คำนวณค่า intercept ตามวิธีการของ TradingView
+        # intercept = mid - slope * floor(len / 2) + ((1 - (len % 2)) / 2) * slope
+        intercept = mid - slope * np.floor(len_period / 2) + ((1 - (len_period % 2)) / 2) * slope
         
-        print(f"Linear Regression ค่าที่คำนวณได้: slope={slope:.6f}, intercept={intercept:.6f}, dev={dev:.6f}", flush=True)
-        print(f"จุดของเส้นกลาง: เริ่มต้น={start_middle:.4f}, สิ้นสุด={end_middle:.4f}", flush=True)
-        print(f"จุดของเส้นบน: เริ่มต้น={start_upper:.4f}, สิ้นสุด={end_upper:.4f}", flush=True)
-        print(f"จุดของเส้นล่าง: เริ่มต้น={start_lower:.4f}, สิ้นสุด={end_lower:.4f}", flush=True)
+        # คำนวณค่า endy
+        # endy = intercept + slope * (len - 1)
+        endy = intercept + slope * (len_period - 1)
         
-        # คำนวณค่าเส้นสำหรับแท่งเทียนล่าสุด (แท่งสุดท้าย)
-        latest_middle = end_middle
-        latest_upper = end_upper
-        latest_lower = end_lower
+        # คำนวณค่า dev
+        # for x = 0 to len - 1
+        #     dev := dev + pow(src[x] - (slope * (len - x) + intercept), 2)
+        # dev := sqrt(dev/len)
+        dev = 0.0
+        for x in range(len_period):
+            dev += (src[x] - (slope * (len_period - x) + intercept)) ** 2
+        dev = np.sqrt(dev / len_period)
         
-        # เพิ่มข้อมูลเข้าไปใน DataFrame
-        df_result = df.copy()
-        df_result['middle_line'] = intercept + slope * x
-        df_result['upper_line'] = df_result['middle_line'] + dev * self.deviation
-        df_result['lower_line'] = df_result['middle_line'] - dev * self.deviation
+        # คำนวณจุดของเส้นบน เส้นกลาง และเส้นล่างสำหรับแท่งล่าสุด
+        middle_line = endy
+        upper_line = middle_line + dev * self.deviation
+        lower_line = middle_line - dev * self.deviation
         
-        # เพิ่มค่าล่าสุดสำหรับใช้ในการตัดสินใจ
-        latest_candle = df_result.iloc[-1].copy()
-        latest_candle['latest_middle_line'] = latest_middle
-        latest_candle['latest_upper_line'] = latest_upper
-        latest_candle['latest_lower_line'] = latest_lower
+        # ตรวจสอบว่าแท่งล่าสุดทับเส้นบนหรือเส้นล่างหรือไม่
+        touches_upper_line = (latest_candle['high'] >= upper_line and latest_candle['low'] <= upper_line)
+        touches_lower_line = (latest_candle['high'] >= lower_line and latest_candle['low'] <= lower_line)
         
-        return latest_candle
+        # สร้าง dict ผลลัพธ์
+        result = {
+            'candle': latest_candle.to_dict(),
+            'slope': slope,
+            'intercept': intercept,
+            'middle_line': middle_line,
+            'upper_line': upper_line,
+            'lower_line': lower_line,
+            'dev': dev,
+            'touches_upper_line': touches_upper_line,
+            'touches_lower_line': touches_lower_line
+        }
+        
+        print(f"Linear Regression ค่าที่คำนวณได้:", flush=True)
+        print(f"  slope={slope:.6f}, intercept={intercept:.6f}, dev={dev:.6f}", flush=True)
+        print(f"  เส้นกลาง={middle_line:.4f}, เส้นบน={upper_line:.4f}, เส้นล่าง={lower_line:.4f}", flush=True)
+        print(f"  แท่งทับเส้นบน={touches_upper_line}, แท่งทับเส้นล่าง={touches_lower_line}", flush=True)
+        print(f"  แท่งเป็นสี{'เขียว' if latest_candle['candle_color'] == 1 else 'แดง'}", flush=True)
+        
+        return result
     
-    def check_trading_signal(self, candle: pd.Series, last_price: float) -> str:
+    def check_trading_signal(self, channel_data: Dict) -> str:
         """ตรวจสอบสัญญาณการซื้อขายตามเงื่อนไขที่กำหนด"""
-        if candle.empty: return None
+        if not channel_data: return None
         
-        # ตรวจสอบว่าแท่งล่าสุดอยู่ที่เส้นบนหรือเส้นล่างหรือไม่
-        touches_upper_line = (candle['high'] >= candle['latest_upper_line'] and candle['low'] <= candle['latest_upper_line'])
-        touches_lower_line = (candle['high'] >= candle['latest_lower_line'] and candle['low'] <= candle['latest_lower_line'])
-        
+        candle = channel_data['candle']
+        touches_upper_line = channel_data['touches_upper_line']
+        touches_lower_line = channel_data['touches_lower_line']
         is_green_candle = candle['candle_color'] == 1
         is_red_candle = candle['candle_color'] == 0
         
-        # เงื่อนไขการเกิดสัญญาณ BUY
-        # BUY=CANDLE เป็นสีเขียว และ ((CANDLE ทับเส้นล่าง และ LAST PRICE สูงกว่าเส้นล่าง) หรือ (CANDLE ทับเส้นบน และ LAST PRICE สูงกว่าเส้นบน))
-        if is_green_candle and ((touches_lower_line and last_price > candle['latest_lower_line']) or 
-                               (touches_upper_line and last_price > candle['latest_upper_line'])):
-            print(f"สัญญาณ BUY: แท่งเขียว, แท่งทับเส้น, ราคาล่าสุด={last_price:.4f}, เส้นบน={candle['latest_upper_line']:.4f}, เส้นล่าง={candle['latest_lower_line']:.4f}", flush=True)
+        # BUY=CANDLE เป็นสีเขียว และ CANDLE ทับเส้นบน
+        if is_green_candle and touches_upper_line:
+            print(f"สัญญาณ BUY: แท่งเขียว, แท่งทับเส้นบน", flush=True)
             return "BUY"
         
-        # เงื่อนไขการเกิดสัญญาณ SELL
-        # SELL=CANDLE เป็นสีแดง และ ((CANDLE ทับเส้นบน และ LAST PRICE ต่ำกว่าเส้นบน) หรือ (CANDLE ทับเส้นล่าง และ LAST PRICE ต่ำกว่าเส้นล่าง))
-        if is_red_candle and ((touches_upper_line and last_price < candle['latest_upper_line']) or 
-                             (touches_lower_line and last_price < candle['latest_lower_line'])):
-            print(f"สัญญาณ SELL: แท่งแดง, แท่งทับเส้น, ราคาล่าสุด={last_price:.4f}, เส้นบน={candle['latest_upper_line']:.4f}, เส้นล่าง={candle['latest_lower_line']:.4f}", flush=True)
+        # SELL=CANDLE เป็นสีแดง และ CANDLE ทับเส้นล่าง
+        if is_red_candle and touches_lower_line:
+            print(f"สัญญาณ SELL: แท่งแดง, แท่งทับเส้นล่าง", flush=True)
             return "SELL"
         
-        print(f"ไม่พบสัญญาณซื้อขาย: แท่ง{'เขียว' if is_green_candle else 'แดง'}, ทับเส้นบน={touches_upper_line}, ทับเส้นล่าง={touches_lower_line}, ราคาล่าสุด={last_price:.4f}", flush=True)
+        print(f"ไม่พบสัญญาณซื้อขาย", flush=True)
         return None
+    
+    def check_close_position_signal(self, channel_data: Dict, position_type: str, last_price: float) -> bool:
+        """ตรวจสอบเงื่อนไขการปิด position"""
+        if not channel_data: return False
+        
+        middle_line = channel_data['middle_line']
+        
+        # ปิด long position ถ้า position เดิมที่เปิดอยู่เป็น long และ ราคาล่าสุดต่ำกว่า MIDDLE
+        if position_type == "LONG" and last_price < middle_line:
+            print(f"สัญญาณปิด LONG: ราคาล่าสุด={last_price:.4f} ต่ำกว่าเส้นกลาง={middle_line:.4f}", flush=True)
+            return True
+        
+        # ปิด short position ถ้า position เดิมที่เปิดอยู่เป็น short และ ราคาล่าสุดสูงกว่า MIDDLE
+        if position_type == "SHORT" and last_price > middle_line:
+            print(f"สัญญาณปิด SHORT: ราคาล่าสุด={last_price:.4f} สูงกว่าเส้นกลาง={middle_line:.4f}", flush=True)
+            return True
+        
+        return False
     
     def set_leverage(self, contract: str) -> bool:
         """ตั้งค่า leverage สำหรับสัญญา"""
@@ -217,25 +250,18 @@ class GateIOLinearRegressionTrader:
                 contract = pos['contract']
                 df = self.get_candlesticks(contract)
                 if not df.empty:
-                    latest_candle = self.calculate_linear_regression_channel(df)
-                    if latest_candle.empty: continue
+                    channel_data = self.calculate_linear_regression_channel(df)
+                    if not channel_data: continue
                     
                     # ดึงราคาล่าสุด
                     last_price = self.get_latest_price(contract)
                     if not last_price: continue
                     
-                    # ตรวจสอบสัญญาณซื้อขาย
-                    signal = self.check_trading_signal(latest_candle, last_price)
                     size = float(pos['size'])
+                    position_type = "LONG" if size > 0 else "SHORT" if size < 0 else "NONE"
                     
-                    # ปิด long position ถ้า position เป็น long และมีสัญญาณ SELL
-                    if size > 0 and signal == "SELL":
-                        print(f"สัญญาณปิด LONG: {contract} เนื่องจากได้รับสัญญาณ SELL", flush=True)
-                        self.close_position(contract, pos)
-                    
-                    # ปิด short position ถ้า position เป็น short และมีสัญญาณ BUY
-                    if size < 0 and signal == "BUY":
-                        print(f"สัญญาณปิด SHORT: {contract} เนื่องจากได้รับสัญญาณ BUY", flush=True)
+                    # ตรวจสอบเงื่อนไขการปิด position
+                    if self.check_close_position_signal(channel_data, position_type, last_price):
                         self.close_position(contract, pos)
         except Exception as e:
             print(f"เกิดข้อผิดพลาดในการสแกน positions: {str(e)}", flush=True)
@@ -260,15 +286,11 @@ class GateIOLinearRegressionTrader:
                     df = self.get_candlesticks(contract)
                     if df.empty: continue
                     
-                    latest_candle = self.calculate_linear_regression_channel(df)
-                    if latest_candle.empty: continue
-                    
-                    # ดึงราคาล่าสุด
-                    last_price = self.get_latest_price(contract)
-                    if not last_price: continue
+                    channel_data = self.calculate_linear_regression_channel(df)
+                    if not channel_data: continue
                     
                     # ตรวจหาสัญญาณการเทรด
-                    signal = self.check_trading_signal(latest_candle, last_price)
+                    signal = self.check_trading_signal(channel_data)
                     existing_pos = self.check_existing_position(contract)
                     
                     if signal == "BUY":
