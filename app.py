@@ -95,7 +95,7 @@ class GateIOSwingTradeScanner:
         sell_signal = (is_red and current_candle['high'] >= current_candle['TOP'] and previous_candle['high'] > previous_candle['TOP'])
         if buy_signal:
             self.console.print(f"[green]สัญญาณ BUY: CANDLE สีเขียว (close={current_candle['close']:.6f} > open={current_candle['open']:.6f}) และ low={current_candle['low']:.6f} <= BOTTOM={current_candle['BOTTOM']:.6f} และแท่งก่อนหน้า low={previous_candle['low']:.6f} < BOTTOM={previous_candle['BOTTOM']:.6f}[/green]")
-            return "BUY"
+            return "BUYX"
         elif sell_signal:
             self.console.print(f"[red]สัญญาณ SELL: CANDLE สีแดง (close={current_candle['close']:.6f} < open={current_candle['open']:.6f}) และ high={current_candle['high']:.6f} >= TOP={current_candle['TOP']:.6f} และแท่งก่อนหน้า high={previous_candle['high']:.6f} > TOP={previous_candle['TOP']:.6f}[/red]")
             return "SELL"
