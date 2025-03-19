@@ -4,13 +4,12 @@ import re
 from typing import List, Dict, Tuple
 import pandas as pd
 import numpy as np
-from scipy import stats
 from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from rich.console import Console
 
 
-class GateIOLRCTradeBot:
+class GateIODBOTradeBot:
     def __init__(self):
         # โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env
         load_dotenv()
@@ -29,9 +28,17 @@ class GateIOLRCTradeBot:
         # ตัวแปรการตั้งค่า
         self.leverage = 5  # คูณเลเวอเรจ
         self.order_amount = 50  # จำนวนเงิน USD สำหรับแต่ละออเดอร์
-        self.lookback_period = 100  # จำนวนแท่งเทียนย้อนหลังสำหรับ Linear Regression Channel
-        self.devlen = 2.0  # ค่าเบี่ยงเบนมาตรฐานสำหรับช่อง
         self.console = Console()  # สำหรับแสดงผลในคอนโซล
+        
+        # พารามิเตอร์สำหรับ Double break out Caco Maia
+        self.media_rapida = 8  # Fast average
+        self.media_lenta = 20  # Slow average
+        self.trix_length = 7  # TRIX length
+        self.trix_ma = 4  # TRIX Average
+        self.stoch_length = 14  # Stochastic Length
+        self.stoch_k = 3  # Stochastic %K
+        self.stoch_d = 3  # Stochastic %D
+        self.lookback_period = 14  # จำนวนแท่งเทียนย้อนหลังสำหรับการตรวจสอบการปิด position
         
     def get_futures_contracts(self) -> List[str]:
         """ดึงรายชื่อสัญญาที่มีสภาพคล่องเพียงพอ"""
@@ -61,92 +68,101 @@ class GateIOLRCTradeBot:
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
         return df.sort_values('timestamp')
     
-    def calculate_linear_regression_channel(self, contract: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, float]:
-        """คำนวณ Linear Regression Channel โดยใช้วิธีทางสถิติตามสูตร TradingView"""
-        if len(df) < self.lookback_period:
-            return pd.DataFrame(), 0.0
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """คำนวณตัวชี้วัดสำหรับ Double break out Caco Maia"""
+        if len(df) < max(self.media_lenta, self.stoch_length, self.trix_length + self.trix_ma) + 10:
+            return pd.DataFrame()
             
-        price = self.get_latest_price(contract)
-        if price is None:
-            return pd.DataFrame(), 0.0
-            
-        # ใช้ข้อมูลราคาปิด length ล่าสุด
-        recent_df = df.tail(self.lookback_period).copy()
-        prices = recent_df['close'].values
+        # คำนวณค่าเฉลี่ยเคลื่อนที่
+        df['sma_fast'] = df['close'].rolling(window=self.media_rapida).mean()
+        df['sma_slow'] = df['close'].rolling(window=self.media_lenta).mean()
         
-        # สร้างแกน x (เวลา)
-        x = np.arange(len(prices))
+        # คำนวณ TRIX
+        # ฟังก์ชันสำหรับคำนวณ EMA ซ้อน 3 ชั้น
+        def tema(series, length):
+            ema1 = series.ewm(span=length, adjust=False).mean()
+            ema2 = ema1.ewm(span=length, adjust=False).mean()
+            ema3 = ema2.ewm(span=length, adjust=False).mean()
+            return ema3
         
-        # คำนวณเส้นแนวโน้มด้วย Linear Regression
-        slope, intercept, r_value, p_value, std_err = stats.linregress(x, prices)
+        tema_values = tema(df['close'], self.trix_length)
+        # คำนวณ TRIX = ((ค่าปัจจุบัน - ค่าก่อนหน้า) / ค่าก่อนหน้า) * 10000
+        df['trix'] = ((tema_values - tema_values.shift(1)) / tema_values.shift(1)) * 10000
+        df['trix_signal'] = df['trix'].ewm(span=self.trix_ma, adjust=False).mean()
         
-        # คำนวณจุดบนเส้นแนวโน้ม Linear Regression
-        line_values = intercept + slope * x
+        # คำนวณ Stochastic
+        df['stoch_lowest'] = df['low'].rolling(window=self.stoch_length).min()
+        df['stoch_highest'] = df['high'].rolling(window=self.stoch_length).max()
+        df['stoch_raw'] = 100 * ((df['close'] - df['stoch_lowest']) / (df['stoch_highest'] - df['stoch_lowest']))
+        df['stoch'] = df['stoch_raw'].rolling(window=self.stoch_d).mean()
+        df['stoch_k'] = df['stoch'].rolling(window=self.stoch_k).mean()
         
-        # คำนวณค่าความเบี่ยงเบนมาตรฐานของระยะห่างระหว่างราคาจริงกับเส้นแนวโน้ม
-        distances = prices - line_values
-        std_dev = np.std(distances)
+        # คำนวณค่าต่ำสุดและสูงสุดย้อนหลัง 14 time frame สำหรับการปิด position
+        df['lowest_14'] = df['low'].rolling(window=self.lookback_period).min()
+        df['highest_14'] = df['high'].rolling(window=self.lookback_period).max()
         
-        # คำนวณช่อง Linear Regression (เส้นบน, เส้นกลาง, เส้นล่าง)
-        middle_line = intercept + slope * (len(prices) - 1)  # ค่าของเส้นแนวโน้มที่จุดล่าสุด
-        upper_line = middle_line + std_dev * self.devlen
-        lower_line = middle_line - std_dev * self.devlen
+        return df.dropna()
+    
+    def trix_comprado(self, df: pd.DataFrame, index: int) -> bool:
+        """ตรวจสอบเงื่อนไข TRIX เป็นบวก"""
+        return df['trix'].iloc[index] > df['trix_signal'].iloc[index]
+    
+    def stock_comprado(self, df: pd.DataFrame, index: int) -> bool:
+        """ตรวจสอบเงื่อนไข Stochastic เป็นบวก"""
+        return df['stoch'].iloc[index] > df['stoch_k'].iloc[index]
+    
+    def rompeu(self, df: pd.DataFrame, index: int) -> bool:
+        """ตรวจสอบเงื่อนไขสัญญาณซื้อ (Break up)"""
+        candle = df.iloc[index]
+        # รูปแบบแท่งเทียนทะลุขึ้น
+        breakup_pattern = (
+            candle['close'] > candle['open'] and
+            candle['open'] <= candle['sma_fast'] and
+            candle['close'] > candle['sma_fast'] and
+            candle['low'] < candle['sma_slow'] and
+            candle['close'] > candle['sma_slow']
+        )
+        # ตัวกรองเป็นบวก
+        filters_ok = self.trix_comprado(df, index) and self.stock_comprado(df, index)
         
-        # คำนวณเส้นกลางระหว่างเส้นบนกับเส้นกลาง และเส้นกลางกับเส้นล่าง
-        tmid = (upper_line + middle_line) / 2
-        bmid = (middle_line + lower_line) / 2
+        return breakup_pattern and filters_ok
+    
+    def perdeu(self, df: pd.DataFrame, index: int) -> bool:
+        """ตรวจสอบเงื่อนไขสัญญาณขาย (Break down)"""
+        candle = df.iloc[index]
+        # รูปแบบแท่งเทียนทะลุลง
+        breakdown_pattern = (
+            candle['close'] < candle['open'] and
+            candle['open'] >= candle['sma_fast'] and
+            candle['close'] < candle['sma_fast'] and
+            candle['high'] > candle['sma_slow'] and
+            candle['close'] < candle['sma_slow']
+        )
+        # ตัวกรองเป็นลบ
+        filters_ok = not self.trix_comprado(df, index) and not self.stock_comprado(df, index)
         
-        # สร้าง DataFrame ผลลัพธ์
-        result_df = df.tail(1).copy()
-        result_df['MIDDLE'] = middle_line
-        result_df['TOP'] = upper_line
-        result_df['BOTTOM'] = lower_line
-        result_df['TMID'] = tmid
-        result_df['BMID'] = bmid
-        
-        # แสดงข้อมูลการคำนวณในคอนโซล
-        self.console.print(f"[cyan]{contract}[/cyan] "
-                        f"price={price:.6f}, "
-                        f"slope={slope:.6f}, "
-                        f"intercept={intercept:.6f}, "
-                        f"std_dev={std_dev:.6f}, "
-                        f"TOP={upper_line:.6f}, "
-                        f"MIDDLE={middle_line:.6f}, "
-                        f"BOTTOM={lower_line:.6f}, "
-                        f"TMID={tmid:.6f}, "
-                        f"BMID={bmid:.6f}")
-                        
-        return result_df, slope
-        
-    def check_trading_signal(self, df: pd.DataFrame, slope: float) -> str:
+        return breakdown_pattern and filters_ok
+    
+    def check_trading_signal(self, df: pd.DataFrame) -> str:
         """ตรวจสอบสัญญาณการเทรด"""
-        if len(df) < 1:
+        if len(df) < 2:
             return None
             
-        candle = df.iloc[-1]
+        # ใช้ข้อมูลล่าสุด
+        last_index = len(df) - 1
         
-        # ตรวจสอบสีของแท่งเทียน
-        is_green = candle['close'] > candle['open']
-        is_red = candle['close'] < candle['open']
-        
-        # ตรวจสอบว่าแท่งเทียนทะลุเส้นบนหรือเส้นล่าง
-        high_above_top = candle['high'] > candle['TOP']
-        low_below_bottom = candle['low'] < candle['BOTTOM']
-        
-        # สัญญาณ BUY: แท่งเทียนสีเขียว + ทะลุเส้นบน
-        if is_green and high_above_top:
-            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว (close={candle['close']:.6f} > open={candle['open']:.6f}) "
-                            f"และทะลุเส้นบน (high={candle['high']:.6f} > TOP={candle['TOP']:.6f})[/green]")
+        # ตรวจสอบเงื่อนไขสัญญาณซื้อ
+        if self.rompeu(df, last_index):
+            self.console.print(f"[green]สัญญาณ BUY: Double breakout Caco Maia - Break up![/green]")
             return "BUY"
             
-        # สัญญาณ SELL: แท่งเทียนสีแดง + ทะลุเส้นล่าง
-        elif is_red and low_below_bottom:
-            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง (close={candle['close']:.6f} < open={candle['open']:.6f}) "
-                            f"และทะลุเส้นล่าง (low={candle['low']:.6f} < BOTTOM={candle['BOTTOM']:.6f})[/red]")
+        # ตรวจสอบเงื่อนไขสัญญาณขาย
+        elif self.perdeu(df, last_index):
+            self.console.print(f"[red]สัญญาณ SELL: Double breakout Caco Maia - Break down![/red]")
             return "SELL"
             
         return None
-        
+    
     def set_leverage(self, contract: str) -> bool:
         """ตั้งค่า leverage สำหรับสัญญา"""
         try:
@@ -280,25 +296,24 @@ class GateIOLRCTradeBot:
             for pos in positions:
                 contract = pos['contract']
                 
-                # ดึงข้อมูลแท่งเทียนและคำนวณ Linear Regression Channel
+                # ดึงข้อมูลแท่งเทียนและคำนวณตัวชี้วัด
                 df = self.get_candlesticks(contract)
                 if not df.empty:
-                    df, _ = self.calculate_linear_regression_channel(contract, df)
+                    df = self.calculate_indicators(df)
                     if not df.empty:
                         latest_price = self.get_latest_price(contract)
                         if latest_price:
-                            tmid = df['TMID'].iloc[-1]
-                            bmid = df['BMID'].iloc[-1]
+                            latest_data = df.iloc[-1]
                             size = float(pos['size'])
                             
-                            # ปิด LONG ถ้าราคาต่ำกว่า TMID
-                            if size > 0 and latest_price < tmid:
-                                self.console.print(f"[yellow]ปิด LONG position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} < TMID={tmid:.6f}[/yellow]")
+                            # ปิด LONG ถ้าราคาล่าสุดต่ำกว่าราคาต่ำสุดย้อนหลัง 14 time frame
+                            if size > 0 and latest_price < latest_data['lowest_14']:
+                                self.console.print(f"[yellow]ปิด LONG position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} < ราคาต่ำสุดย้อนหลัง 14 แท่ง={latest_data['lowest_14']:.6f}[/yellow]")
                                 self.close_position(contract, pos)
                                 
-                            # ปิด SHORT ถ้าราคาสูงกว่า BMID
-                            elif size < 0 and latest_price > bmid:
-                                self.console.print(f"[yellow]ปิด SHORT position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} > BMID={bmid:.6f}[/yellow]")
+                            # ปิด SHORT ถ้าราคาล่าสุดสูงกว่าราคาสูงสุดย้อนหลัง 14 time frame
+                            elif size < 0 and latest_price > latest_data['highest_14']:
+                                self.console.print(f"[yellow]ปิด SHORT position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} > ราคาสูงสุดย้อนหลัง 14 แท่ง={latest_data['highest_14']:.6f}[/yellow]")
                                 self.close_position(contract, pos)
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกน positions: {str(e)}[/red]")
@@ -321,13 +336,13 @@ class GateIOLRCTradeBot:
                     # สแกนตลาดเพื่อหาสัญญาณใหม่
                     contracts = self.get_futures_contracts()
                     for contract in contracts:
-                        # ดึงข้อมูลแท่งเทียนและคำนวณ Linear Regression Channel
+                        # ดึงข้อมูลแท่งเทียนและคำนวณตัวชี้วัด
                         df = self.get_candlesticks(contract)
                         if not df.empty:
-                            df, slope = self.calculate_linear_regression_channel(contract, df)
+                            df = self.calculate_indicators(df)
                             if not df.empty:
                                 # ตรวจสอบสัญญาณและ position ที่มีอยู่
-                                signal = self.check_trading_signal(df, slope)
+                                signal = self.check_trading_signal(df)
                                 existing_pos = self.check_existing_position(contract)
                                 
                                 # จัดการสัญญาณ BUY
@@ -375,8 +390,8 @@ class GateIOLRCTradeBot:
 def main():
     """ฟังก์ชันหลักสำหรับเริ่มทำงานของบอท"""
     try:
-        bot = GateIOLRCTradeBot()
-        bot.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย Linear Regression Channel...[/blue]")
+        bot = GateIODBOTradeBot()
+        bot.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย Double break out Caco Maia...[/blue]")
         bot.scan_market()
     except Exception as e:
         Console().print(f"[red]เกิดข้อผิดพลาดร้ายแรง: {str(e)}[/red]")
