@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from rich.console import Console
 
+
 class GateIOLRCTradeBot:
     def __init__(self):
         # โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env
@@ -49,19 +50,19 @@ class GateIOLRCTradeBot:
         return valid_contracts
         
     def get_candlesticks(self, contract: str) -> pd.DataFrame:
-        """ดึงข้อมูลแท่งเทียน timeframe 15 นาที"""
-        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
+        """ดึงข้อมูลแท่งเทียน timeframe 1 ชั่วโมง"""
+        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='1h', limit=500)
         if not candles:
             return pd.DataFrame()
             
-        data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 
+        data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h),
                 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
         df = pd.DataFrame(data)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
         return df.sort_values('timestamp')
     
     def calculate_linear_regression_channel(self, contract: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, float]:
-        """คำนวณ Linear Regression Channel โดยใช้วิธีทางสถิติ"""
+        """คำนวณ Linear Regression Channel โดยใช้วิธีทางสถิติตามสูตร TradingView"""
         if len(df) < self.lookback_period:
             return pd.DataFrame(), 0.0
             
@@ -132,18 +133,16 @@ class GateIOLRCTradeBot:
         high_above_top = candle['high'] > candle['TOP']
         low_below_bottom = candle['low'] < candle['BOTTOM']
         
-        # สัญญาณ BUY: แท่งเทียนสีเขียว + ทะลุเส้นบน + slope ลง (LRC สีแดง)
-        if is_green and high_above_top and slope < 0:
+        # สัญญาณ BUY: แท่งเทียนสีเขียว + ทะลุเส้นบน
+        if is_green and high_above_top:
             self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว (close={candle['close']:.6f} > open={candle['open']:.6f}) "
-                            f"และทะลุเส้นบน (high={candle['high']:.6f} > TOP={candle['TOP']:.6f}) "
-                            f"และ LRC มีความชันลง (slope={slope:.6f})[/green]")
+                            f"และทะลุเส้นบน (high={candle['high']:.6f} > TOP={candle['TOP']:.6f})[/green]")
             return "BUY"
             
-        # สัญญาณ SELL: แท่งเทียนสีแดง + ทะลุเส้นล่าง + slope ขึ้น (LRC สีเขียว)
-        elif is_red and low_below_bottom and slope > 0:
+        # สัญญาณ SELL: แท่งเทียนสีแดง + ทะลุเส้นล่าง
+        elif is_red and low_below_bottom:
             self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง (close={candle['close']:.6f} < open={candle['open']:.6f}) "
-                            f"และทะลุเส้นล่าง (low={candle['low']:.6f} < BOTTOM={candle['BOTTOM']:.6f}) "
-                            f"และ LRC มีความชันขึ้น (slope={slope:.6f})[/red]")
+                            f"และทะลุเส้นล่าง (low={candle['low']:.6f} < BOTTOM={candle['BOTTOM']:.6f})[/red]")
             return "SELL"
             
         return None
@@ -311,8 +310,8 @@ class GateIOLRCTradeBot:
             try:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
                 
-                # ทำงานทุก 15 นาทีและในรอบแรก
-                if current_time.minute % 15 == 0 or first_run:
+                # ทำงานทุก 1 ชั่วโมงและในรอบแรก
+                if current_time.minute == 0 or first_run:
                     self.console.print(f"[blue]เริ่มสแกนตลาด ณ เวลา {current_time}[/blue]")
                     first_run = False
                     
@@ -356,9 +355,9 @@ class GateIOLRCTradeBot:
                     # รอ 30 วินาทีก่อนทำอย่างอื่น
                     time.sleep(30)
                     
-                # ทำงานทุก 3 นาทีเพื่อตรวจสอบ positions
-                if current_time.minute % 3 == 0:
-                    if current_time.minute % 15 == 0:
+                # ทำงานทุก 15 นาทีเพื่อตรวจสอบ positions
+                if current_time.minute % 15 == 0:
+                    if current_time.minute == 0:
                         first_run = True
                     else:
                         self.scan_positions()
@@ -371,6 +370,7 @@ class GateIOLRCTradeBot:
                 self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
                 time.sleep(30)  # รอก่อนลองใหม่ในกรณีที่เกิดข้อผิดพลาด
                 
+
 
 def main():
     """ฟังก์ชันหลักสำหรับเริ่มทำงานของบอท"""
