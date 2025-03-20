@@ -4,13 +4,11 @@ import re
 from typing import List, Dict, Tuple
 import pandas as pd
 import numpy as np
-from scipy import stats
 from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from rich.console import Console
 
-
-class GateIOLRCTradeBot:
+class GateIOEMATradeBot:
     def __init__(self):
         # โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env
         load_dotenv()
@@ -29,8 +27,7 @@ class GateIOLRCTradeBot:
         # ตัวแปรการตั้งค่า
         self.leverage = 5  # คูณเลเวอเรจ
         self.order_amount = 50  # จำนวนเงิน USD สำหรับแต่ละออเดอร์
-        self.lookback_period = 100  # จำนวนแท่งเทียนย้อนหลังสำหรับ Linear Regression Channel
-        self.devlen = 2.0  # ค่าเบี่ยงเบนมาตรฐานสำหรับช่อง
+        self.lookback_period = 14  # จำนวน time frame ย้อนหลังสำหรับ TOP และ BOTTOM
         self.console = Console()  # สำหรับแสดงผลในคอนโซล
         
     def get_futures_contracts(self) -> List[str]:
@@ -42,16 +39,16 @@ class GateIOLRCTradeBot:
         for contract in ticket:
             if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
                 json_data = contract.to_dict()
-                # ตรวจสอบสภาพคล่อง (Volume 24h > $500,000)
-                if float(json_data['volume_24h']) * float(json_data['last']) > 500000:
+                # ตรวจสอบสภาพคล่อง (Volume 24h > $1,000,000)
+                if float(json_data['volume_24h']) * float(json_data['last']) > 1000000:
                     valid_contracts.append(contract.contract)
                     
         self.console.print(f"[blue]พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา[/blue]")
         return valid_contracts
         
     def get_candlesticks(self, contract: str) -> pd.DataFrame:
-        """ดึงข้อมูลแท่งเทียน timeframe 30 นาที"""
-        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='30m', limit=500)
+        """ดึงข้อมูลแท่งเทียน timeframe 15 นาที"""
+        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
         if not candles:
             return pd.DataFrame()
             
@@ -61,90 +58,40 @@ class GateIOLRCTradeBot:
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
         return df.sort_values('timestamp')
     
-    def calculate_linear_regression_channel(self, contract: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, float]:
-        """คำนวณ Linear Regression Channel ตามสูตร TradingView"""
-        if len(df) < self.lookback_period:
-            return pd.DataFrame(), 0.0
+    def calculate_ema(self, df: pd.DataFrame) -> pd.DataFrame:
+        """คำนวณ EMA 10 และ EMA 30"""
+        df['EMA10'] = df['close'].ewm(span=10, adjust=False).mean()
+        df['EMA30'] = df['close'].ewm(span=30, adjust=False).mean()
+        return df
+        
+    def calculate_top_bottom(self, df: pd.DataFrame) -> Tuple[float, float]:
+        """คำนวณ TOP และ BOTTOM จากราคาสูงสุดและต่ำสุดย้อนหลัง 14 time frame (ไม่รวมสอง time frame ล่าสุด)"""
+        if len(df) < self.lookback_period + 2:
+            return None, None
             
-        price = self.get_latest_price(contract)
-        if price is None:
-            return pd.DataFrame(), 0.0
-            
-        # ใช้ข้อมูลราคาปิด length ล่าสุด
-        recent_df = df.tail(self.lookback_period).copy()
-        prices = recent_df['close'].values
+        recent_df = df.iloc[-self.lookback_period-2:-2]
+        top = recent_df['high'].max()
+        bottom = recent_df['low'].min()
+        return top, bottom
         
-        # สร้างแกน x (เวลา)
-        x = np.arange(len(prices))
-        
-        # คำนวณเส้นแนวโน้มด้วย Linear Regression ตามสูตร TradingView
-        slope, intercept, r_value, p_value, std_err = stats.linregress(x, prices)
-        
-        # คำนวณจุดบนเส้นแนวโน้ม Linear Regression
-        line_values = intercept + slope * x
-        
-        # คำนวณค่าความเบี่ยงเบนมาตรฐานของระยะห่างระหว่างราคาจริงกับเส้นแนวโน้ม
-        distances = prices - line_values
-        std_dev = np.std(distances)
-        
-        # คำนวณช่อง Linear Regression (เส้นบน, เส้นกลาง, เส้นล่าง)
-        middle_line = intercept + slope * (len(prices) - 1)  # ค่าของเส้นแนวโน้มที่จุดล่าสุด
-        upper_line = middle_line + std_dev * self.devlen
-        lower_line = middle_line - std_dev * self.devlen
-        
-        # คำนวณเส้นกลางระหว่างเส้นบนกับเส้นกลาง และเส้นกลางกับเส้นล่าง
-        tmid = (upper_line + middle_line) / 2
-        bmid = (middle_line + lower_line) / 2
-        
-        # สร้าง DataFrame ผลลัพธ์
-        result_df = df.tail(1).copy()
-        result_df['MIDDLE'] = middle_line
-        result_df['TOP'] = upper_line
-        result_df['BOTTOM'] = lower_line
-        result_df['TMID'] = tmid
-        result_df['BMID'] = bmid
-        
-        # แสดงข้อมูลการคำนวณในคอนโซล
-        self.console.print(f"[cyan]{contract}[/cyan] "
-                         f"price={price:.6f}, "
-                         f"slope={slope:.6f}, "
-                         f"intercept={intercept:.6f}, "
-                         f"std_dev={std_dev:.6f}, "
-                         f"TOP={upper_line:.6f}, "
-                         f"MIDDLE={middle_line:.6f}, "
-                         f"BOTTOM={lower_line:.6f}, "
-                         f"TMID={tmid:.6f}, "
-                         f"BMID={bmid:.6f}")
-                        
-        return result_df, slope
-        
-    def check_trading_signal(self, df: pd.DataFrame, slope: float) -> str:
-        """ตรวจสอบสัญญาณการเทรด"""
-        if len(df) < 1:
+    def check_trading_signal(self, df: pd.DataFrame) -> str:
+        """ตรวจสอบสัญญาณการเทรดจาก EMA 10 และ EMA 30"""
+        if len(df) < 2:
             return None
             
-        candle = df.iloc[-1]
+        prev_ema10 = df['EMA10'].iloc[-2]
+        prev_ema30 = df['EMA30'].iloc[-2]
+        curr_ema10 = df['EMA10'].iloc[-1]
+        curr_ema30 = df['EMA30'].iloc[-1]
         
-        # ตรวจสอบสีของแท่งเทียน
-        is_green = candle['close'] > candle['open']
-        is_red = candle['close'] < candle['open']
-        
-        # ตรวจสอบว่าแท่งเทียนทะลุเส้นบนหรือเส้นล่าง
-        high_above_top = candle['high'] > candle['TOP']
-        low_below_bottom = candle['low'] < candle['BOTTOM']
-        
-        # สัญญาณ BUY: แท่งเทียนสีเขียว + ทะลุเส้นบน + slope ลง (LRC สีแดง)
-        if is_green and high_above_top and slope < 0:
-            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว (close={candle['close']:.6f} > open={candle['open']:.6f}) "
-                            f"และทะลุเส้นบน (high={candle['high']:.6f} > TOP={candle['TOP']:.6f}) "
-                            f"และ LRC มีความชันลง (slope={slope:.6f})[/green]")
+        # ตรวจสอบการตัดขึ้น (BUY signal)
+        if prev_ema10 < prev_ema30 and curr_ema10 > curr_ema30:
+            self.console.print(f"[green]สัญญาณ BUY: EMA10 ตัดขึ้น EMA30 (EMA10={curr_ema10:.6f}, EMA30={curr_ema30:.6f})[/green]")
             return "BUY"
-            
-        # สัญญาณ SELL: แท่งเทียนสีแดง + ทะลุเส้นล่าง + slope ขึ้น (LRC สีเขียว)
-        elif is_red and low_below_bottom and slope > 0:
-            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง (close={candle['close']:.6f} < open={candle['open']:.6f}) "
-                            f"และทะลุเส้นล่าง (low={candle['low']:.6f} < BOTTOM={candle['BOTTOM']:.6f}) "
-                            f"และ LRC มีความชันขึ้น (slope={slope:.6f})[/red]")
+        
+        # ตรวจสอบการตัดลง (SELL signal)
+        elif prev_ema10 > prev_ema30 and curr_ema10 < curr_ema30:
+            self.console.print(f"[red]สัญญาณ SELL: EMA10 ตัดลง EMA30 (EMA10={curr_ema10:.6f}, EMA30={curr_ema30:.6f})[/red]")
             return "SELL"
             
         return None
@@ -282,25 +229,23 @@ class GateIOLRCTradeBot:
             for pos in positions:
                 contract = pos['contract']
                 
-                # ดึงข้อมูลแท่งเทียนและคำนวณ Linear Regression Channel
+                # ดึงข้อมูลแท่งเทียน
                 df = self.get_candlesticks(contract)
                 if not df.empty:
-                    df, _ = self.calculate_linear_regression_channel(contract, df)
-                    if not df.empty:
+                    top, bottom = self.calculate_top_bottom(df)
+                    if top is not None and bottom is not None:
                         latest_price = self.get_latest_price(contract)
                         if latest_price:
-                            tmid = df['TMID'].iloc[-1]
-                            bmid = df['BMID'].iloc[-1]
                             size = float(pos['size'])
                             
-                            # ปิด LONG ถ้าราคาต่ำกว่า TMID
-                            if size > 0 and latest_price < tmid:
-                                self.console.print(f"[yellow]ปิด LONG position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} < TMID={tmid:.6f}[/yellow]")
+                            # ปิด LONG position ถ้าราคาล่าสุดต่ำกว่า BOTTOM
+                            if size > 0 and latest_price < bottom:
+                                self.console.print(f"[yellow]ปิด LONG position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} < BOTTOM={bottom:.6f}[/yellow]")
                                 self.close_position(contract, pos)
                                 
-                            # ปิด SHORT ถ้าราคาสูงกว่า BMID
-                            elif size < 0 and latest_price > bmid:
-                                self.console.print(f"[yellow]ปิด SHORT position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} > BMID={bmid:.6f}[/yellow]")
+                            # ปิด SHORT position ถ้าราคาล่าสุดสูงกว่า TOP
+                            elif size < 0 and latest_price > top:
+                                self.console.print(f"[yellow]ปิด SHORT position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} > TOP={top:.6f}[/yellow]")
                                 self.close_position(contract, pos)
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกน positions: {str(e)}[/red]")
@@ -312,8 +257,8 @@ class GateIOLRCTradeBot:
             try:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
                 
-                # ทำงานทุก 30 นาทีและในรอบแรก
-                if current_time.minute % 30 == 0 or first_run:
+                # ทำงานทุก 15 นาทีและในรอบแรก
+                if current_time.minute % 15 == 0 or first_run:
                     self.console.print(f"[blue]เริ่มสแกนตลาด ณ เวลา {current_time}[/blue]")
                     first_run = False
                     
@@ -323,48 +268,39 @@ class GateIOLRCTradeBot:
                     # สแกนตลาดเพื่อหาสัญญาณใหม่
                     contracts = self.get_futures_contracts()
                     for contract in contracts:
-                        # ดึงข้อมูลแท่งเทียนและคำนวณ Linear Regression Channel
+                        # ดึงข้อมูลแท่งเทียนและคำนวณ EMA
                         df = self.get_candlesticks(contract)
                         if not df.empty:
-                            df, slope = self.calculate_linear_regression_channel(contract, df)
-                            if not df.empty:
-                                # ตรวจสอบสัญญาณและ position ที่มีอยู่
-                                signal = self.check_trading_signal(df, slope)
-                                existing_pos = self.check_existing_position(contract)
-                                
-                                # จัดการสัญญาณ BUY
-                                if signal == "BUY":
-                                    if existing_pos and float(existing_pos['size']) < 0:
-                                        # ถ้ามี SHORT position อยู่ ให้ปิดก่อนแล้วเปิด LONG
-                                        if self.close_position(contract, existing_pos):
-                                            time.sleep(1)  # รอให้ระบบประมวลผลการปิด position
-                                            self.create_long_order(contract)
-                                    elif not existing_pos:
-                                        # ถ้าไม่มี position ให้เปิด LONG
+                            df = self.calculate_ema(df)
+                            # ตรวจสอบสัญญาณและ position ที่มีอยู่
+                            signal = self.check_trading_signal(df)
+                            existing_pos = self.check_existing_position(contract)
+                            
+                            # จัดการสัญญาณ BUY
+                            if signal == "BUY":
+                                if existing_pos and float(existing_pos['size']) < 0:
+                                    # ถ้ามี SHORT position อยู่ ให้ปิดก่อนแล้วเปิด LONG
+                                    if self.close_position(contract, existing_pos):
+                                        time.sleep(1)  # รอให้ระบบประมวลผลการปิด position
                                         self.create_long_order(contract)
-                                        
-                                # จัดการสัญญาณ SELL
-                                elif signal == "SELL":
-                                    if existing_pos and float(existing_pos['size']) > 0:
-                                        # ถ้ามี LONG position อยู่ ให้ปิดก่อนแล้วเปิด SHORT
-                                        if self.close_position(contract, existing_pos):
-                                            time.sleep(1)  # รอให้ระบบประมวลผลการปิด position
-                                            self.create_short_order(contract)
-                                    elif not existing_pos:
-                                        # ถ้าไม่มี position ให้เปิด SHORT
+                                elif not existing_pos:
+                                    # ถ้าไม่มี position ให้เปิด LONG
+                                    self.create_long_order(contract)
+                                    
+                            # จัดการสัญญาณ SELL
+                            elif signal == "SELL":
+                                if existing_pos and float(existing_pos['size']) > 0:
+                                    # ถ้ามี LONG position อยู่ ให้ปิดก่อนแล้วเปิด SHORT
+                                    if self.close_position(contract, existing_pos):
+                                        time.sleep(1)  # รอให้ระบบประมวลผลการปิด position
                                         self.create_short_order(contract)
-                                        
+                                elif not existing_pos:
+                                    # ถ้าไม่มี position ให้เปิด SHORT
+                                    self.create_short_order(contract)
+                                    
                     # รอ 30 วินาทีก่อนทำอย่างอื่น
                     time.sleep(30)
                     
-                # ทำงานทุก 5 นาทีเพื่อตรวจสอบ positions
-                if current_time.minute % 5 == 0:
-                    if current_time.minute % 30 == 0:
-                        first_run = True
-                    else:
-                        self.scan_positions()
-                        time.sleep(60)
-                        
                 # รอ 10 วินาทีและวนลูปใหม่
                 time.sleep(10)
                 
@@ -372,16 +308,14 @@ class GateIOLRCTradeBot:
                 self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
                 time.sleep(30)  # รอก่อนลองใหม่ในกรณีที่เกิดข้อผิดพลาด
                 
-
 def main():
     """ฟังก์ชันหลักสำหรับเริ่มทำงานของบอท"""
     try:
-        bot = GateIOLRCTradeBot()
-        bot.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย Linear Regression Channel...[/blue]")
+        bot = GateIOEMATradeBot()
+        bot.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย EMA 10 และ EMA 30...[/blue]")
         bot.scan_market()
     except Exception as e:
         Console().print(f"[red]เกิดข้อผิดพลาดร้ายแรง: {str(e)}[/red]")
-
 
 if __name__ == "__main__":
     main()
