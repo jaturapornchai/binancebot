@@ -37,7 +37,10 @@ class GateIOLinearRegressionTrader:
             if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
                 json_data = contract.to_dict()
                 # ตรวจสอบสภาพคล่อง (volume 24h > 1,000,000 USD)
-                if float(json_data['volume_24h']) * float(json_data['last']) > 1000000:
+                volume_24h = float(json_data['volume_24h'])
+                last_price = float(json_data['last'])
+                volume_total = volume_24h * last_price
+                if volume_total > 10000 and volume_total < 1000000:
                     valid_contracts.append(contract.contract)
         self.console.print(f"[blue]พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา[/blue]")
         return valid_contracts
@@ -209,6 +212,7 @@ class GateIOLinearRegressionTrader:
             return False
 
     def create_long_order(self, contract: str) -> Dict:
+        return None
         """เปิด position LONG"""
         try:
             if not self.set_leverage(contract): return None
