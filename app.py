@@ -209,7 +209,6 @@ class GateIOLinearRegressionTrader:
             return False
 
     def create_long_order(self, contract: str) -> Dict:
-        return None
         """เปิด position LONG"""
         try:
             if not self.set_leverage(contract): return None
@@ -487,18 +486,6 @@ class GateIOLinearRegressionTrader:
                     self.console.print(f"[blue]===========================================[/blue]")
                     
                     time.sleep(30)  # รอ 30 วินาทีหลังจากสแกนเสร็จ
-                
-                # ตรวจสอบสถานะ positions ทุก 3 นาที
-                if current_time.minute % 3 == 0:
-                    if current_time.minute % 15 == 0:
-                        # จะทำการสแกนเต็มรูปแบบในนาทีที่ 0, 15, 30, 45 อยู่แล้ว
-                        first_run = True
-                    else:
-                        self.console.print(f"[blue]🔍 ตรวจสอบ Positions ทุก 3 นาที ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
-                        # สแกนเฉพาะ positions ที่มีอยู่ในนาทีอื่นๆ
-                        self.scan_positions()
-                        self.console.print(f"[blue]===========================================[/blue]")
-                        time.sleep(60)
                 
                 time.sleep(10)  # รอ 10 วินาทีก่อนตรวจสอบเวลาอีกครั้ง
             except Exception as e:
