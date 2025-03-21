@@ -209,6 +209,7 @@ class GateIOLinearRegressionTrader:
             return False
 
     def create_long_order(self, contract: str) -> Dict:
+        return None
         """เปิด position LONG"""
         try:
             if not self.set_leverage(contract): return None
