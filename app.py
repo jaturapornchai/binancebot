@@ -1,103 +1,253 @@
 import os
 import time
 import re
-from typing import List, Dict, Tuple
+from typing import List, Dict
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from rich.console import Console
 
-class GateIOEMATradeBot:
+
+class GateIOLinearRegressionTrader:
     def __init__(self):
-        # โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env
         load_dotenv()
+        # โหลด API key จาก environment variables
         self.api_key = os.getenv('GATEIO_API_KEY')
         self.secret_key = os.getenv('GATEIO_SECRET_KEY')
-        
-        # ตรวจสอบว่ามี API keys หรือไม่
         if not self.api_key or not self.secret_key:
-            raise ValueError("ไม่พบ API keys กรุณาตั้งค่าในไฟล์ .env")
-            
-        # กำหนดค่าเริ่มต้นสำหรับ API
+            raise ValueError("API keys ไม่พบในไฟล์ .env")
+        
+        # ตั้งค่า API client
         config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4")
         self.client = ApiClient(config)
         self.futures_api = FuturesApi(self.client)
         
-        # ตัวแปรการตั้งค่า
-        self.leverage = 5  # คูณเลเวอเรจ
-        self.order_amount = 50  # จำนวนเงิน USD สำหรับแต่ละออเดอร์
-        self.lookback_period = 14  # จำนวน time frame ย้อนหลังสำหรับ TOP และ BOTTOM
-        self.console = Console()  # สำหรับแสดงผลในคอนโซล
+        # ตั้งค่าพารามิเตอร์การเทรด
+        self.leverage = 5
+        self.order_amount = 20  # จำนวนเงิน USD ต่อการเปิดออเดอร์
+        self.lookback_period = 100  # จำนวนแท่งเทียนที่ใช้คำนวณ Linear Regression Channel
+        self.devlen = 2.0  # ค่าความเบี่ยงเบน (deviation) สำหรับขอบบนและล่าง
         
+        # สร้าง console สำหรับแสดงผล
+        self.console = Console()
+
     def get_futures_contracts(self) -> List[str]:
-        """ดึงรายชื่อสัญญาที่มีสภาพคล่องเพียงพอ"""
+        """ดึงรายชื่อสัญญา futures ที่มีสภาพคล่องเพียงพอ"""
         ticket = self.futures_api.list_futures_tickers(settle='usdt')
         valid_contracts = []
         pattern = re.compile(r'^\D+_USDT$')
-        
         for contract in ticket:
             if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
                 json_data = contract.to_dict()
-                # ตรวจสอบสภาพคล่อง (Volume 24h > $1,000,000)
+                # ตรวจสอบสภาพคล่อง (volume 24h > 500,000 USD)
                 if float(json_data['volume_24h']) * float(json_data['last']) > 1000000:
                     valid_contracts.append(contract.contract)
-                    
         self.console.print(f"[blue]พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา[/blue]")
         return valid_contracts
-        
+
     def get_candlesticks(self, contract: str) -> pd.DataFrame:
-        """ดึงข้อมูลแท่งเทียน timeframe 15 นาที"""
+        """ดึงข้อมูลแท่งเทียนจาก API"""
         candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
         if not candles:
             return pd.DataFrame()
-            
-        data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h),
-                'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
+        
+        data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
         df = pd.DataFrame(data)
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
         return df.sort_values('timestamp')
-    
-    def calculate_ema(self, df: pd.DataFrame) -> pd.DataFrame:
-        """คำนวณ EMA 10 และ EMA 30"""
-        df['EMA10'] = df['close'].ewm(span=10, adjust=False).mean()
-        df['EMA30'] = df['close'].ewm(span=30, adjust=False).mean()
-        return df
+
+    def linreg(self, src, length, offset):
+        """
+        ฟังก์ชัน linear regression ตามแบบ TradingView
+        src: ข้อมูลราคา
+        length: ความยาวของข้อมูล
+        offset: ตำแหน่งที่เริ่มต้น
+        """
+        if len(src) < offset + length:
+            return 0.0
         
-    def calculate_top_bottom(self, df: pd.DataFrame) -> Tuple[float, float]:
-        """คำนวณ TOP และ BOTTOM จากราคาสูงสุดและต่ำสุดย้อนหลัง 14 time frame (ไม่รวมสอง time frame ล่าสุด)"""
-        if len(df) < self.lookback_period + 2:
-            return None, None
+        x = np.arange(length)
+        y = src[offset:offset+length]
+        sum_x = np.sum(x)
+        sum_y = np.sum(y)
+        sum_xy = np.sum(x * y)
+        sum_x2 = np.sum(x * x)
+        
+        try:
+            slope = (length * sum_xy - sum_x * sum_y) / (length * sum_x2 - sum_x * sum_x)
+            intercept = (sum_y - slope * sum_x) / length
+            return intercept + slope * (length - 1)
+        except ZeroDivisionError:
+            return 0.0
+
+    def calculate_linear_regression_channel(self, df: pd.DataFrame) -> dict:
+        """คำนวณ Linear Regression Channel ตามสูตรจาก TradingView"""
+        if len(df) < self.lookback_period + 5:  # ต้องมีข้อมูลมากกว่าที่ต้องการใช้
+            return {}
+        
+        # ดึงข้อมูลล่าสุดตามจำนวน lookback_period
+        recent_data = df['close'].iloc[-self.lookback_period:].values
+        
+        # ใช้ numpy สำหรับการคำนวณ linear regression ที่เสถียรกว่า
+        x = np.arange(self.lookback_period)
+        slope, intercept = np.polyfit(x, recent_data, 1)
+        
+        # คำนวณค่า linear regression line
+        line = intercept + slope * x
+        
+        # คำนวณค่า middle line ที่จุดสุดท้าย (จุดปัจจุบัน)
+        middle = line[-1]
+        
+        # คำนวณ deviation
+        deviations = recent_data - line
+        dev = np.sqrt(np.mean(deviations**2))
+        
+        # คำนวณค่า TOP และ BOTTOM
+        top = middle + dev * self.devlen
+        bottom = middle - dev * self.devlen
+        
+        # ตรวจสอบความสมเหตุสมผลของค่า
+        latest_price = recent_data[-1]
+        price_range = np.max(recent_data) - np.min(recent_data)
+        
+        # ป้องกันค่า channel ที่ไม่สมเหตุสมผล
+        if (top - latest_price) / latest_price > 1.0 or (latest_price - bottom) / latest_price > 1.0:
+            # ถ้าช่องสัญญาณกว้างเกินไป (มากกว่า 100% ของราคา) ให้ปรับขนาดให้สมเหตุสมผลมากขึ้น
+            self.console.print(f"[yellow]⚠️ ปรับขนาด channel เนื่องจากค่าเดิมไม่สมเหตุสมผล[/yellow]")
+            # ใช้ค่าเปอร์เซ็นต์ของราคาเพื่อปรับขนาด channel
+            reasonable_dev = latest_price * 0.05  # ใช้ค่า 5% ของราคาปัจจุบัน
+            top = middle + reasonable_dev * self.devlen
+            bottom = middle - reasonable_dev * self.devlen
+        
+        # ตรวจสอบค่าลบ
+        if bottom < 0 and latest_price > 0:
+            bottom = latest_price * 0.8  # กำหนดค่าต่ำสุดเป็น 80% ของราคาปัจจุบัน
+            self.console.print(f"[yellow]⚠️ ปรับค่า BOTTOM เนื่องจากเป็นค่าลบ[/yellow]")
+        
+        # คำนวณ slope ก่อนหน้า
+        prev_slope = self.get_previous_slope(df.iloc[:-1])
+        
+        # สร้างผลลัพธ์
+        return {
+            'MIDDLE': middle,
+            'TOP': top,
+            'BOTTOM': bottom,
+            'slope': slope,
+            'slope_prev': prev_slope,
+            'dev': dev,
+            'intercept': intercept
+        }
+
+    def get_previous_slope(self, df: pd.DataFrame) -> float:
+        """คำนวณ slope ก่อนหน้า (ใช้สำหรับตรวจจับการเปลี่ยนทิศทางของ channel)"""
+        if len(df) < self.lookback_period:
+            return 0.0
+        
+        # ดึงข้อมูลล่าสุดตามจำนวน lookback_period
+        recent_data = df['close'].iloc[-self.lookback_period:].values
+        
+        # ใช้ numpy polyfit สำหรับการคำนวณ linear regression ที่เสถียรกว่า
+        x = np.arange(self.lookback_period)
+        
+        try:
+            # คำนวณ slope โดยใช้ polyfit
+            slope, _ = np.polyfit(x, recent_data, 1)
             
-        recent_df = df.iloc[-self.lookback_period-2:-2]
-        top = recent_df['high'].max()
-        bottom = recent_df['low'].min()
-        return top, bottom
-        
-    def check_trading_signal(self, df: pd.DataFrame) -> str:
-        """ตรวจสอบสัญญาณการเทรดจาก EMA 10 และ EMA 30"""
-        if len(df) < 2:
+            if np.isnan(slope) or np.isinf(slope):
+                return 0.0
+                
+            return slope
+        except Exception:
+            # กรณีเกิดข้อผิดพลาดในการคำนวณ
+            return 0.0
+
+    def is_green_candle(self, candle) -> bool:
+        """ตรวจสอบว่าแท่งเทียนเป็นสีเขียวหรือไม่ (close > open)"""
+        return candle['close'] > candle['open']
+
+    def is_red_candle(self, candle) -> bool:
+        """ตรวจสอบว่าแท่งเทียนเป็นสีแดงหรือไม่ (close < open)"""
+        return candle['close'] < candle['open']
+
+    def is_touching_top(self, candle, top_value) -> bool:
+        """ตรวจสอบว่าแท่งเทียนทับเส้น TOP หรือไม่"""
+        # ใช้ช่วงของแท่งเทียนในการพิจารณาว่าทับเส้น TOP หรือไม่
+        # ยอมรับความคลาดเคลื่อน 0.1%
+        tolerance = top_value * 0.001
+        return abs(candle['high'] - top_value) < tolerance
+
+    def is_touching_bottom(self, candle, bottom_value) -> bool:
+        """ตรวจสอบว่าแท่งเทียนทับเส้น BOTTOM หรือไม่"""
+        # ใช้ช่วงของแท่งเทียนในการพิจารณาว่าทับเส้น BOTTOM หรือไม่
+        # ยอมรับความคลาดเคลื่อน 0.1%
+        tolerance = bottom_value * 0.001
+        return abs(candle['low'] - bottom_value) < tolerance
+
+    def check_trading_signal(self, df: pd.DataFrame, lrc_data: dict, contract: str = None) -> str:
+        """
+        ตรวจสอบสัญญาณการเทรดตามเงื่อนไขที่กำหนดใหม่:
+        - BUY: (แท่งเทียนล่าสุดเป็นสีเขียว ทับเส้น BOTTOM พอดี และราคาล่าสุดอยู่เหนือเส้น BOTTOM) 
+               หรือ (แท่งเทียนล่าสุดเป็นสีเขียว ทับเส้น TOP พอดี และราคาล่าสุดอยู่เหนือเส้น TOP)
+        - SELL: (แท่งเทียนล่าสุดเป็นสีแดง ทับเส้น TOP พอดี และราคาล่าสุดอยู่ใต้เส้น TOP) 
+                หรือ (แท่งเทียนล่าสุดเป็นสีแดง ทับเส้น BOTTOM พอดี และราคาล่าสุดอยู่ใต้เส้น BOTTOM)
+        """
+        if not lrc_data or len(df) < 1:
             return None
             
-        prev_ema10 = df['EMA10'].iloc[-2]
-        prev_ema30 = df['EMA30'].iloc[-2]
-        curr_ema10 = df['EMA10'].iloc[-1]
-        curr_ema30 = df['EMA30'].iloc[-1]
+        top_value = lrc_data['TOP']
+        bottom_value = lrc_data['BOTTOM']
         
-        # ตรวจสอบการตัดขึ้น (BUY signal)
-        if prev_ema10 < prev_ema30 and curr_ema10 > curr_ema30:
-            self.console.print(f"[green]สัญญาณ BUY: EMA10 ตัดขึ้น EMA30 (EMA10={curr_ema10:.6f}, EMA30={curr_ema30:.6f})[/green]")
+        # ดึงข้อมูลแท่งเทียนล่าสุด
+        latest_candle = df.iloc[-1]
+        
+        # ดึงราคาล่าสุด
+        latest_price = None
+        if contract:
+            latest_price = self.get_latest_price(contract)
+        elif 'contract' in latest_candle:
+            latest_price = self.get_latest_price(latest_candle['contract'])
+        else:
+            self.console.print(f"[red]⚠️ ไม่สามารถระบุชื่อสัญญาได้ ไม่สามารถดึงราคาล่าสุด[/red]")
+            return None
+        
+        if latest_price is None:
+            return None
+        
+        # ตรวจสอบเงื่อนไขแท่งเทียน
+        is_green = self.is_green_candle(latest_candle)
+        is_red = self.is_red_candle(latest_candle)
+        touches_top = self.is_touching_top(latest_candle, top_value)
+        touches_bottom = self.is_touching_bottom(latest_candle, bottom_value)
+        
+        # แสดงผลข้อมูลเพื่อวิเคราะห์
+        self.console.print(f"[blue]   การตรวจสอบสัญญาณ: ราคาล่าสุด={latest_price:.6f}, BOTTOM={bottom_value:.6f}, TOP={top_value:.6f}[/blue]")
+        self.console.print(f"[blue]   แท่งเทียน: {is_green and 'สีเขียว' or is_red and 'สีแดง' or 'Doji'}, ทับ TOP={touches_top}, ทับ BOTTOM={touches_bottom}[/blue]")
+        
+        # ตรวจสอบสัญญาณ BUY ตามเงื่อนไขใหม่ (2 เงื่อนไข)
+        if (is_green and touches_bottom and latest_price > bottom_value):
+            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว (close={latest_candle['close']:.6f} > open={latest_candle['open']:.6f}) "
+                           f"ทับเส้น BOTTOM ({bottom_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่เหนือเส้น BOTTOM[/green]")
+            return "BUY"
+        elif (is_green and touches_top and latest_price > top_value):
+            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว (close={latest_candle['close']:.6f} > open={latest_candle['open']:.6f}) "
+                           f"ทับเส้น TOP ({top_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่เหนือเส้น TOP[/green]")
             return "BUY"
         
-        # ตรวจสอบการตัดลง (SELL signal)
-        elif prev_ema10 > prev_ema30 and curr_ema10 < curr_ema30:
-            self.console.print(f"[red]สัญญาณ SELL: EMA10 ตัดลง EMA30 (EMA10={curr_ema10:.6f}, EMA30={curr_ema30:.6f})[/red]")
+        # ตรวจสอบสัญญาณ SELL ตามเงื่อนไขใหม่ (2 เงื่อนไข)
+        if (is_red and touches_top and latest_price < top_value):
+            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง (close={latest_candle['close']:.6f} < open={latest_candle['open']:.6f}) "
+                          f"ทับเส้น TOP ({top_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่ใต้เส้น TOP[/red]")
             return "SELL"
-            
-        return None
+        elif (is_red and touches_bottom and latest_price < bottom_value):
+            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง (close={latest_candle['close']:.6f} < open={latest_candle['open']:.6f}) "
+                          f"ทับเส้น BOTTOM ({bottom_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่ใต้เส้น BOTTOM[/red]")
+            return "SELL"
         
+        return None
+
     def set_leverage(self, contract: str) -> bool:
-        """ตั้งค่า leverage สำหรับสัญญา"""
+        """ตั้งค่า leverage สำหรับการเทรด"""
         try:
             self.futures_api.update_position_leverage(contract=contract, settle='usdt', leverage=str(self.leverage))
             self.console.print(f"[yellow]ตั้งค่า leverage {self.leverage}x สำหรับ {contract}[/yellow]")
@@ -105,7 +255,7 @@ class GateIOEMATradeBot:
         except Exception as e:
             self.console.print(f"[red]ไม่สามารถตั้งค่า leverage สำหรับ {contract}: {str(e)}[/red]")
             return False
-            
+
     def get_latest_price(self, contract: str) -> float:
         """ดึงราคาล่าสุดของสัญญา"""
         ticker = self.futures_api.list_futures_tickers(settle='usdt')
@@ -113,12 +263,11 @@ class GateIOEMATradeBot:
             if t.contract == contract:
                 price = float(t.last)
                 return price
-                
         self.console.print(f"[red]ไม่พบราคาสำหรับ {contract}[/red]")
         return None
-        
+
     def check_existing_position(self, contract: str) -> Dict:
-        """ตรวจสอบว่ามี position เปิดอยู่หรือไม่"""
+        """ตรวจสอบว่ามี position ที่เปิดอยู่หรือไม่"""
         positions = self.futures_api.list_positions(settle='usdt', holding=True)
         for p in positions:
             if p.contract == contract:
@@ -127,23 +276,25 @@ class GateIOEMATradeBot:
                 position_type = "LONG" if size > 0 else "SHORT" if size < 0 else "NONE"
                 self.console.print(f"[yellow]พบ position {position_type} สำหรับ {contract}: ขนาด={abs(size)}[/yellow]")
                 return position_info
-                
         return None
-        
+
     def close_position(self, contract: str, position: Dict) -> bool:
         """ปิด position ที่มีอยู่"""
         try:
             size = float(position['size'])
             if size != 0:
-                # กำหนดขนาดในทิศทางตรงข้าม
+                # ใช้ค่าตรงข้ามกับ size ปัจจุบันเพื่อปิด position
                 direction = abs(size) if size < 0 else -size
-                self.futures_api.create_futures_order('usdt', {
-                    'contract': contract,
-                    'size': direction,
-                    'price': 0,
-                    'tif': 'ioc',
-                    'reduce_only': True
-                })
+                self.futures_api.create_futures_order(
+                    'usdt',
+                    {
+                        'contract': contract,
+                        'size': direction,
+                        'price': 0,  # market order
+                        'tif': 'ioc',  # immediate-or-cancel
+                        'reduce_only': True  # เพื่อปิด position เท่านั้น
+                    }
+                )
                 position_type = "LONG" if size > 0 else "SHORT"
                 self.console.print(f"[yellow]ปิด position {position_type} สำหรับ {contract}: ขนาด={abs(size)}[/yellow]")
                 return True
@@ -151,7 +302,7 @@ class GateIOEMATradeBot:
         except Exception as e:
             self.console.print(f"[red]ไม่สามารถปิด position สำหรับ {contract}: {str(e)}[/red]")
             return False
-            
+
     def create_long_order(self, contract: str) -> Dict:
         """เปิด position LONG"""
         try:
@@ -167,25 +318,27 @@ class GateIOEMATradeBot:
             multiplier = float(contract_info.to_dict()['quanto_multiplier'])
             min_size = float(contract_info.to_dict()['order_size_min'])
             
-            # คำนวณขนาด position จากจำนวนเงินและเลเวอเรจ
+            # คำนวณขนาด position
             usd_value = self.order_amount * self.leverage
             size = max(min_size, round(usd_value / (price * multiplier)))
             
-            # สร้างออเดอร์แบบ market (price=0)
-            order = self.futures_api.create_futures_order('usdt', {
-                'contract': contract,
-                'size': size,
-                'price': 0,
-                'tif': 'ioc',
-                'reduce_only': False
-            })
-            
+            # สร้างคำสั่งซื้อ
+            order = self.futures_api.create_futures_order(
+                'usdt',
+                {
+                    'contract': contract,
+                    'size': size,
+                    'price': 0,  # market order
+                    'tif': 'ioc',  # immediate-or-cancel
+                    'reduce_only': False  # เพื่อเปิด position ใหม่
+                }
+            )
             self.console.print(f"[green]เปิด position LONG: {contract} ขนาด={size}[/green]")
             return order
         except Exception as e:
             self.console.print(f"[red]ไม่สามารถเปิด LONG สำหรับ {contract}: {str(e)}[/red]")
             return None
-            
+
     def create_short_order(self, contract: str) -> Dict:
         """เปิด position SHORT"""
         try:
@@ -201,121 +354,287 @@ class GateIOEMATradeBot:
             multiplier = float(contract_info.to_dict()['quanto_multiplier'])
             min_size = float(contract_info.to_dict()['order_size_min'])
             
-            # คำนวณขนาด position จากจำนวนเงินและเลเวอเรจ
+            # คำนวณขนาด position
             usd_value = self.order_amount * self.leverage
             size = max(min_size, round(usd_value / (price * multiplier)))
             
-            # สร้างออเดอร์แบบ market (price=0) และขนาดเป็นลบสำหรับ SHORT
-            order = self.futures_api.create_futures_order('usdt', {
-                'contract': contract,
-                'size': -size,
-                'price': 0,
-                'tif': 'ioc',
-                'reduce_only': False
-            })
-            
+            # สร้างคำสั่งขาย
+            order = self.futures_api.create_futures_order(
+                'usdt',
+                {
+                    'contract': contract,
+                    'size': -size,  # ค่าลบเพื่อ short
+                    'price': 0,  # market order
+                    'tif': 'ioc',  # immediate-or-cancel
+                    'reduce_only': False  # เพื่อเปิด position ใหม่
+                }
+            )
             self.console.print(f"[red]เปิด position SHORT: {contract} ขนาด={size}[/red]")
             return order
         except Exception as e:
             self.console.print(f"[red]ไม่สามารถเปิด SHORT สำหรับ {contract}: {str(e)}[/red]")
             return None
-            
+
     def scan_positions(self):
-        """สแกน positions ที่มีอยู่เพื่อตรวจสอบเงื่อนไขการปิด"""
+        """สแกน positions ที่เปิดอยู่และตรวจสอบเงื่อนไขการปิด position"""
         try:
             positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
-            self.console.print(f"[blue]สแกน {len(positions)} positions ที่เปิดอยู่[/blue]")
+            self.console.print(f"[blue]===== สแกน {len(positions)} positions ที่เปิดอยู่ =====[/blue]")
+            
+            # ตัวแปรเก็บสถิติ
+            positions_checked = 0
+            positions_closed = 0
             
             for pos in positions:
                 contract = pos['contract']
+                size = float(pos['size'])
+                position_type = "LONG 📈" if size > 0 else "SHORT 📉" if size < 0 else "NONE"
+                entry_price = float(pos['entry_price'])
                 
-                # ดึงข้อมูลแท่งเทียน
+                self.console.print(f"[cyan]▶ ตรวจสอบ: {contract} ({position_type}) - ราคาเข้า: {entry_price:.6f} - ขนาด: {abs(size)}[/cyan]")
+                
                 df = self.get_candlesticks(contract)
+                
                 if not df.empty:
-                    top, bottom = self.calculate_top_bottom(df)
-                    if top is not None and bottom is not None:
+                    lrc_data = self.calculate_linear_regression_channel(df)
+                    
+                    if lrc_data:
                         latest_price = self.get_latest_price(contract)
+                        
                         if latest_price:
-                            size = float(pos['size'])
+                            top = lrc_data['TOP']
+                            bottom = lrc_data['BOTTOM']
+                            middle = lrc_data['MIDDLE']
+                            slope = lrc_data['slope']
                             
-                            # ปิด LONG position ถ้าราคาล่าสุดต่ำกว่า BOTTOM
-                            if size > 0 and latest_price < bottom:
-                                self.console.print(f"[yellow]ปิด LONG position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} < BOTTOM={bottom:.6f}[/yellow]")
-                                self.close_position(contract, pos)
-                                
-                            # ปิด SHORT position ถ้าราคาล่าสุดสูงกว่า TOP
-                            elif size < 0 and latest_price > top:
-                                self.console.print(f"[yellow]ปิด SHORT position: {contract} เนื่องจากราคาล่าสุด={latest_price:.6f} > TOP={top:.6f}[/yellow]")
-                                self.close_position(contract, pos)
+                            # แสดงข้อมูล Linear Regression Channel
+                            slope_direction = "ขาขึ้น 📈" if slope > 0 else "ขาลง 📉" if slope < 0 else "แนวราบ ➡️"
+                            channel_color = "เขียว 📈" if slope > 0 else "แดง 📉" if slope < 0 else "กลาง ➡️"
+                            
+                            self.console.print(f"[magenta]   Linear Regression Channel: TOP={top:.6f}, MIDDLE={middle:.6f}, BOTTOM={bottom:.6f}[/magenta]")
+                            self.console.print(f"[magenta]   Slope={slope:.6f} ({slope_direction}) - สีของช่อง: {channel_color} - ราคาล่าสุด={latest_price:.6f}[/magenta]")
+                            
+                            # แสดงข้อมูลแท่งเทียนล่าสุด
+                            latest_candle = df.iloc[-1]
+                            candle_type = "สีเขียว 🟩" if latest_candle['close'] > latest_candle['open'] else "สีแดง 🟥" if latest_candle['close'] < latest_candle['open'] else "Doji ⬛"
+                            self.console.print(f"[magenta]   แท่งเทียนล่าสุด: {candle_type} - Open: {latest_candle['open']:.6f}, High: {latest_candle['high']:.6f}, Low: {latest_candle['low']:.6f}, Close: {latest_candle['close']:.6f}[/magenta]")
+                            
+                            # คำนวณกำไร/ขาดทุนเป็น %
+                            if size > 0:  # LONG
+                                pnl_percentage = ((latest_price - entry_price) / entry_price) * 100
+                                pnl_color = "green" if pnl_percentage > 0 else "red"
+                                self.console.print(f"[{pnl_color}]   P&L: {pnl_percentage:.2f}%[/{pnl_color}]")
+                            elif size < 0:  # SHORT
+                                pnl_percentage = ((entry_price - latest_price) / entry_price) * 100
+                                pnl_color = "green" if pnl_percentage > 0 else "red"
+                                self.console.print(f"[{pnl_color}]   P&L: {pnl_percentage:.2f}%[/{pnl_color}]")
+                            
+                            # ตรวจสอบสัญญาณการเทรด
+                            signal = self.check_trading_signal(df, lrc_data, contract)
+                            
+                            # ตรวจสอบเงื่อนไขการปิด position ตามที่กำหนดใหม่
+                            close_position_reason = None
+                            
+                            if size > 0:  # LONG position
+                                if signal == "SELL":
+                                    close_position_reason = f"เกิดสัญญาณ SELL"
+                            
+                            elif size < 0:  # SHORT position
+                                if signal == "BUY":
+                                    close_position_reason = f"เกิดสัญญาณ BUY"
+                            
+                            if close_position_reason:
+                                position_label = "LONG" if size > 0 else "SHORT"
+                                self.console.print(f"[yellow]🔔 ปิด {position_label} position: {contract} เนื่องจาก {close_position_reason}[/yellow]")
+                                if self.close_position(contract, pos):
+                                    positions_closed += 1
+                                    self.console.print(f"[green]✅ ปิด {position_label} position สำเร็จ: {contract} - P&L: {pnl_percentage:.2f}%[/green]")
+                            else:
+                                self.console.print(f"[blue]   ยังไม่ต้องปิด position (ไม่เข้าเงื่อนไข)[/blue]")
+                            
+                            positions_checked += 1
+                        else:
+                            self.console.print(f"[red]❌ ไม่สามารถดึงราคาล่าสุดของ {contract} ได้[/red]")
+                    else:
+                        self.console.print(f"[red]❌ ไม่สามารถคำนวณ Linear Regression Channel สำหรับ {contract} ได้[/red]")
+                else:
+                    self.console.print(f"[red]❌ ไม่สามารถดึงข้อมูลแท่งเทียนของ {contract} ได้[/red]")
+            
+            # แสดงผลสรุป
+            self.console.print(f"[blue]===== สรุปการสแกน positions =====[/blue]")
+            self.console.print(f"[blue]ตรวจสอบ: {positions_checked}/{len(positions)} positions[/blue]")
+            self.console.print(f"[blue]ปิด: {positions_closed} positions[/blue]")
+            
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกน positions: {str(e)}[/red]")
-            
+
     def scan_market(self):
-        """สแกนตลาดอย่างต่อเนื่องเพื่อหาสัญญาณการเทรด"""
+        """สแกนตลาดเพื่อหาสัญญาณการเทรดและจัดการ positions"""
         first_run = True
+        
+        # ตัวแปรเก็บสถิติรวม
+        total_contracts_scanned = 0
+        total_buy_signals = 0
+        total_sell_signals = 0
+        total_long_positions_opened = 0
+        total_short_positions_opened = 0
+        total_positions_closed = 0
+        
         while True:
             try:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
                 
-                # ทำงานทุก 15 นาทีและในรอบแรก
+                # ทำงานทุกต้นชั่วโมงและนาทีที่ 15, 30, 45 หรือเมื่อเริ่มต้นโปรแกรม
                 if current_time.minute % 15 == 0 or first_run:
-                    self.console.print(f"[blue]เริ่มสแกนตลาด ณ เวลา {current_time}[/blue]")
+                    self.console.print(f"[blue]🔍 เริ่มสแกนตลาด ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
+                    self.console.print(f"[blue]===========================================[/blue]")
                     first_run = False
                     
-                    # สแกน positions ที่มีอยู่ก่อน
+                    # ตัวแปรเก็บสถิติการสแกนรอบนี้
+                    contracts_scanned = 0
+                    buy_signals = 0
+                    sell_signals = 0
+                    long_positions_opened = 0
+                    short_positions_opened = 0
+                    positions_closed = 0
+                    
+                    # สแกน positions ที่มีอยู่
+                    self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
                     self.scan_positions()
                     
-                    # สแกนตลาดเพื่อหาสัญญาณใหม่
+                    # ดึงรายชื่อสัญญา futures ที่มีสภาพคล่อง
+                    self.console.print(f"[blue]📊 ตรวจหาสัญญาณเทรดใหม่[/blue]")
                     contracts = self.get_futures_contracts()
-                    for contract in contracts:
-                        # ดึงข้อมูลแท่งเทียนและคำนวณ EMA
-                        df = self.get_candlesticks(contract)
-                        if not df.empty:
-                            df = self.calculate_ema(df)
-                            # ตรวจสอบสัญญาณและ position ที่มีอยู่
-                            signal = self.check_trading_signal(df)
-                            existing_pos = self.check_existing_position(contract)
-                            
-                            # จัดการสัญญาณ BUY
-                            if signal == "BUY":
-                                if existing_pos and float(existing_pos['size']) < 0:
-                                    # ถ้ามี SHORT position อยู่ ให้ปิดก่อนแล้วเปิด LONG
-                                    if self.close_position(contract, existing_pos):
-                                        time.sleep(1)  # รอให้ระบบประมวลผลการปิด position
-                                        self.create_long_order(contract)
-                                elif not existing_pos:
-                                    # ถ้าไม่มี position ให้เปิด LONG
-                                    self.create_long_order(contract)
-                                    
-                            # จัดการสัญญาณ SELL
-                            elif signal == "SELL":
-                                if existing_pos and float(existing_pos['size']) > 0:
-                                    # ถ้ามี LONG position อยู่ ให้ปิดก่อนแล้วเปิด SHORT
-                                    if self.close_position(contract, existing_pos):
-                                        time.sleep(1)  # รอให้ระบบประมวลผลการปิด position
-                                        self.create_short_order(contract)
-                                elif not existing_pos:
-                                    # ถ้าไม่มี position ให้เปิด SHORT
-                                    self.create_short_order(contract)
-                                    
-                    # รอ 30 วินาทีก่อนทำอย่างอื่น
-                    time.sleep(30)
                     
-                # รอ 10 วินาทีและวนลูปใหม่
+                    # ตรวจสอบแต่ละสัญญา
+                    for i, contract in enumerate(contracts, 1):
+                        self.console.print(f"[cyan]▶ สแกนสัญญา ({i}/{len(contracts)}): {contract}[/cyan]")
+                        df = self.get_candlesticks(contract)
+                        
+                        if not df.empty:
+                            lrc_data = self.calculate_linear_regression_channel(df)
+                            
+                            if lrc_data:
+                                # แสดงข้อมูล Linear Regression Channel
+                                top = lrc_data['TOP']
+                                bottom = lrc_data['BOTTOM']
+                                middle = lrc_data['MIDDLE']
+                                slope = lrc_data['slope']
+                                slope_prev = lrc_data['slope_prev']
+                                
+                                slope_direction = "ขาขึ้น 📈" if slope > 0 else "ขาลง 📉" if slope < 0 else "แนวราบ ➡️"
+                                latest_price = self.get_latest_price(contract)
+                                
+                                self.console.print(f"[magenta]   Linear Regression Channel: TOP={top:.6f}, MIDDLE={middle:.6f}, BOTTOM={bottom:.6f}[/magenta]")
+                                self.console.print(f"[magenta]   Slope ปัจจุบัน={slope:.6f} ({slope_direction}), Slope ก่อนหน้า={slope_prev:.6f}[/magenta]")
+                                self.console.print(f"[magenta]   ราคาล่าสุด={latest_price:.6f}[/magenta]")
+                                
+                                # แสดงข้อมูลแท่งเทียนล่าสุด
+                                latest_candle = df.iloc[-1]
+                                candle_type = "สีเขียว 🟩" if latest_candle['close'] > latest_candle['open'] else "สีแดง 🟥" if latest_candle['close'] < latest_candle['open'] else "Doji ⬛"
+                                self.console.print(f"[magenta]   แท่งเทียนล่าสุด: {candle_type} - Open: {latest_candle['open']:.6f}, High: {latest_candle['high']:.6f}, Low: {latest_candle['low']:.6f}, Close: {latest_candle['close']:.6f}[/magenta]")
+                                
+                                # ตรวจสอบสัญญาณการเทรด
+                                signal = self.check_trading_signal(df, lrc_data, contract)
+                                
+                                # จัดการการเทรดตามสัญญาณที่ได้รับ
+                                if signal == "BUY":
+                                    buy_signals += 1
+                                    existing_pos = self.check_existing_position(contract)
+                                    if existing_pos and float(existing_pos['size']) < 0:
+                                        # มี short position อยู่ ให้ปิดก่อนแล้วเปิด long
+                                        self.console.print(f"[yellow]🔄 มี SHORT position อยู่ ต้องปิดก่อนเปิด LONG[/yellow]")
+                                        if self.close_position(contract, existing_pos):
+                                            positions_closed += 1
+                                            if self.create_long_order(contract):
+                                                long_positions_opened += 1
+                                    elif not existing_pos:
+                                        # ไม่มี position ให้เปิด long ได้เลย
+                                        self.console.print(f"[yellow]🆕 ไม่มี position อยู่ เปิด LONG ได้เลย[/yellow]")
+                                        if self.create_long_order(contract):
+                                            long_positions_opened += 1
+                                    else:
+                                        self.console.print(f"[yellow]⏩ มี LONG position อยู่แล้ว ไม่ต้องทำอะไร[/yellow]")
+                                elif signal == "SELL":
+                                    sell_signals += 1
+                                    existing_pos = self.check_existing_position(contract)
+                                    if existing_pos and float(existing_pos['size']) > 0:
+                                        # มี long position อยู่ ให้ปิดก่อนแล้วเปิด short
+                                        self.console.print(f"[yellow]🔄 มี LONG position อยู่ ต้องปิดก่อนเปิด SHORT[/yellow]")
+                                        if self.close_position(contract, existing_pos):
+                                            positions_closed += 1
+                                            if self.create_short_order(contract):
+                                                short_positions_opened += 1
+                                    elif not existing_pos:
+                                        # ไม่มี position ให้เปิด short ได้เลย
+                                        self.console.print(f"[yellow]🆕 ไม่มี position อยู่ เปิด SHORT ได้เลย[/yellow]")
+                                        if self.create_short_order(contract):
+                                            short_positions_opened += 1
+                                    else:
+                                        self.console.print(f"[yellow]⏩ มี SHORT position อยู่แล้ว ไม่ต้องทำอะไร[/yellow]")
+                                else:
+                                    self.console.print(f"[blue]   ไม่พบสัญญาณเทรด[/blue]")
+                                
+                                contracts_scanned += 1
+                            else:
+                                self.console.print(f"[red]❌ ไม่สามารถคำนวณ Linear Regression Channel สำหรับ {contract} ได้[/red]")
+                        else:
+                            self.console.print(f"[red]❌ ไม่สามารถดึงข้อมูลแท่งเทียนของ {contract} ได้[/red]")
+                    
+                    # อัพเดตสถิติรวม
+                    total_contracts_scanned += contracts_scanned
+                    total_buy_signals += buy_signals
+                    total_sell_signals += sell_signals
+                    total_long_positions_opened += long_positions_opened
+                    total_short_positions_opened += short_positions_opened
+                    total_positions_closed += positions_closed
+                    
+                    # แสดงผลสรุปการสแกนรอบนี้
+                    self.console.print(f"[blue]===== สรุปการสแกนรอบนี้ =====[/blue]")
+                    self.console.print(f"[blue]📊 สัญญาที่สแกน: {contracts_scanned}/{len(contracts)}[/blue]")
+                    self.console.print(f"[green]📈 สัญญาณ BUY: {buy_signals}[/green]")
+                    self.console.print(f"[red]📉 สัญญาณ SELL: {sell_signals}[/red]")
+                    self.console.print(f"[green]📈 เปิด LONG: {long_positions_opened}[/green]")
+                    self.console.print(f"[red]📉 เปิด SHORT: {short_positions_opened}[/red]")
+                    self.console.print(f"[yellow]🔄 ปิด Position: {positions_closed}[/yellow]")
+                    
+                    # แสดงผลสถิติรวม
+                    self.console.print(f"[blue]===== สถิติรวมทั้งหมด =====[/blue]")
+                    self.console.print(f"[blue]📊 สัญญาที่สแกนทั้งหมด: {total_contracts_scanned}[/blue]")
+                    self.console.print(f"[green]📈 สัญญาณ BUY ทั้งหมด: {total_buy_signals}[/green]")
+                    self.console.print(f"[red]📉 สัญญาณ SELL ทั้งหมด: {total_sell_signals}[/red]")
+                    self.console.print(f"[green]📈 เปิด LONG ทั้งหมด: {total_long_positions_opened}[/green]")
+                    self.console.print(f"[red]📉 เปิด SHORT ทั้งหมด: {total_short_positions_opened}[/red]")
+                    self.console.print(f"[yellow]🔄 ปิด Position ทั้งหมด: {total_positions_closed}[/yellow]")
+                    self.console.print(f"[blue]===========================================[/blue]")
+                    
+                    # รอ 30 วินาทีหลังจากสแกนเสร็จ
+                    time.sleep(30)
+                
+                # ตรวจสอบสถานะ positions ทุก 3 นาที
+                if current_time.minute % 3 == 0:
+                    if current_time.minute % 15 == 0:
+                        # จะทำการสแกนเต็มรูปแบบในนาทีที่ 0, 15, 30, 45 อยู่แล้ว
+                        first_run = True
+                    else:
+                        self.console.print(f"[blue]🔍 ตรวจสอบ Positions ทุก 3 นาที ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
+                        # สแกนเฉพาะ positions ที่มีอยู่ในนาทีอื่นๆ
+                        self.scan_positions()
+                        self.console.print(f"[blue]===========================================[/blue]")
+                        time.sleep(60)
+                
+                # รอ 10 วินาทีก่อนตรวจสอบเวลาอีกครั้ง
                 time.sleep(10)
-                
             except Exception as e:
-                self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
-                time.sleep(30)  # รอก่อนลองใหม่ในกรณีที่เกิดข้อผิดพลาด
-                
+                self.console.print(f"[red]❌ เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
+                time.sleep(60)  # รอ 1 นาทีก่อนลองใหม่
+
+
 def main():
-    """ฟังก์ชันหลักสำหรับเริ่มทำงานของบอท"""
-    try:
-        bot = GateIOEMATradeBot()
-        bot.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย EMA 10 และ EMA 30...[/blue]")
-        bot.scan_market()
-    except Exception as e:
-        Console().print(f"[red]เกิดข้อผิดพลาดร้ายแรง: {str(e)}[/red]")
+    trader = GateIOLinearRegressionTrader()
+    trader.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย Linear Regression Channel...[/blue]")
+    trader.scan_market()
+
 
 if __name__ == "__main__":
     main()
