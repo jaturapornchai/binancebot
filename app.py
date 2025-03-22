@@ -35,7 +35,10 @@ class GateIOLinearRegressionTrader:
         pattern = re.compile(r'^\D+_USDT$')
         for contract in ticket:
             if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
-                valid_contracts.append(contract.contract)
+                 # ตรวจสอบสภาพคล่อง (Volume 24h > $500,000)
+                json_data = contract.to_dict()
+                if float(json_data['volume_24h']) * float(json_data['last']) > 500000:
+                    valid_contracts.append(contract.contract)
         self.console.print(f"[blue]พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา[/blue]")
         return valid_contracts
 
