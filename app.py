@@ -9,23 +9,19 @@ from rich.console import Console
 class GateIOLinearRegressionTrader:
     def __init__(self):
         load_dotenv()
-        # โหลด API key จาก environment variables
         self.api_key = os.getenv('GATEIO_API_KEY')
         self.secret_key = os.getenv('GATEIO_SECRET_KEY')
         if not self.api_key or not self.secret_key: raise ValueError("API keys ไม่พบในไฟล์ .env")
         
-        # ตั้งค่า API client
         config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4")
         self.client = ApiClient(config)
         self.futures_api = FuturesApi(self.client)
         
-        # ตั้งค่าพารามิเตอร์การเทรด
         self.leverage = 5
         self.order_amount = 20  # จำนวนเงิน USD ต่อการเปิดออเดอร์
         self.lookback_period = 100  # จำนวนแท่งเทียนที่ใช้คำนวณ Linear Regression Channel
         self.devlen = 2.0  # ค่าความเบี่ยงเบน (deviation) สำหรับขอบบนและล่าง
         
-        # สร้าง console สำหรับแสดงผล
         self.console = Console()
 
     def get_futures_contracts(self) -> List[str]:
@@ -35,7 +31,6 @@ class GateIOLinearRegressionTrader:
         pattern = re.compile(r'^\D+_USDT$')
         for contract in ticket:
             if pattern.match(contract.contract) and contract.contract not in ['USDC_USDT', 'DOGS_USDT']:
-                 # ตรวจสอบสภาพคล่อง (Volume 24h > $500,000)
                 json_data = contract.to_dict()
                 if float(json_data['volume_24h']) * float(json_data['last']) > 500000:
                     valid_contracts.append(contract.contract)
@@ -54,16 +49,12 @@ class GateIOLinearRegressionTrader:
 
     def calculate_linear_regression_channel(self, df: pd.DataFrame) -> dict:
         """คำนวณ Linear Regression Channel พร้อมเส้น TOPMIDDLE และ MIDDLEBOTTOM"""
-        if len(df) < self.lookback_period + 5: return {}  # ต้องมีข้อมูลมากกว่าที่ต้องการใช้
+        if len(df) < self.lookback_period + 5: return {}
         
-        # ดึงข้อมูลล่าสุดตามจำนวน lookback_period
         recent_data = df['close'].iloc[-self.lookback_period:].values
-        
-        # ใช้ numpy สำหรับการคำนวณ linear regression
         x = np.arange(self.lookback_period)
         slope, intercept = np.polyfit(x, recent_data, 1)
         
-        # คำนวณค่า linear regression line และค่าต่างๆ
         line = intercept + slope * x
         middle = line[-1]
         deviations = recent_data - line
@@ -71,14 +62,12 @@ class GateIOLinearRegressionTrader:
         top = middle + dev * self.devlen
         bottom = middle - dev * self.devlen
         
-        # เพิ่มเส้น TOPMIDDLE และ MIDDLEBOTTOM
+        # คำนวณเส้น TOPMIDDLE และ MIDDLEBOTTOM
         topmiddle = (top + middle) / 2
         middlebottom = (middle + bottom) / 2
         
         # ตรวจสอบความสมเหตุสมผลของค่า
         latest_price = recent_data[-1]
-        
-        # ป้องกันค่า channel ที่ไม่สมเหตุสมผล
         if (top - latest_price) / latest_price > 1.0 or (latest_price - bottom) / latest_price > 1.0:
             self.console.print(f"[yellow]⚠️ ปรับขนาด channel เนื่องจากค่าเดิมไม่สมเหตุสมผล[/yellow]")
             reasonable_dev = latest_price * 0.05  # ใช้ค่า 5% ของราคาปัจจุบัน
@@ -99,13 +88,13 @@ class GateIOLinearRegressionTrader:
         prev_slope = np.polyfit(x, prev_data, 1)[0] if len(prev_data) == self.lookback_period else 0.0
         
         return {
-            'MIDDLE': middle, 
-            'TOP': top, 
-            'BOTTOM': bottom, 
-            'TOPMIDDLE': topmiddle, 
+            'MIDDLE': middle,
+            'TOP': top,
+            'BOTTOM': bottom,
+            'TOPMIDDLE': topmiddle,
             'MIDDLEBOTTOM': middlebottom,
-            'slope': slope, 
-            'slope_prev': prev_slope, 
+            'slope': slope,
+            'slope_prev': prev_slope,
             'dev': dev
         }
 
@@ -142,6 +131,9 @@ class GateIOLinearRegressionTrader:
         
         top_value = lrc_data['TOP']
         bottom_value = lrc_data['BOTTOM']
+        middle_value = lrc_data['MIDDLE']
+        topmiddle_value = lrc_data['TOPMIDDLE']
+        middlebottom_value = lrc_data['MIDDLEBOTTOM']
         
         # ดึงข้อมูลแท่งเทียนล่าสุด
         latest_candle = df.iloc[-1]
@@ -157,22 +149,19 @@ class GateIOLinearRegressionTrader:
         touches_bottom = self.is_touching_bottom(latest_candle, bottom_value)
         
         # แสดงผลข้อมูลเพื่อวิเคราะห์
-        topmiddle = lrc_data['TOPMIDDLE']
-        middlebottom = lrc_data['MIDDLEBOTTOM']
-        middle = lrc_data['MIDDLE']
         self.console.print(f"[blue]   การตรวจสอบสัญญาณ: ราคาล่าสุด={latest_price:.6f}[/blue]")
-        self.console.print(f"[blue]   BOTTOM={bottom_value:.6f}, MIDDLEBOTTOM={middlebottom:.6f}, MIDDLE={middle:.6f}, TOPMIDDLE={topmiddle:.6f}, TOP={top_value:.6f}[/blue]")
+        self.console.print(f"[blue]   BOTTOM={bottom_value:.6f}, MIDDLEBOTTOM={middlebottom_value:.6f}, MIDDLE={middle_value:.6f}, TOPMIDDLE={topmiddle_value:.6f}, TOP={top_value:.6f}[/blue]")
         self.console.print(f"[blue]   แท่งเทียน: {is_green and 'สีเขียว' or is_red and 'สีแดง' or 'Doji'}, ทับ TOP={touches_top}, ทับ BOTTOM={touches_bottom}[/blue]")
         
-        # เงื่อนไขใหม่: BUY=CANDLE เป็นสีเขียว ทับเส้น TOP พอดี และราคาล่าสุดอยู่เหนือเส้น TOP
-        if is_green and touches_top and latest_price > top_value:
-            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว ทับเส้น TOP ({top_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่เหนือเส้น TOP[/green]")
-            return "BUY"
-        
-        # เงื่อนไขใหม่: SELL=CANDLE เป็นสีแดง ทับเส้น BOTTOM พอดี และราคาล่าสุดอยู่ใต้เส้น BOTTOM
-        if is_red and touches_bottom and latest_price < bottom_value:
-            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง ทับเส้น BOTTOM ({bottom_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่ใต้เส้น BOTTOM[/red]")
+        # เงื่อนไขใหม่: SELL=CANDLE เป็นสีแดง ทับเส้น TOP พอดี และราคาล่าสุดอยู่ใต้เส้น TOP และราคาล่าสุดอยู่เหนือเส้น TOPMIDDLE
+        if is_red and touches_top and latest_price < top_value and latest_price > topmiddle_value:
+            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง ทับเส้น TOP ({top_value:.6f}) ราคาล่าสุด ({latest_price:.6f}) อยู่ระหว่าง TOPMIDDLE และ TOP[/red]")
             return "SELL"
+        
+        # เงื่อนไขใหม่: BUY=CANDLE เป็นสีเขียว ทับเส้น BOTTOM พอดี และราคาล่าสุดอยู่สูงกว่าเส้น BOTTOM และราคาล่าสุดอยู่ใต้เส้น MIDDLEBOTTOM
+        if is_green and touches_bottom and latest_price > bottom_value and latest_price < middlebottom_value:
+            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว ทับเส้น BOTTOM ({bottom_value:.6f}) ราคาล่าสุด ({latest_price:.6f}) อยู่ระหว่าง BOTTOM และ MIDDLEBOTTOM[/green]")
+            return "BUY"
         
         return None
 
@@ -320,12 +309,12 @@ class GateIOLinearRegressionTrader:
                             top = lrc_data['TOP']
                             bottom = lrc_data['BOTTOM']
                             middle = lrc_data['MIDDLE']
-                            topmiddle = lrc_data['TOPMIDDLE']
-                            middlebottom = lrc_data['MIDDLEBOTTOM']
                             slope = lrc_data['slope']
                             
                             # แสดงข้อมูล Linear Regression Channel
                             slope_direction = "ขาขึ้น 📈" if slope > 0 else "ขาลง 📉" if slope < 0 else "แนวราบ ➡️"
+                            topmiddle = lrc_data['TOPMIDDLE']
+                            middlebottom = lrc_data['MIDDLEBOTTOM']
                             
                             self.console.print(f"[magenta]   Linear Regression Channel:[/magenta]")
                             self.console.print(f"[magenta]   TOP={top:.6f}, TOPMIDDLE={topmiddle:.6f}, MIDDLE={middle:.6f}, MIDDLEBOTTOM={middlebottom:.6f}, BOTTOM={bottom:.6f}[/magenta]")
@@ -337,28 +326,22 @@ class GateIOLinearRegressionTrader:
                             self.console.print(f"[magenta]   แท่งเทียนล่าสุด: {candle_type} - Open: {latest_candle['open']:.6f}, Close: {latest_candle['close']:.6f}[/magenta]")
                             
                             # คำนวณกำไร/ขาดทุนเป็น %
-                            if size > 0:  # LONG
-                                pnl_percentage = ((latest_price - entry_price) / entry_price) * 100
-                            else:  # SHORT
-                                pnl_percentage = ((entry_price - latest_price) / entry_price) * 100
+                            pnl_percentage = ((latest_price - entry_price) / entry_price) * 100 if size > 0 else ((entry_price - latest_price) / entry_price) * 100
                             pnl_color = "green" if pnl_percentage > 0 else "red"
                             self.console.print(f"[{pnl_color}]   P&L: {pnl_percentage:.2f}%[/{pnl_color}]")
-                            
-                            # ตรวจสอบสัญญาณการเทรด
-                            signal = self.check_trading_signal(df, lrc_data, contract)
                             
                             # ตรวจสอบเงื่อนไขการปิด position ตามที่กำหนดใหม่
                             close_position_reason = None
                             
                             # เงื่อนไขใหม่:
-                            # ปิด long position ถ้า position เดิมที่เปิดอยู่เป็น long และราคาล่าสุดต่ำกว่าเส้น TOPMIDDLE
-                            # ปิด short position ถ้า position เดิมที่เปิดอยู่เป็น short และ ราคาล่าสุด สูงกว่าเส้น MIDDLEBOTTOM
+                            # ปิด long position ถ้า position เดิมที่เปิดอยู่เป็น long และ (ราคาล่าสุดอยู่ต่ำกว่าเส้น BOTTOM หรือ ราคาล่าสุดอยู่สูงกว่าเส้น MIDDLEBOTTOM)
                             if size > 0:  # LONG position
-                                if latest_price < topmiddle:
-                                    close_position_reason = f"ราคาล่าสุด ({latest_price:.6f}) ต่ำกว่าเส้น TOPMIDDLE ({topmiddle:.6f})"
+                                if latest_price < bottom or latest_price > middlebottom:
+                                    close_position_reason = f"ราคาล่าสุด ({latest_price:.6f}) {'ต่ำกว่าเส้น BOTTOM' if latest_price < bottom else 'สูงกว่าเส้น MIDDLEBOTTOM'}"
+                            # ปิด short position ถ้า position เดิมที่เปิดอยู่เป็น short และ (ราคาล่าสุดอยู่สูงกว่าเส้น TOP หรือ ราคาล่าสุดอยู่ต่ำกว่าเส้น TOPMIDDLE)
                             elif size < 0:  # SHORT position
-                                if latest_price > middlebottom:
-                                    close_position_reason = f"ราคาล่าสุด ({latest_price:.6f}) สูงกว่าเส้น MIDDLEBOTTOM ({middlebottom:.6f})"
+                                if latest_price > top or latest_price < topmiddle:
+                                    close_position_reason = f"ราคาล่าสุด ({latest_price:.6f}) {'สูงกว่าเส้น TOP' if latest_price > top else 'ต่ำกว่าเส้น TOPMIDDLE'}"
                             
                             if close_position_reason:
                                 position_label = "LONG" if size > 0 else "SHORT"
@@ -390,8 +373,7 @@ class GateIOLinearRegressionTrader:
         first_run = True
         
         # ตัวแปรเก็บสถิติรวม
-        stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0,
-                'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
+        stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0, 'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
         
         while True:
             try:
@@ -404,8 +386,7 @@ class GateIOLinearRegressionTrader:
                     first_run = False
                     
                     # ตัวแปรเก็บสถิติการสแกนรอบนี้
-                    scan_stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0,
-                               'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
+                    scan_stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0, 'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
                     
                     # สแกน positions ที่มีอยู่
                     self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
