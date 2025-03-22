@@ -399,6 +399,13 @@ class GateIOLinearRegressionTrader:
                     self.console.print(f"[blue]===========================================[/blue]")
                     
                     time.sleep(30)  # รอ 30 วินาทีหลังจากสแกนเสร็จ
+
+                if current_time.minute % 3 == 0:
+                    if current_time.minute % 15 == 0:
+                        first_run = True
+                    else:
+                        self.scan_positions()
+                        time.sleep(60)
                 
                 time.sleep(10)  # รอ 10 วินาทีก่อนตรวจสอบเวลาอีกครั้ง
             except Exception as e:
