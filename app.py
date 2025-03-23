@@ -176,12 +176,12 @@ class GateIORSIDivergenceTrader:
         # เงื่อนไขเทรด: BUY=เมื่อเกิดสัญญาณ RSI Bullish Divergence
         if bullish_divergence:
             self.console.print(f"[green]สัญญาณ BUY: พบ RSI Bullish Divergence[/green]")
-            return "SELL" # "BUY"
+            return "BUY"
         
         # เงื่อนไขเทรด: SELL=เมื่อเกิดสัญญาณ RSI Bearish Divergence
         if bearish_divergence:
             self.console.print(f"[red]สัญญาณ SELL: พบ RSI Bearish Divergence[/red]")
-            return "BUY" #"SELL"
+            return "SELL"
         
         return None
 
