@@ -140,12 +140,12 @@ class GateIOLinearRegressionTrader:
         # เงื่อนไขใหม่: BUY=แท่งเทียนสีเขียว ทับเส้น TOP และราคาล่าสุดอยู่เหนือเส้น TOP
         if is_green and touches_top and latest_price > top_value:
             self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว ทับเส้น TOP ({top_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่เหนือเส้น TOP[/green]")
-            return "BUY"
+            return "SELL" # "BUY"
         
         # เงื่อนไขใหม่: SELL=แท่งเทียนสีแดง ทับเส้น BOTTOM และราคาล่าสุดอยู่ต่ำกว่าเส้น BOTTOM
         if is_red and touches_bottom and latest_price < bottom_value:
             self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง ทับเส้น BOTTOM ({bottom_value:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่ต่ำกว่าเส้น BOTTOM[/red]")
-            return "SELL"
+            return "BUY" # "SELL"
         
         return None
 
