@@ -24,7 +24,7 @@ class GateIOLinearRegressionTrader:
         self.order_amount = 20  # จำนวนเงิน USD ต่อการเปิดออเดอร์
         self.lookback_period = 100  # จำนวนแท่งเทียนที่ใช้คำนวณ Linear Regression Channel
         self.devlen = 2.0  # ค่าความเบี่ยงเบน (deviation) สำหรับขอบบนและล่าง
-        self.profit_loss_threshold = 3.0  # เปอร์เซ็นต์กำไรหรือขาดทุนที่ใช้ในการปิด position
+        self.profit_loss_threshold = 1.0  # เปอร์เซ็นต์กำไรหรือขาดทุนที่ใช้ในการปิด position
         
         # สร้าง console สำหรับแสดงผล
         self.console = Console()
