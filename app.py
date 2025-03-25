@@ -97,11 +97,11 @@ class GateIOLinearRegressionTrader:
 
     def check_trading_signal(self, df: pd.DataFrame, lrc_data: dict, contract: str = None) -> str:
         """ตรวจสอบสัญญาณการเทรดตามเงื่อนไขที่กำหนดใหม่"""
-        if not lrc_data or len(df) < 2: return None  # ต้องมีอย่างน้อย 2 แท่งเทียน
+        if not lrc_data or len(df) < 1: return None  # ต้องมีอย่างน้อย 1 แท่งเทียน
         
         top_value, bottom_value = lrc_data['TOP'], lrc_data['BOTTOM']
-        # ใช้แท่งเทียนล่าสุด ลบ 1 time frame
-        candle = df.iloc[-2].to_dict()
+        # ใช้แท่งเทียนล่าสุด
+        candle = df.iloc[-1].to_dict()
         latest_price = self.get_latest_price(contract)
         if latest_price is None: return None
         
@@ -222,7 +222,7 @@ class GateIOLinearRegressionTrader:
                 
                 df = self.get_candlesticks(contract)
                 
-                if not df.empty and len(df) >= 2:  # ต้องมีอย่างน้อย 2 แท่งเทียน
+                if not df.empty and len(df) >= 1:  # ต้องมีอย่างน้อย 1 แท่งเทียน
                     lrc_data = self.calculate_linear_regression_channel(df)
                     
                     if lrc_data:
@@ -237,10 +237,10 @@ class GateIOLinearRegressionTrader:
                             self.console.print(f"[magenta]   TOP={top:.6f}, TOPMIDDLE={topmiddle:.6f}, MIDDLE={lrc_data['MIDDLE']:.6f}, MIDDLEBOTTOM={middlebottom:.6f}, BOTTOM={bottom:.6f}[/magenta]")
                             self.console.print(f"[magenta]   Slope={lrc_data['slope']:.6f} ({slope_direction}) - ราคาล่าสุด={latest_price:.6f}[/magenta]")
                             
-                            # ใช้แท่งเทียนล่าสุด ลบ 1 time frame
-                            latest_candle = df.iloc[-2].to_dict()
+                            # ใช้แท่งเทียนล่าสุด
+                            latest_candle = df.iloc[-1].to_dict()
                             candle_type = "สีเขียว 🟩" if latest_candle['close'] > latest_candle['open'] else "สีแดง 🟥" if latest_candle['close'] < latest_candle['open'] else "Doji ⬛"
-                            self.console.print(f"[magenta]   แท่งเทียนล่าสุด(-1): {candle_type} - Open: {latest_candle['open']:.6f}, Close: {latest_candle['close']:.6f}, High: {latest_candle['high']:.6f}, Low: {latest_candle['low']:.6f}[/magenta]")
+                            self.console.print(f"[magenta]   แท่งเทียนล่าสุด: {candle_type} - Open: {latest_candle['open']:.6f}, Close: {latest_candle['close']:.6f}, High: {latest_candle['high']:.6f}, Low: {latest_candle['low']:.6f}[/magenta]")
                             
                             pnl_percentage = ((latest_price - entry_price) / entry_price) * 100 if size > 0 else ((entry_price - latest_price) / entry_price) * 100
                             pnl_color = "green" if pnl_percentage > 0 else "red"
@@ -312,7 +312,7 @@ class GateIOLinearRegressionTrader:
                         self.console.print(f"[cyan]▶ สแกนสัญญา ({i}/{len(contracts)}): {contract}[/cyan]")
                         df = self.get_candlesticks(contract)
                         
-                        if not df.empty and len(df) >= 2:  # ต้องมีอย่างน้อย 2 แท่งเทียน
+                        if not df.empty and len(df) >= 1:  # ต้องมีอย่างน้อย 1 แท่งเทียน
                             lrc_data = self.calculate_linear_regression_channel(df)
                             
                             if lrc_data:
@@ -323,10 +323,10 @@ class GateIOLinearRegressionTrader:
                                 self.console.print(f"[magenta]   TOP={lrc_data['TOP']:.6f}, TOPMIDDLE={lrc_data['TOPMIDDLE']:.6f}, MIDDLE={lrc_data['MIDDLE']:.6f}, MIDDLEBOTTOM={lrc_data['MIDDLEBOTTOM']:.6f}, BOTTOM={lrc_data['BOTTOM']:.6f}[/magenta]")
                                 self.console.print(f"[magenta]   Slope={lrc_data['slope']:.6f} ({slope_direction}), ราคาล่าสุด={latest_price:.6f}[/magenta]")
                                 
-                                # ใช้แท่งเทียนล่าสุด ลบ 1 time frame
-                                latest_candle = df.iloc[-2].to_dict()
+                                # ใช้แท่งเทียนล่าสุด
+                                latest_candle = df.iloc[-1].to_dict()
                                 candle_type = "สีเขียว 🟩" if latest_candle['close'] > latest_candle['open'] else "สีแดง 🟥" if latest_candle['close'] < latest_candle['open'] else "Doji ⬛"
-                                self.console.print(f"[magenta]   แท่งเทียนล่าสุด(-1): {candle_type} - High: {latest_candle['high']:.6f}, Low: {latest_candle['low']:.6f}[/magenta]")
+                                self.console.print(f"[magenta]   แท่งเทียนล่าสุด: {candle_type} - High: {latest_candle['high']:.6f}, Low: {latest_candle['low']:.6f}[/magenta]")
                                 
                                 signal = self.check_trading_signal(df, lrc_data, contract)
                                 
