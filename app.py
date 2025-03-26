@@ -101,12 +101,12 @@ class GateIOLinearRegressionTrader:
         self.console.print(f"[blue]   BOTTOM={lrc_data['BOTTOM']:.6f}, MIDDLEBOTTOM={lrc_data['MIDDLEBOTTOM']:.6f}, MIDDLE={lrc_data['MIDDLE']:.6f}, TOPMIDDLE={lrc_data['TOPMIDDLE']:.6f}, TOP={lrc_data['TOP']:.6f}[/blue]")
         self.console.print(f"[blue]   แท่งเทียน: {is_green and 'สีเขียว' or is_red and 'สีแดง' or 'Doji'}, ทับ TOP={touches_top}, ทับ BOTTOM={touches_bottom}[/blue]")
         
-        if is_green and touches_top and latest_price > lrc_data['TOP']:
-            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว ทับเส้น TOP ({lrc_data['TOP']:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่เหนือเส้น TOP[/green]")
+        if is_green and touches_top:
+            self.console.print(f"[green]สัญญาณ BUY: แท่งเทียนสีเขียว ทับเส้น TOP ({lrc_data['TOP']:.6f})[/green]")
             return "BUY"
         
-        if is_red and touches_bottom and latest_price < lrc_data['BOTTOM']:
-            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง ทับเส้น BOTTOM ({lrc_data['BOTTOM']:.6f}) และราคาล่าสุด ({latest_price:.6f}) อยู่ใต้เส้น BOTTOM[/red]")
+        if is_red and touches_bottom:
+            self.console.print(f"[red]สัญญาณ SELL: แท่งเทียนสีแดง ทับเส้น BOTTOM ({lrc_data['BOTTOM']:.6f})[/red]")
             return "SELL"
         
         return None
@@ -221,10 +221,15 @@ class GateIOLinearRegressionTrader:
                 self.console.print(f"[{'green' if pnl_percentage > 0 else 'red'}]   P&L: {pnl_percentage:.2f}%[/{'green' if pnl_percentage > 0 else 'red'}]")
                 
                 close_position_reason = None
-                if size > 0 and latest_price < topmiddle:  # LONG position
-                    close_position_reason = f"ราคาล่าสุด ({latest_price:.6f}) ต่ำกว่าเส้น TOPMIDDLE ({topmiddle:.6f})"
-                elif size < 0 and latest_price > middlebottom:  # SHORT position
-                    close_position_reason = f"ราคาล่าสุด ({latest_price:.6f}) สูงกว่าเส้น MIDDLEBOTTOM ({middlebottom:.6f})"
+                pnl_percentage_abs = abs(pnl_percentage)
+                
+                # ตรวจสอบเงื่อนไขการปิด position ตามกำไร/ขาดทุนที่กำหนด (1.5%)
+                if size > 0:  # LONG position
+                    if pnl_percentage_abs > 1.5:
+                        close_position_reason = f"LONG position มี{'กำไร' if pnl_percentage > 0 else 'ขาดทุน'} {pnl_percentage_abs:.2f}% {'มากกว่า' if pnl_percentage_abs > 1.5 else 'เท่ากับ'} 1.5%"
+                elif size < 0:  # SHORT position
+                    if pnl_percentage_abs > 1.5:
+                        close_position_reason = f"SHORT position มี{'กำไร' if pnl_percentage > 0 else 'ขาดทุน'} {pnl_percentage_abs:.2f}% {'มากกว่า' if pnl_percentage_abs > 1.5 else 'เท่ากับ'} 1.5%"
                 
                 if close_position_reason:
                     position_label = "LONG" if size > 0 else "SHORT"
