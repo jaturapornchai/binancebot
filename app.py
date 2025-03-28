@@ -26,7 +26,7 @@ class GateIOLinearRegressionTrader:
 
     def get_candlesticks(self, contract: str) -> pd.DataFrame:
         """ดึงข้อมูลแท่งเทียนจาก API"""
-        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
+        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='5m', limit=500)
         if not candles: return pd.DataFrame()
         data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
         df = pd.DataFrame(data)
@@ -226,7 +226,7 @@ class GateIOLinearRegressionTrader:
             try:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
                 
-                if current_time.minute % 15 == 0 or first_run:
+                if current_time.minute % 5 == 0 or first_run:
                     self.console.print(f"[blue]🔍 เริ่มสแกนตลาด ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
                     self.console.print(f"[blue]===========================================[/blue]")
                     first_run = False
