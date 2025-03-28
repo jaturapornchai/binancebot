@@ -13,7 +13,7 @@ class GateIOLinearRegressionTrader:
         if not self.api_key or not self.secret_key: raise ValueError("API keys ไม่พบในไฟล์ .env")
         config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4")
         self.client, self.futures_api = ApiClient(config), FuturesApi(ApiClient(config))
-        self.leverage, self.order_amount = 10, 20
+        self.leverage, self.order_amount = 10, 50
         self.lookback_period, self.devlen = 100, 2.0
         self.console = Console()
 
