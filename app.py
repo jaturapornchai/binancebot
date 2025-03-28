@@ -195,11 +195,11 @@ class GateIOLinearRegressionTrader:
                 pnl_percentage = ((latest_price - entry_price) / entry_price) * 100 if size > 0 else ((entry_price - latest_price) / entry_price) * 100
                 self.console.print(f"[{'green' if pnl_percentage > 0 else 'red'}]   P&L: {pnl_percentage:.2f}%[/{'green' if pnl_percentage > 0 else 'red'}]")
                 
-                # ปิด SHORT position ตามเงื่อนไข (กำไรหรือขาดทุนมากกว่า 1.5%)
+                # ปิด SHORT position ตามเงื่อนไข (กำไรมากกว่า 1.5% หรือขาดทุนมากกว่า 1.25%)
                 close_position_reason = None
                 if size < 0:  # เฉพาะ SHORT position
-                    if abs(pnl_percentage) > 1.5:
-                        close_position_reason = f"{'กำไร' if pnl_percentage > 0 else 'ขาดทุน'} {abs(pnl_percentage):.2f}% > 1.5%"
+                    if (pnl_percentage > 0 and pnl_percentage > 1.5) or (pnl_percentage < 0 and abs(pnl_percentage) > 1.25):
+                        close_position_reason = f"{'กำไร' if pnl_percentage > 0 else 'ขาดทุน'} {abs(pnl_percentage):.2f}% > {'1.5' if pnl_percentage > 0 else '1.25'}%"
                 
                 if close_position_reason:
                     self.console.print(f"[yellow]🔔 ปิด SHORT position: {contract} เนื่องจาก {close_position_reason}[/yellow]")
