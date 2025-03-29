@@ -17,7 +17,7 @@ class OptimizedShortTrader:
         self.lookback_period, self.devlen = 100, 2.0
         self.console = Console()
         self.profit_threshold, self.loss_threshold = 1.5, 1.25
-        self.max_positions, self.max_correlation = 5, 0.7
+        self.max_positions, self.max_correlation = 500, 0.7
         self.market_config = {
             'min_volume_usd': 100000,
             'blacklist': ['USDC_USDT', 'DOGS_USDT'],
