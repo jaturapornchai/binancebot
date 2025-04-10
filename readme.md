@@ -1,7 +1,10 @@
 ### Build & Push Command
 
+docker buildx build --platform linux/amd64 -t jaturapornchai/getspot:latest --push .
+
 ```
 docker build -t  jaturapornchai/getspot .
+docker buildx -t  jaturapornchai/getspot .
 
 docker push jaturapornchai/getspot
 ```
