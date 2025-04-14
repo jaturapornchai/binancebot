@@ -1,271 +1,330 @@
-import os, time, re
-from typing import List, Dict
-import pandas as pd
-import numpy as np
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import os, re, sys, pandas as pd, numpy as np
 from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from rich.console import Console
 
-class GateIOEMATrader:
+class GateIORSIScanner:
     def __init__(self):
-        load_dotenv()
-        self.api_key, self.secret_key = os.getenv('GATEIO_API_KEY'), os.getenv('GATEIO_SECRET_KEY')
-        if not self.api_key or not self.secret_key: raise ValueError("API keys ไม่พบในไฟล์ .env")
-        config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4")
-        self.client, self.futures_api = ApiClient(config), FuturesApi(ApiClient(config))
-        self.leverage, self.order_amount = 5, 20
-        self.console = Console()
+        try: # โหลด API keys และกำหนดค่าเริ่มต้น
+            load_dotenv(override=True); self.api_key = os.getenv('GATEIO_API_KEY') or os.environ.get('GATEIO_API_KEY'); self.secret_key = os.getenv('GATEIO_SECRET_KEY') or os.environ.get('GATEIO_SECRET_KEY')
+            if not self.api_key or not self.secret_key: raise ValueError("API keys ไม่พบในไฟล์ .env หรือ environment variables")
+            config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4"); self.client, self.futures_api = ApiClient(config), FuturesApi(ApiClient(config))
+            # กำหนดพารามิเตอร์ RSI=14, จำนวนแท่งเทียนย้อนหลัง=20, window size สำหรับหา swing points=5
+            self.rsi_period, self.rsi_overbought, self.rsi_oversold, self.lookback_periods, self.swing_window = 14, 70, 30, 20, 5
+            # กำหนดพารามิเตอร์สำหรับสัญญาณการเทรด
+            self.rsi_recovery_threshold = 5  # ค่า RSI ต้องฟื้นตัวอย่างน้อย 5 จุดจากจุดต่ำสุด/สูงสุด
+            self.ma_periods = [5, 20]  # คำนวณค่าเฉลี่ยเคลื่อนที่ 5 และ 20 คาบเพื่อยืนยันเทรนด์
+            self.signal_strength_threshold = 7  # ค่าความแข็งแกร่งของสัญญาณขั้นต่ำ (1-10)
+            self.console = Console()
+        except Exception as e: print(f"เกิดข้อผิดพลาดในการเริ่มต้น: {str(e)}"); sys.exit(1)
 
-    def get_futures_contracts(self) -> List[str]:
-        """ดึงรายชื่อสัญญา futures ที่มีสภาพคล่องเพียงพอ"""
-        ticket = self.futures_api.list_futures_tickers(settle='usdt')
-        valid_contracts = [c.contract for c in ticket if re.match(r'^\D+_USDT$', c.contract) and c.contract not in ['USDC_USDT', 'DOGS_USDT'] and float(c.volume_24h) * float(c.last) > 100000]
-        self.console.print(f"[blue]พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา[/blue]")
-        return valid_contracts
+    def calculate_rsi(self, prices):
+        """คำนวณค่า RSI จากข้อมูลราคา"""
+        try:
+            # คำนวณการเปลี่ยนแปลงของราคา และแยกเป็น gain/loss
+            delta = np.diff(prices); gain, loss = np.where(delta > 0, delta, 0), np.where(delta < 0, -delta, 0)
+            # คำนวณค่าเฉลี่ยเคลื่อนที่แบบถ่วงน้ำหนัก (EMA)
+            avg_gain = np.concatenate(([np.mean(gain[:self.rsi_period])], np.zeros(len(gain) - self.rsi_period)))
+            avg_loss = np.concatenate(([np.mean(loss[:self.rsi_period])], np.zeros(len(loss) - self.rsi_period)))
+            # คำนวณ EMA สำหรับทุกราคา
+            for i in range(self.rsi_period, len(gain)): avg_gain[i-self.rsi_period+1] = (avg_gain[i-self.rsi_period] * (self.rsi_period-1) + gain[i]) / self.rsi_period; avg_loss[i-self.rsi_period+1] = (avg_loss[i-self.rsi_period] * (self.rsi_period-1) + loss[i]) / self.rsi_period
+            # คำนวณ RS และ RSI
+            rs = avg_gain / np.where(avg_loss == 0, 0.001, avg_loss)  # ป้องกันการหารด้วยศูนย์
+            return np.concatenate((np.full(self.rsi_period, np.nan), 100 - (100 / (1 + rs))))
+        except Exception as e: self.console.print(f"[red]เกิดข้อผิดพลาดในการคำนวณ RSI: {str(e)}[/red]"); return np.array([])
 
-    def get_candlesticks(self, contract: str) -> pd.DataFrame:
-        """ดึงข้อมูลแท่งเทียนจาก API"""
-        candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='15m', limit=500)
-        if not candles: return pd.DataFrame()
-        data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
-        df = pd.DataFrame(data)
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-        return df.sort_values('timestamp')
+    def find_swing_points(self, df):
+        """ค้นหาจุด swing high และ swing low ของ RSI และราคา"""
+        # เตรียม DataFrame สำหรับเก็บจุด swing
+        df['rsi_swing_high'] = False; df['rsi_swing_low'] = False; df['price_swing_high'] = False; df['price_swing_low'] = False
+        # ค้นหาจุด swing point
+        for i in range(self.swing_window, len(df) - self.swing_window):
+            left_window, right_window = df.iloc[i-self.swing_window:i], df.iloc[i+1:i+self.swing_window+1]
+            # Swing High/Low ของ RSI
+            if all(df.iloc[i]['rsi'] >= left_window['rsi']) and all(df.iloc[i]['rsi'] >= right_window['rsi']): df.loc[df.index[i], 'rsi_swing_high'] = True
+            if all(df.iloc[i]['rsi'] <= left_window['rsi']) and all(df.iloc[i]['rsi'] <= right_window['rsi']): df.loc[df.index[i], 'rsi_swing_low'] = True
+            # Swing High/Low ของราคา
+            if all(df.iloc[i]['close'] >= left_window['close']) and all(df.iloc[i]['close'] >= right_window['close']): df.loc[df.index[i], 'price_swing_high'] = True
+            if all(df.iloc[i]['close'] <= left_window['close']) and all(df.iloc[i]['close'] <= right_window['close']): df.loc[df.index[i], 'price_swing_low'] = True
+        return df
 
-    def calculate_ema(self, df: pd.DataFrame) -> dict:
-        """คำนวณ EMA 5, 10, 30"""
-        if len(df) < 30: return {}
-        df['ema5'] = df['close'].ewm(span=5, adjust=False).mean()
-        df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
-        df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
-        latest = df.iloc[-1]
-        return {'ema5': latest['ema5'], 'ema10': latest['ema10'], 'ema30': latest['ema30'], 'close': latest['close'], 'open': latest['open']}
-
-    def get_latest_price(self, contract: str) -> float:
-        """ดึงราคาล่าสุดของสัญญา"""
-        for t in self.futures_api.list_futures_tickers(settle='usdt'):
-            if t.contract == contract: return float(t.last)
-        self.console.print(f"[red]ไม่พบราคาสำหรับ {contract}[/red]")
-        return None
-
-    def check_trading_signal(self, df: pd.DataFrame, ema_data: dict, contract: str = None) -> str:
-        """ตรวจสอบสัญญาณการเทรดตาม EMA"""
-        if not ema_data or len(df) < 2: return None
-        is_green = ema_data['close'] > ema_data['open']
-        is_red = ema_data['close'] < ema_data['open']
-        buy_condition = (ema_data['ema5'] > ema_data['ema10']) and (ema_data['ema10'] > ema_data['ema30']) and (ema_data['close'] > ema_data['ema10']) and is_green
-        sell_condition = (ema_data['ema5'] < ema_data['ema10']) and (ema_data['ema10'] < ema_data['ema30']) and (ema_data['close'] < ema_data['ema10']) and is_red
+    def calculate_ma(self, df, periods):
+        """คำนวณค่าเฉลี่ยเคลื่อนที่ (Moving Average) สำหรับยืนยันเทรนด์"""
+        for period in periods:
+            df[f'ma_{period}'] = df['close'].rolling(window=period).mean()
+        return df
         
-        self.console.print(f"[blue]   ตรวจสอบสัญญาณ: EMA5={ema_data['ema5']:.6f}, EMA10={ema_data['ema10']:.6f}, EMA30={ema_data['ema30']:.6f}[/blue]")
-        self.console.print(f"[blue]   เงื่อนไข BUY: EMA5>EMA10={ema_data['ema5']>ema_data['ema10']}, EMA10>EMA30={ema_data['ema10']>ema_data['ema30']}, Close>EMA10={ema_data['close']>ema_data['ema10']}, เขียว={is_green}[/blue]")
-        self.console.print(f"[blue]   เงื่อนไข SELL: EMA5<EMA10={ema_data['ema5']<ema_data['ema10']}, EMA10<EMA30={ema_data['ema10']<ema_data['ema30']}, Close<EMA10={ema_data['close']<ema_data['ema10']}, แดง={is_red}[/blue]")
+    def find_divergences(self, df):
+        """ตรวจหา Divergence โดยใช้จุด Swing High/Low"""
+        divergences = {'bearish': [], 'bullish': []}; df = self.find_swing_points(df)
+        # คำนวณค่าเฉลี่ยเคลื่อนที่เพื่อยืนยันเทรนด์
+        df = self.calculate_ma(df, self.ma_periods)
         
-        if buy_condition:
-            self.console.print(f"[green]🟢 สัญญาณ BUY: EMA5>EMA10, EMA10>EMA30, ราคา>EMA10, แท่งเทียนเขียว[/green]")
-            return "BUY"
-        elif sell_condition:
-            self.console.print(f"[red]🔴 สัญญาณ SELL: EMA5<EMA10, EMA10<EMA30, ราคา<EMA10, แท่งเทียนแดง[/red]")
-            return "SELL"
-        return None
-
-    def check_existing_position(self, contract: str) -> Dict:
-        """ตรวจสอบว่ามี position ที่เปิดอยู่หรือไม่"""
-        for p in self.futures_api.list_positions(settle='usdt', holding=True):
-            if p.contract == contract:
-                pos_info = p.to_dict()
-                size = float(pos_info['size'])
-                position_type = "LONG" if size > 0 else "SHORT" if size < 0 else "NONE"
-                self.console.print(f"[yellow]พบ position {position_type} สำหรับ {contract}: ขนาด={abs(size)}[/yellow]")
-                return pos_info
-        return None
-
-    def set_leverage(self, contract: str) -> bool:
-        """ตั้งค่า leverage สำหรับการเทรด"""
-        try:
-            self.futures_api.update_position_leverage(contract=contract, settle='usdt', leverage=str(self.leverage))
-            self.console.print(f"[yellow]ตั้งค่า leverage {self.leverage}x สำหรับ {contract}[/yellow]")
-            return True
-        except Exception as e:
-            self.console.print(f"[red]ไม่สามารถตั้งค่า leverage สำหรับ {contract}: {str(e)}[/red]")
-            return False
-
-    def close_position(self, contract: str, position: Dict) -> bool:
-        """ปิด position ที่มีอยู่"""
-        try:
-            size = float(position['size'])
-            if size == 0: return False
-            direction = abs(size) if size < 0 else -size
-            self.futures_api.create_futures_order('usdt', {'contract': contract, 'size': direction, 'price': 0, 'tif': 'ioc', 'reduce_only': True})
-            self.console.print(f"[green]✅ ปิด position {'LONG' if size > 0 else 'SHORT'} สำหรับ {contract}: ขนาด={abs(size)}[/green]")
-            return True
-        except Exception as e:
-            self.console.print(f"[red]ไม่สามารถปิด position สำหรับ {contract}: {str(e)}[/red]")
-            return False
-
-    def create_order(self, contract: str, is_long: bool) -> Dict:
-        """เปิด position LONG หรือ SHORT"""
-        try:
-            if not self.set_leverage(contract): return None
-            price = self.get_latest_price(contract)
-            if not price: return None
-            contract_info = self.futures_api.get_futures_contract(contract=contract, settle='usdt')
-            multiplier = float(contract_info.to_dict()['quanto_multiplier'])
-            min_size = float(contract_info.to_dict()['order_size_min'])
-            usd_value = self.order_amount * self.leverage
-            size = max(min_size, round(usd_value / (price * multiplier)))
-            order = self.futures_api.create_futures_order('usdt', {'contract': contract, 'size': size if is_long else -size, 'price': 0, 'tif': 'ioc', 'reduce_only': False})
-            position_type = "LONG" if is_long else "SHORT"
-            self.console.print(f"[{'green' if is_long else 'red'}]✅ เปิด position {position_type}: {contract} ขนาด={size}[/{'green' if is_long else 'red'}]")
-            return order
-        except Exception as e:
-            self.console.print(f"[red]ไม่สามารถเปิด {'LONG' if is_long else 'SHORT'} สำหรับ {contract}: {str(e)}[/red]")
-            return None
-
-    def scan_positions(self):
-        """สแกน positions ที่เปิดอยู่เพื่อทำการปิดตามเงื่อนไข"""
-        try:
-            positions = [p.to_dict() for p in self.futures_api.list_positions(settle='usdt', holding=True)]
-            self.console.print(f"[blue]===== สแกน {len(positions)} positions ที่เปิดอยู่ =====[/blue]")
-            positions_checked, positions_closed = 0, 0
-            
-            for pos in positions:
-                contract, size = pos['contract'], float(pos['size'])
-                if size == 0: continue
-                position_type = "LONG 📈" if size > 0 else "SHORT 📉"
-                entry_price = float(pos['entry_price'])
-                self.console.print(f"[cyan]▶ ตรวจสอบ: {contract} ({position_type}) - ราคาเข้า: {entry_price:.6f} - ขนาด: {abs(size)}[/cyan]")
+        # ค้นหา bearish divergence (ราคาทำ higher high แต่ RSI ทำ lower high)
+        rsi_swing_highs, price_swing_highs = df[df['rsi_swing_high']].sort_index(), df[df['price_swing_high']].sort_index()
+        if len(rsi_swing_highs) >= 2 and len(price_swing_highs) >= 2:
+            for i in range(1, min(len(rsi_swing_highs), self.lookback_periods)):
+                if i >= len(rsi_swing_highs): break
+                current_rsi_high, prev_rsi_high = rsi_swing_highs.iloc[-i], rsi_swing_highs.iloc[-(i+1)]
+                # หาจุด swing high ของราคาที่ใกล้เคียงกับ rsi swing high
+                current_price_idx = df.index.get_indexer([current_rsi_high.name], method='nearest')[0]
+                prev_price_idx = df.index.get_indexer([prev_rsi_high.name], method='nearest')[0]
+                current_price, prev_price = df.iloc[current_price_idx]['close'], df.iloc[prev_price_idx]['close']
                 
-                latest_price = self.get_latest_price(contract)
-                if not latest_price:
-                    self.console.print(f"[red]❌ ไม่สามารถดึงราคาล่าสุดของ {contract} ได้[/red]")
-                    continue
+                # ตรวจสอบ bearish divergence: ราคาทำ higher high แต่ RSI ทำ lower high
+                if current_price > prev_price and current_rsi_high['rsi'] < prev_rsi_high['rsi'] and current_rsi_high['rsi'] > self.rsi_overbought:
+                    # คำนวณความแข็งแกร่งของสัญญาณ (1-10)
+                    rsi_diff = prev_rsi_high['rsi'] - current_rsi_high['rsi']  # ความต่างของ RSI
+                    price_diff_percent = (current_price - prev_price) / prev_price * 100  # เปอร์เซ็นต์การเปลี่ยนแปลงของราคา
+                    
+                    # ยิ่ง RSI แตกต่างมาก และราคาเปลี่ยนมาก ยิ่งเป็นสัญญาณที่แข็งแกร่ง
+                    signal_strength = min(10, (rsi_diff * 0.5 + price_diff_percent * 0.5))
+                    
+                    # ตรวจสอบการยืนยันเทรนด์จาก MA
+                    trend_confirmation = 0
+                    if current_price_idx > 0 and 'ma_5' in df.columns and 'ma_20' in df.columns:
+                        # ถ้าราคาอยู่เหนือ MA ทั้งสองเส้น และ MA สั้นอยู่เหนือ MA ยาว = แนวโน้มขาขึ้นชัดเจน (ดีสำหรับ short)
+                        if (df.iloc[current_price_idx]['close'] > df.iloc[current_price_idx]['ma_5'] > df.iloc[current_price_idx]['ma_20']):
+                            trend_confirmation = 3
+                        # ถ้าราคาเพิ่งตัด MA ลง = การเปลี่ยนเทรนด์ (ดีสำหรับ short)
+                        elif (df.iloc[current_price_idx-1]['close'] > df.iloc[current_price_idx-1]['ma_5'] and 
+                              df.iloc[current_price_idx]['close'] < df.iloc[current_price_idx]['ma_5']):
+                            trend_confirmation = 2
+                    
+                    # เพิ่มความแข็งแกร่งตามการยืนยันเทรนด์
+                    signal_strength += trend_confirmation
+                    
+                    divergences['bearish'].append({
+                        'timestamp': current_rsi_high.name, 
+                        'price': current_price, 
+                        'rsi': current_rsi_high['rsi'], 
+                        'prev_price': prev_price, 
+                        'prev_rsi': prev_rsi_high['rsi'], 
+                        'candles_ago': len(df) - 1 - current_price_idx,
+                        'signal_strength': min(10, signal_strength),
+                        'trend_confirmation': trend_confirmation > 0
+                    })
+        
+        # ค้นหา bullish divergence (ราคาทำ lower low แต่ RSI ทำ higher low)
+        rsi_swing_lows, price_swing_lows = df[df['rsi_swing_low']].sort_index(), df[df['price_swing_low']].sort_index()
+        if len(rsi_swing_lows) >= 2 and len(price_swing_lows) >= 2:
+            for i in range(1, min(len(rsi_swing_lows), self.lookback_periods)):
+                if i >= len(rsi_swing_lows): break
+                current_rsi_low, prev_rsi_low = rsi_swing_lows.iloc[-i], rsi_swing_lows.iloc[-(i+1)]
+                # หาจุด swing low ของราคาที่ใกล้เคียงกับ rsi swing low
+                current_price_idx = df.index.get_indexer([current_rsi_low.name], method='nearest')[0]
+                prev_price_idx = df.index.get_indexer([prev_rsi_low.name], method='nearest')[0]
+                current_price, prev_price = df.iloc[current_price_idx]['close'], df.iloc[prev_price_idx]['close']
                 
-                # คำนวณ P&L เป็นเปอร์เซ็นต์
-                pnl_percentage = ((latest_price - entry_price) / entry_price) * 100 if size > 0 else ((entry_price - latest_price) / entry_price) * 100
-                self.console.print(f"[{'green' if pnl_percentage > 0 else 'red'}]   P&L: {pnl_percentage:.2f}%[/{'green' if pnl_percentage > 0 else 'red'}]")
+                # ตรวจสอบ bullish divergence: ราคาทำ lower low แต่ RSI ทำ higher low
+                if current_price < prev_price and current_rsi_low['rsi'] > prev_rsi_low['rsi'] and current_rsi_low['rsi'] < self.rsi_oversold:
+                    # คำนวณความแข็งแกร่งของสัญญาณ (1-10)
+                    rsi_diff = current_rsi_low['rsi'] - prev_rsi_low['rsi']  # ความต่างของ RSI
+                    price_diff_percent = (prev_price - current_price) / prev_price * 100  # เปอร์เซ็นต์การเปลี่ยนแปลงของราคา
+                    
+                    # ยิ่ง RSI แตกต่างมาก และราคาเปลี่ยนมาก ยิ่งเป็นสัญญาณที่แข็งแกร่ง
+                    signal_strength = min(10, (rsi_diff * 0.5 + price_diff_percent * 0.5))
+                    
+                    # ตรวจสอบการยืนยันเทรนด์จาก MA
+                    trend_confirmation = 0
+                    if current_price_idx > 0 and 'ma_5' in df.columns and 'ma_20' in df.columns:
+                        # ถ้าราคาอยู่ต่ำกว่า MA ทั้งสองเส้น และ MA สั้นอยู่ต่ำกว่า MA ยาว = แนวโน้มขาลงชัดเจน (ดีสำหรับ long)
+                        if (df.iloc[current_price_idx]['close'] < df.iloc[current_price_idx]['ma_5'] < df.iloc[current_price_idx]['ma_20']):
+                            trend_confirmation = 3
+                        # ถ้าราคาเพิ่งตัด MA ขึ้น = การเปลี่ยนเทรนด์ (ดีสำหรับ long)
+                        elif (df.iloc[current_price_idx-1]['close'] < df.iloc[current_price_idx-1]['ma_5'] and 
+                              df.iloc[current_price_idx]['close'] > df.iloc[current_price_idx]['ma_5']):
+                            trend_confirmation = 2
+                    
+                    # เพิ่มความแข็งแกร่งตามการยืนยันเทรนด์
+                    signal_strength += trend_confirmation
+                    
+                    divergences['bullish'].append({
+                        'timestamp': current_rsi_low.name, 
+                        'price': current_price, 
+                        'rsi': current_rsi_low['rsi'], 
+                        'prev_price': prev_price, 
+                        'prev_rsi': prev_rsi_low['rsi'], 
+                        'candles_ago': len(df) - 1 - current_price_idx,
+                        'signal_strength': min(10, signal_strength),
+                        'trend_confirmation': trend_confirmation > 0
+                    })
+        
+        return divergences
+    
+    def generate_trading_signals(self, df, divergences):
+        """สร้างสัญญาณการเทรด Long/Short จากข้อมูล RSI Divergence"""
+        trading_signals = {'long': [], 'short': []}
+        
+        # ตรวจสอบสัญญาณ Long (จาก Bullish Divergence)
+        for div in divergences['bullish']:
+            if div['signal_strength'] >= self.signal_strength_threshold:
+                # คำนวณ Risk/Reward Ratio
+                # สมมติให้ Stop Loss อยู่ต่ำกว่าราคาปัจจุบัน 2%
+                stop_loss = div['price'] * 0.98
+                # สมมติให้ Take Profit อยู่สูงกว่าราคาปัจจุบัน 6% (RR = 1:3)
+                take_profit = div['price'] * 1.06
                 
-                # ตรวจสอบเงื่อนไขกำไร/ขาดทุน (กำไรสูงกว่า 1.5% หรือ ขาดทุนมากกว่า 1%)
-                close_position = (pnl_percentage > 1.5) or (pnl_percentage < -1.0)
+                trading_signals['long'].append({
+                    'price': div['price'],
+                    'strength': div['signal_strength'],
+                    'candles_ago': div['candles_ago'],
+                    'rsi': div['rsi'],
+                    'trend_confirmed': div['trend_confirmation'],
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'risk_reward': 3
+                })
+        
+        # ตรวจสอบสัญญาณ Short (จาก Bearish Divergence)
+        for div in divergences['bearish']:
+            if div['signal_strength'] >= self.signal_strength_threshold:
+                # คำนวณ Risk/Reward Ratio
+                # สมมติให้ Stop Loss อยู่สูงกว่าราคาปัจจุบัน 2%
+                stop_loss = div['price'] * 1.02
+                # สมมติให้ Take Profit อยู่ต่ำกว่าราคาปัจจุบัน 6% (RR = 1:3)
+                take_profit = div['price'] * 0.94
                 
-                if close_position:
-                    reason = "กำไร > 1.5%" if pnl_percentage > 1.5 else "ขาดทุน > 1.0%"
-                    self.console.print(f"[yellow]🔔 เข้าเงื่อนไขปิด position: {reason}[/yellow]")
-                    if self.close_position(contract, pos): positions_closed += 1
-                else:
-                    self.console.print(f"[blue]   ยังไม่เข้าเงื่อนไขการปิด position[/blue]")
-                
-                positions_checked += 1
-            
-            self.console.print(f"[blue]สรุป: ตรวจสอบ {positions_checked}/{len(positions)}, ปิด {positions_closed} positions[/blue]")
-            return positions_closed
-            
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกน positions: {str(e)}[/red]")
-            return 0
+                trading_signals['short'].append({
+                    'price': div['price'],
+                    'strength': div['signal_strength'],
+                    'candles_ago': div['candles_ago'],
+                    'rsi': div['rsi'],
+                    'trend_confirmed': div['trend_confirmation'],
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'risk_reward': 3
+                })
+        
+        return trading_signals
 
     def scan_market(self):
-        """สแกนตลาดเพื่อหาสัญญาณการเทรดและจัดการ positions"""
-        first_run = True
-        stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0, 'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
+        """สแกนตลาดเพื่อหาสัญญาณ RSI divergence และสร้างสัญญาณซื้อขาย"""
+        stats = {'contracts_scanned': 0, 'divergence_signals': 0, 'long_signals': 0, 'short_signals': 0}
+        trading_opportunities = {'long': [], 'short': []}
         
-        while True:
-            try:
-                current_time = pd.Timestamp.now(tz='Asia/Bangkok')
-                
-                if current_time.minute % 15 == 0 or first_run:
-                    self.console.print(f"[blue]🔍 เริ่มสแกนตลาด ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
-                    self.console.print(f"[blue]===========================================[/blue]")
-                    first_run = False
-                    scan_stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0, 'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
-                    
-                    # ตรวจสอบ Positions ที่มีอยู่
-                    self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
-                    scan_stats['positions_closed'] = self.scan_positions()
-                    
-                    # ตรวจหาสัญญาณเทรดใหม่
-                    self.console.print(f"[blue]📊 ตรวจหาสัญญาณเทรดใหม่[/blue]")
-                    contracts = self.get_futures_contracts()
-                    
-                    for i, contract in enumerate(contracts, 1):
-                        self.console.print(f"[cyan]▶ สแกนสัญญา ({i}/{len(contracts)}): {contract}[/cyan]")
-                        df = self.get_candlesticks(contract)
+        try:
+            # แสดงเวลาปัจจุบันและเริ่มสแกน
+            current_time = pd.Timestamp.now(tz='Asia/Bangkok')
+            self.console.print(f"[blue]🔍 เริ่มสแกนตลาด ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')} (ตรวจสอบย้อนหลัง {self.lookback_periods} แท่ง)[/blue]")
+            self.console.print(f"[blue]===========================================[/blue]")
+            # ดึงรายชื่อสัญญา futures ที่มีสภาพคล่องเพียงพอ
+            ticket = self.futures_api.list_futures_tickers(settle='usdt')
+            contracts = [c.contract for c in ticket if re.match(r'^\D+_USDT$', c.contract) and c.contract not in ['USDC_USDT', 'DOGS_USDT'] and float(c.volume_24h) * float(c.last) > 5000000]
+            self.console.print(f"[blue]พบสัญญาที่มีสภาพคล่องจำนวน {len(contracts)} สัญญา[/blue]")
+            # สแกนแต่ละสัญญา
+            for i, contract in enumerate(contracts, 1):
+                try:
+                    # ดึงข้อมูลแท่งเทียนและแปลงเป็น DataFrame
+                    candles = self.futures_api.list_futures_candlesticks(settle='usdt', contract=contract, interval='1h', limit=300)
+                    if not candles: self.console.print(f"[red]❌ {contract}: ไม่พบข้อมูลแท่งเทียน[/red]"); continue
+                    data = [{'timestamp': float(c.t), 'open': float(c.o), 'high': float(c.h), 'low': float(c.l), 'close': float(c.c), 'volume': float(c.v)} for c in candles]
+                    df = pd.DataFrame(data); df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s'); df = df.sort_values('timestamp')
+                    # คำนวณค่า RSI และตรวจหา divergence
+                    if len(df) > (self.rsi_period + self.swing_window * 2):
+                        df['rsi'] = self.calculate_rsi(df['close'].values); latest_candle = df.iloc[-1]
+                        candle_type = "สีเขียว 🟩" if latest_candle['close'] > latest_candle['open'] else "สีแดง 🟥" if latest_candle['close'] < latest_candle['open'] else "Doji ⬛"
                         
-                        if df.empty:
-                            self.console.print(f"[red]❌ ไม่สามารถดึงข้อมูลแท่งเทียนของ {contract} ได้[/red]")
-                            continue
+                        # ตรวจหา divergence โดยใช้จุด swing high/low
+                        divergences = self.find_divergences(df)
                         
-                        ema_data = self.calculate_ema(df)
-                        if not ema_data:
-                            self.console.print(f"[red]❌ ไม่สามารถคำนวณ EMA สำหรับ {contract} ได้[/red]")
-                            continue
+                        # สร้างสัญญาณการเทรด Long/Short
+                        trading_signals = self.generate_trading_signals(df, divergences)
                         
-                        latest_price = self.get_latest_price(contract)
-                        self.console.print(f"[magenta]   ข้อมูล EMA: EMA5={ema_data['ema5']:.6f}, EMA10={ema_data['ema10']:.6f}, EMA30={ema_data['ema30']:.6f}, Open={ema_data['open']:.6f}, Close={ema_data['close']:.6f}, ราคาล่าสุด={latest_price:.6f}[/magenta]")
+                        # เตรียมข้อความการแสดงผล
+                        output_msg = f"[cyan]▶ สแกนสัญญา ({i}/{len(contracts)}): {contract}[/cyan] - [magenta]{candle_type} (O: {latest_candle['open']:.6f}, H: {latest_candle['high']:.6f}, L: {latest_candle['low']:.6f}, C: {latest_candle['close']:.6f}, RSI: {latest_candle['rsi']:.2f})[/magenta]"
                         
-                        signal = self.check_trading_signal(df, ema_data, contract)
+                        # สร้างข้อความแสดงสถานะ RSI
+                        rsi_status = ""
+                        if latest_candle['rsi'] > self.rsi_overbought: rsi_status += f" [red bold]⚠️ RSI Overbought: {latest_candle['rsi']:.2f} > {self.rsi_overbought}[/red bold]"
+                        if latest_candle['rsi'] < self.rsi_oversold: rsi_status += f" [green bold]⚠️ RSI Oversold: {latest_candle['rsi']:.2f} < {self.rsi_oversold}[/green bold]"
                         
-                        if signal:
-                            existing_position = self.check_existing_position(contract)
-                            
-                            if signal == "BUY":
-                                scan_stats['buy_signals'] += 1
-                                
-                                # ถ้ามี SHORT position ให้ปิดก่อน
-                                if existing_position and float(existing_position['size']) < 0:
-                                    self.console.print(f"[yellow]🔄 ปิด SHORT position ก่อนเปิด LONG[/yellow]")
-                                    self.close_position(contract, existing_position)
-                                    existing_position = None
-                                
-                                # ถ้าไม่มี LONG position ให้เปิดใหม่
-                                if not existing_position or float(existing_position['size']) <= 0:
-                                    self.console.print(f"[green]🆕 เปิด LONG position ตามสัญญาณ BUY[/green]")
-                                    if self.create_order(contract, True): scan_stats['long_opened'] += 1
-                                else:
-                                    self.console.print(f"[green]✅ มี LONG position อยู่แล้ว ไม่ต้องเปิดเพิ่ม[/green]")
-                            
-                            elif signal == "SELL":
-                                scan_stats['sell_signals'] += 1
-                                
-                                # ถ้ามี LONG position ให้ปิดก่อน
-                                if existing_position and float(existing_position['size']) > 0:
-                                    self.console.print(f"[yellow]🔄 ปิด LONG position ก่อนเปิด SHORT[/yellow]")
-                                    self.close_position(contract, existing_position)
-                                    existing_position = None
-                                
-                                # ถ้าไม่มี SHORT position ให้เปิดใหม่
-                                if not existing_position or float(existing_position['size']) >= 0:
-                                    self.console.print(f"[red]🆕 เปิด SHORT position ตามสัญญาณ SELL[/red]")
-                                    if self.create_order(contract, False): scan_stats['short_opened'] += 1
-                                else:
-                                    self.console.print(f"[red]✅ มี SHORT position อยู่แล้ว ไม่ต้องเปิดเพิ่ม[/red]")
+                        # ตรวจสอบ divergence
+                        divergence_found = False
+                        
+                        # แสดงผล Bearish Divergence และสัญญาณ Short
+                        if divergences['bearish']:
+                            for div in divergences['bearish']: 
+                                output_msg += f" - [red bold]❗️🚨🔻 BEARISH DIVERGENCE ({div['candles_ago']} แท่งก่อน): ราคา {div['price']:.6f} > {div['prev_price']:.6f}, RSI {div['rsi']:.2f} < {div['prev_rsi']:.2f} (ความแข็งแกร่ง: {div['signal_strength']:.1f}/10) 🔻🚨❗️[/red bold]"
+                                divergence_found = True
+                            stats['divergence_signals'] += len(divergences['bearish'])
+                        
+                        # แสดงผล Bullish Divergence และสัญญาณ Long
+                        if divergences['bullish']:
+                            for div in divergences['bullish']: 
+                                output_msg += f" - [green bold]❗️🚨🔼 BULLISH DIVERGENCE ({div['candles_ago']} แท่งก่อน): ราคา {div['price']:.6f} < {div['prev_price']:.6f}, RSI {div['rsi']:.2f} > {div['prev_rsi']:.2f} (ความแข็งแกร่ง: {div['signal_strength']:.1f}/10) 🔼🚨❗️[/green bold]"
+                                divergence_found = True
+                            stats['divergence_signals'] += len(divergences['bullish'])
+                        
+                        # แสดงสัญญาณการเทรด
+                        if trading_signals['long']:
+                            for signal in trading_signals['long']:
+                                output_msg += f"\n[green bold]🔔 สัญญาณ LONG: ราคา {signal['price']:.6f} | ความแข็งแกร่ง: {signal['strength']:.1f}/10 | RSI: {signal['rsi']:.2f} | RR: 1:{signal['risk_reward']} 🔔[/green bold]"
+                                output_msg += f"\n[green]   👉 แนะนำ: เปิด LONG ที่ {signal['price']:.6f} | Stop Loss: {signal['stop_loss']:.6f} | Take Profit: {signal['take_profit']:.6f}[/green]"
+                                stats['long_signals'] += 1
+                                # เก็บโอกาสการเทรดเพื่อสรุปในภายหลัง
+                                trading_opportunities['long'].append({'contract': contract, 'price': signal['price'], 'strength': signal['strength']})
+                        
+                        if trading_signals['short']:
+                            for signal in trading_signals['short']:
+                                output_msg += f"\n[red bold]🔔 สัญญาณ SHORT: ราคา {signal['price']:.6f} | ความแข็งแกร่ง: {signal['strength']:.1f}/10 | RSI: {signal['rsi']:.2f} | RR: 1:{signal['risk_reward']} 🔔[/red bold]"
+                                output_msg += f"\n[red]   👉 แนะนำ: เปิด SHORT ที่ {signal['price']:.6f} | Stop Loss: {signal['stop_loss']:.6f} | Take Profit: {signal['take_profit']:.6f}[/red]"
+                                stats['short_signals'] += 1
+                                # เก็บโอกาสการเทรดเพื่อสรุปในภายหลัง
+                                trading_opportunities['short'].append({'contract': contract, 'price': signal['price'], 'strength': signal['strength']})
+                        
+                        # เพิ่มสถานะ RSI และแสดงข้อความไม่พบสัญญาณถ้าไม่มี divergence
+                        if rsi_status: output_msg += rsi_status
+                        if not divergence_found: output_msg += " - [blue]ไม่พบสัญญาณ RSI Divergence[/blue]"
+                        
+                        # แสดงผลทั้งหมด (เฉพาะเมื่อมีสัญญาณ)
+                        if divergence_found or trading_signals['long'] or trading_signals['short']:
+                            self.console.print(output_msg)
                         else:
-                            self.console.print(f"[blue]   ไม่พบสัญญาณเทรด[/blue]")
-                        
-                        scan_stats['contracts_scanned'] += 1
-                    
-                    # อัปเดตสถิติรวม
-                    for key in stats: stats[key] += scan_stats[key]
-                    
-                    # แสดงสรุปการสแกน
-                    self.console.print(f"[blue]===== สรุปการสแกนรอบนี้ =====\n📊 สัญญาที่สแกน: {scan_stats['contracts_scanned']}/{len(contracts)}\n[green]📈 สัญญาณ BUY: {scan_stats['buy_signals']}[/green]\n[red]📉 สัญญาณ SELL: {scan_stats['sell_signals']}[/red]\n[green]📈 เปิด LONG: {scan_stats['long_opened']}[/green]\n[red]📉 เปิด SHORT: {scan_stats['short_opened']}[/red]\n[yellow]🔄 ปิด Position: {scan_stats['positions_closed']}[/yellow][/blue]")
-                    
-                    # แสดงสถิติรวมทั้งหมด
-                    self.console.print(f"[blue]===== สถิติรวมทั้งหมด =====\n📊 สัญญาที่สแกนทั้งหมด: {stats['contracts_scanned']}\n[green]📈 สัญญาณ BUY ทั้งหมด: {stats['buy_signals']}[/green]\n[red]📉 สัญญาณ SELL ทั้งหมด: {stats['sell_signals']}[/red]\n[green]📈 เปิด LONG ทั้งหมด: {stats['long_opened']}[/green]\n[red]📉 เปิด SHORT ทั้งหมด: {stats['short_opened']}[/red]\n[yellow]🔄 ปิด Position ทั้งหมด: {stats['positions_closed']}[/yellow][/blue]")
-                    self.console.print(f"[blue]===========================================[/blue]")
-                    
-                    time.sleep(30)
-                
-                time.sleep(10)
-            except Exception as e:
-                self.console.print(f"[red]❌ เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
-                time.sleep(60)
+                            # แสดงเฉพาะการสแกนแบบสั้นๆ ถ้าไม่พบสัญญาณ
+                            self.console.print(f"[dim cyan]▶ สแกนสัญญา ({i}/{len(contracts)}): {contract} - ไม่พบสัญญาณ[/dim cyan]")
+                    else: 
+                        self.console.print(f"[dim red]❌ {contract}: ข้อมูลไม่เพียงพอสำหรับการคำนวณ RSI และ Swing points[/dim red]")
+                except Exception as e: 
+                    self.console.print(f"[red]❌ {contract}: เกิดข้อผิดพลาด: {str(e)}[/red]")
+                    continue
+                stats['contracts_scanned'] += 1
+            
+            # แสดงสรุปการสแกน
+            self.console.print(f"[blue]===== สรุปการสแกน =====[/blue]")
+            self.console.print(f"[blue]📊 สัญญาที่สแกน: {stats['contracts_scanned']}/{len(contracts)}[/blue]")
+            
+            # สรุปสัญญาณที่พบ
+            if stats['divergence_signals'] > 0:
+                self.console.print(f"[bold]🚨 พบสัญญาณ RSI DIVERGENCE: {stats['divergence_signals']} สัญญาณ (ตรวจสอบย้อนหลัง {self.lookback_periods} แท่ง) 🚨[/bold]")
+            else:
+                self.console.print(f"[green]✅ ไม่พบสัญญาณ RSI Divergence (ตรวจสอบย้อนหลัง {self.lookback_periods} แท่ง)[/green]")
+            
+            # สรุปสัญญาณการเทรด
+            if stats['long_signals'] > 0:
+                self.console.print(f"[green bold]🔔 พบสัญญาณ LONG: {stats['long_signals']} สัญญาณ[/green bold]")
+                self.console.print("[green]โอกาสการเทรด LONG ที่น่าสนใจ:[/green]")
+                # เรียงลำดับตามความแข็งแกร่งของสัญญาณ
+                for i, opportunity in enumerate(sorted(trading_opportunities['long'], key=lambda x: x['strength'], reverse=True)[:5]):
+                    self.console.print(f"[green]{i+1}. {opportunity['contract']} ที่ราคา {opportunity['price']:.6f} (ความแข็งแกร่ง: {opportunity['strength']:.1f}/10)[/green]")
+            
+            if stats['short_signals'] > 0:
+                self.console.print(f"[red bold]🔔 พบสัญญาณ SHORT: {stats['short_signals']} สัญญาณ[/red bold]")
+                self.console.print("[red]โอกาสการเทรด SHORT ที่น่าสนใจ:[/red]")
+                # เรียงลำดับตามความแข็งแกร่งของสัญญาณ
+                for i, opportunity in enumerate(sorted(trading_opportunities['short'], key=lambda x: x['strength'], reverse=True)[:5]):
+                    self.console.print(f"[red]{i+1}. {opportunity['contract']} ที่ราคา {opportunity['price']:.6f} (ความแข็งแกร่ง: {opportunity['strength']:.1f}/10)[/red]")
+            
+            self.console.print(f"[blue]===========================================[/blue]")
+        except KeyboardInterrupt: 
+            self.console.print("[yellow]โปรแกรมถูกหยุดโดยผู้ใช้[/yellow]")
+        except Exception as e: 
+            self.console.print(f"[red]❌ เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
 
-
-def main():
-    trader = GateIOEMATrader()
-    trader.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย EMA Crossover...[/blue]")
-    trader.scan_market()
-
-
+# เริ่มการทำงานของโปรแกรม
 if __name__ == "__main__":
-    main()
+    try: scanner = GateIORSIScanner(); scanner.console.print("[blue]เริ่มต้นระบบสแกน RSI Divergence...[/blue]"); scanner.scan_market()
+    except KeyboardInterrupt: print("\nโปรแกรมถูกหยุดโดยผู้ใช้")
+    except Exception as e: print(f"เกิดข้อผิดพลาดร้ายแรง: {str(e)}"); sys.exit(1)
