@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from gate_api import ApiClient, Configuration, FuturesApi
 from rich.console import Console
 
+
 class GateIOBreakdownTrader:
     def __init__(self):
         try:
@@ -28,15 +29,23 @@ class GateIOBreakdownTrader:
                 
             config = Configuration(key=self.api_key, secret=self.secret_key, host="https://api.gateio.ws/api/v4")
             self.client, self.futures_api = ApiClient(config), FuturesApi(ApiClient(config))
-            self.leverage, self.order_amount = 5, 100
-            self.lookback_frames = 144  # จำนวน timeframe ย้อนหลังสำหรับการวิเคราะห์
-            self.skip_recent_frames = 14  # จำนวน timeframe ล่าสุดที่ข้ามการวิเคราะห์
-            self.profit_take_percent = 7.5  # เปอร์เซ็นต์กำไรที่จะปิด position
-            self.stop_loss_percent = 5.0  # เปอร์เซ็นต์ขาดทุนที่จะปิด position
+            self.leverage, self.order_amount = 5, 50
+            
+            # กำหนดพารามิเตอร์สำหรับการวิเคราะห์ตามเงื่อนไขใหม่
+            self.t_lookback_frames = 144  # จำนวน timeframe ย้อนหลังสำหรับ T
+            self.t_skip_recent_frames = 14  # จำนวน timeframe ล่าสุดที่ข้ามสำหรับ T
+            self.s_lookback_frames = 14  # จำนวน timeframe ย้อนหลังสำหรับ S
+            self.s_skip_recent_frames = 2  # จำนวน timeframe ล่าสุดที่ข้ามสำหรับ S
+            
+            # เปลี่ยนเงื่อนไขการปิด position เป็น 100%
+            self.profit_take_percent = 100.0  # เปอร์เซ็นต์กำไรที่จะปิด position
+            self.stop_loss_percent = 5.0  # เปอร์เซ็นต์ขาดทุนที่จะปิด position (ใช้ค่าเดิมไว้เผื่อต้องการใช้)
+            
             self.console = Console()
         except Exception as e:
             print(f"เกิดข้อผิดพลาดในการเริ่มต้น: {str(e)}")
             sys.exit(1)
+
 
     def get_futures_contracts(self) -> List[str]:
         """ดึงรายชื่อสัญญา futures ที่มีสภาพคล่องเพียงพอ"""
@@ -48,6 +57,7 @@ class GateIOBreakdownTrader:
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการดึงรายชื่อสัญญา: {str(e)}[/red]")
             return []
+
 
     def get_candlesticks(self, contract: str) -> pd.DataFrame:
         """ดึงข้อมูลแท่งเทียนจาก API โดยใช้ timeframe 1 ชั่วโมง"""
@@ -63,26 +73,37 @@ class GateIOBreakdownTrader:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน {contract}: {str(e)}[/red]")
             return pd.DataFrame()
 
+
     def calculate_breakdown(self, df: pd.DataFrame) -> dict:
         """คำนวณเงื่อนไข Breakdown ตามเงื่อนไขที่กำหนด"""
         try:
             # ตรวจสอบว่ามีข้อมูลเพียงพอหรือไม่
-            if len(df) < self.lookback_frames:
+            if len(df) < self.t_lookback_frames:
                 return {'is_breakdown': False}
             
             # ดึงแท่งเทียนล่าสุด
             latest_candle = df.iloc[-1]
             
             # T = แท่งเทียนย้อนหลังไป 144 time frame ถึงแท่งเทียนปัจจุบัน ลบ 14 time frame
-            if len(df) < self.lookback_frames:
-                # ถ้ามีข้อมูลไม่พอ ใช้ข้อมูลทั้งหมดที่มียกเว้น skip_recent_frames ล่าสุด
-                t_period = df.iloc[:-self.skip_recent_frames]
+            if len(df) < self.t_lookback_frames:
+                # ถ้ามีข้อมูลไม่พอ ใช้ข้อมูลทั้งหมดที่มียกเว้น t_skip_recent_frames ล่าสุด
+                t_period = df.iloc[:-self.t_skip_recent_frames]
             else:
                 # ใช้ข้อมูลตามเงื่อนไขที่กำหนด
-                t_period = df.iloc[-self.lookback_frames:-self.skip_recent_frames]
+                t_period = df.iloc[-self.t_lookback_frames:-self.t_skip_recent_frames]
             
-            # หาราคาสูงสุดของช่วง T
+            # S = แท่งเทียนย้อนหลังไป 14 time frame ถึงแท่งเทียนปัจจุบัน ลบ 2 time frame
+            if len(df) < self.s_lookback_frames:
+                # ถ้ามีข้อมูลไม่พอ ใช้ข้อมูลทั้งหมดที่มียกเว้น s_skip_recent_frames ล่าสุด
+                s_period = df.iloc[:-self.s_skip_recent_frames]
+            else:
+                # ใช้ข้อมูลตามเงื่อนไขที่กำหนด
+                s_period = df.iloc[-self.s_lookback_frames:-self.s_skip_recent_frames]
+            
+            # หาราคาสูงสุดของช่วง T และ S และราคาต่ำสุดของ S
             t_high = t_period['high'].max()
+            s_high = s_period['high'].max()
+            s_low = s_period['low'].min()
             
             # เช็คว่าแท่งเทียนล่าสุดเป็นสีแดงหรือไม่ (close < open)
             is_red_candle = latest_candle['close'] < latest_candle['open']
@@ -95,6 +116,8 @@ class GateIOBreakdownTrader:
             return {
                 'is_breakdown': is_breakdown,
                 't_high': t_high,
+                's_high': s_high,
+                's_low': s_low,
                 'candle_high': latest_candle['high'],
                 'candle_low': latest_candle['low'],
                 'is_red_candle': is_red_candle
@@ -102,6 +125,7 @@ class GateIOBreakdownTrader:
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการคำนวณ Breakdown: {str(e)}[/red]")
             return {'is_breakdown': False}
+
 
     def get_latest_price(self, contract: str) -> float:
         """ดึงราคาล่าสุดของสัญญา"""
@@ -114,6 +138,7 @@ class GateIOBreakdownTrader:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการดึงราคาล่าสุด {contract}: {str(e)}[/red]")
             return None
 
+
     def check_trading_signal(self, df: pd.DataFrame, breakdown_data: dict, contract: str = None) -> str:
         """ตรวจสอบสัญญาณการเทรดตามเงื่อนไข Breakdown"""
         try:
@@ -124,19 +149,22 @@ class GateIOBreakdownTrader:
             # แสดงข้อมูลการวิเคราะห์
             if 't_high' in breakdown_data:
                 candle_color = "🟥 สีแดง" if breakdown_data.get('is_red_candle', False) else "🟩 สีเขียว"
-                self.console.print(f"[blue]   ตรวจสอบสัญญาณ: ราคาล่าสุด={latest_price:.6f}, T_High={breakdown_data['t_high']:.6f}, Candle_High={breakdown_data['candle_high']:.6f}, Candle_Low={breakdown_data['candle_low']:.6f}, Candle={candle_color}[/blue]")
+                self.console.print(f"[blue]   ตรวจสอบสัญญาณ: ราคาล่าสุด={latest_price:.6f}, T_High={breakdown_data['t_high']:.6f}, S_High={breakdown_data['s_high']:.6f}, S_Low={breakdown_data['s_low']:.6f}, Candle_High={breakdown_data['candle_high']:.6f}, Candle_Low={breakdown_data['candle_low']:.6f}, Candle={candle_color}[/blue]")
             
-            # ตรวจสอบเงื่อนไข Breakdown สำหรับสัญญาณ SELL
-            if breakdown_data['is_breakdown']:
-                self.console.print(f"[red]🔴 สัญญาณ SELL: พบ Breakdown pattern[/red]")
+            # ตรวจสอบเงื่อนไข Breakdown และราคาปัจจุบันสูงกว่าราคาต่ำสุดของ S สำหรับสัญญาณ SELL
+            if breakdown_data['is_breakdown'] and latest_price > breakdown_data['s_low']:
+                self.console.print(f"[red]🔴 สัญญาณ SELL: พบ Breakdown pattern และราคาปัจจุบัน({latest_price:.6f}) > ราคาต่ำสุดของ S({breakdown_data['s_low']:.6f})[/red]")
                 return "SELL"
+            elif breakdown_data['is_breakdown']:
+                self.console.print(f"[yellow]⚠️ พบ Breakdown pattern แต่ราคาปัจจุบัน({latest_price:.6f}) ไม่สูงกว่าราคาต่ำสุดของ S({breakdown_data['s_low']:.6f})[/yellow]")
             return None
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการตรวจสอบสัญญาณ: {str(e)}[/red]")
             return None
 
-    def should_close_position(self, position: Dict, contract: str = None, t_high: float = None) -> bool:
-        """ตรวจสอบเงื่อนไขปิด position ตามเปอร์เซ็นต์กำไร/ขาดทุน หรือเมื่อราคาสูงกว่าราคาสูงสุดของ T"""
+
+    def should_close_position(self, position: Dict, contract: str = None, breakdown_data: dict = None) -> bool:
+        """ตรวจสอบเงื่อนไขปิด position ตามเปอร์เซ็นต์กำไร หรือเมื่อราคาสูงกว่าราคาสูงสุดของ S"""
         try:
             latest_price = self.get_latest_price(contract)
             if latest_price is None: return False
@@ -148,21 +176,19 @@ class GateIOBreakdownTrader:
                 # คำนวณ P&L เป็นเปอร์เซ็นต์สำหรับ SHORT
                 pnl_percentage = ((entry_price - latest_price) / entry_price * 100)
                 
-                # เงื่อนไขปิด position ตามข้อกำหนดใหม่
+                # เงื่อนไขปิด position ตามข้อกำหนดใหม่: กำไรเกิน 100% หรือราคาสูงกว่า S_high
                 if pnl_percentage >= self.profit_take_percent:
                     self.console.print(f"[green]🟡 เข้าเงื่อนไขปิด SHORT: กำไร {pnl_percentage:.2f}% เกินกว่า {self.profit_take_percent}%[/green]")
                     return True
-                elif pnl_percentage <= -self.stop_loss_percent:
-                    self.console.print(f"[red]🟡 เข้าเงื่อนไขปิด SHORT: ขาดทุน {-pnl_percentage:.2f}% เกินกว่า {self.stop_loss_percent}%[/red]")
-                    return True
-                elif t_high is not None and latest_price > t_high:
-                    self.console.print(f"[yellow]🟡 เข้าเงื่อนไขปิด SHORT: ราคาล่าสุด {latest_price:.6f} สูงกว่าราคาสูงสุดของ T {t_high:.6f}[/yellow]")
+                elif breakdown_data is not None and 's_high' in breakdown_data and latest_price > breakdown_data['s_high']:
+                    self.console.print(f"[yellow]🟡 เข้าเงื่อนไขปิด SHORT: ราคาล่าสุด {latest_price:.6f} สูงกว่าราคาสูงสุดของ S {breakdown_data['s_high']:.6f}[/yellow]")
                     return True
             
             return False
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการตรวจสอบเงื่อนไขปิด position: {str(e)}[/red]")
             return False
+
 
     def check_existing_position(self, contract: str) -> Dict:
         """ตรวจสอบว่ามี position ที่เปิดอยู่หรือไม่"""
@@ -179,6 +205,7 @@ class GateIOBreakdownTrader:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการตรวจสอบ position ที่มีอยู่: {str(e)}[/red]")
             return None
 
+
     def set_leverage(self, contract: str) -> bool:
         """ตั้งค่า leverage สำหรับการเทรด"""
         try:
@@ -188,6 +215,7 @@ class GateIOBreakdownTrader:
         except Exception as e:
             self.console.print(f"[red]ไม่สามารถตั้งค่า leverage สำหรับ {contract}: {str(e)}[/red]")
             return False
+
 
     def close_position(self, contract: str, position: Dict) -> bool:
         """ปิด position ที่มีอยู่"""
@@ -201,6 +229,7 @@ class GateIOBreakdownTrader:
         except Exception as e:
             self.console.print(f"[red]ไม่สามารถปิด position สำหรับ {contract}: {str(e)}[/red]")
             return False
+
 
     def create_order(self, contract: str, is_long: bool) -> Dict:
         """เปิด position LONG หรือ SHORT"""
@@ -221,6 +250,7 @@ class GateIOBreakdownTrader:
             self.console.print(f"[red]ไม่สามารถเปิด {'LONG' if is_long else 'SHORT'} สำหรับ {contract}: {str(e)}[/red]")
             return None
 
+
     def scan_positions(self):
         """สแกน positions ที่เปิดอยู่เพื่อทำการปิดตามเงื่อนไขกำไร/ขาดทุนที่กำหนด"""
         try:
@@ -228,17 +258,17 @@ class GateIOBreakdownTrader:
             self.console.print(f"[blue]===== สแกน {len(positions)} positions ที่เปิดอยู่ =====[/blue]")
             positions_checked, positions_closed = 0, 0
             
-            # สร้าง dictionary เพื่อเก็บค่า t_high ของแต่ละสัญญา
-            t_high_values = {}
+            # สร้าง dictionary เพื่อเก็บข้อมูล breakdown ของแต่ละสัญญา
+            breakdown_data_values = {}
             
-            # ดึงข้อมูลแท่งเทียนและคำนวณ t_high สำหรับแต่ละสัญญาที่มี position
+            # ดึงข้อมูลแท่งเทียนและคำนวณ breakdown data สำหรับแต่ละสัญญาที่มี position
             for pos in positions:
                 contract = pos['contract']
                 df = self.get_candlesticks(contract)
                 if not df.empty:
                     breakdown_data = self.calculate_breakdown(df)
-                    if breakdown_data and 't_high' in breakdown_data:
-                        t_high_values[contract] = breakdown_data['t_high']
+                    if breakdown_data:
+                        breakdown_data_values[contract] = breakdown_data
             
             for pos in positions:
                 contract, size = pos['contract'], float(pos['size'])
@@ -255,9 +285,9 @@ class GateIOBreakdownTrader:
                 pnl_percentage = ((latest_price - entry_price) / entry_price * 100) if size > 0 else ((entry_price - latest_price) / entry_price * 100)
                 self.console.print(f"[{'green' if pnl_percentage > 0 else 'red'}]   P&L: {pnl_percentage:.2f}%[/{'green' if pnl_percentage > 0 else 'red'}]")
                 
-                # ตรวจสอบเงื่อนไขการปิด position ตามกำไร/ขาดทุนและราคาเทียบกับ t_high
-                t_high = t_high_values.get(contract, None)
-                close_position = self.should_close_position(pos, contract, t_high)
+                # ตรวจสอบเงื่อนไขการปิด position ตามกำไรและราคาเทียบกับ s_high
+                breakdown_data = breakdown_data_values.get(contract, None)
+                close_position = self.should_close_position(pos, contract, breakdown_data)
                 if close_position:
                     self.console.print(f"[yellow]🔔 ปิด {position_type} position: {contract}[/yellow]")
                     if self.close_position(contract, pos): positions_closed += 1
@@ -270,6 +300,7 @@ class GateIOBreakdownTrader:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกน positions: {str(e)}[/red]")
             return 0
 
+
     def scan_market(self):
         """สแกนตลาดเพื่อหาสัญญาณการเทรดและจัดการ positions"""
         first_run = True
@@ -278,7 +309,7 @@ class GateIOBreakdownTrader:
             try:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
                 if current_time.minute % 5 == 0:  
-                    if current_time.minute % 15 == 0:
+                    if current_time.minute == 0:
                         first_run = True
                     else:
                         self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
@@ -287,7 +318,7 @@ class GateIOBreakdownTrader:
                         time.sleep(60)
                         
                     
-                if current_time.minute % 15 == 0 or first_run:  # สแกนทุกชั่วโมงเต็ม หรือครั้งแรกที่เริ่มโปรแกรม
+                if current_time.minute == 0 or first_run:  # สแกนทุกชั่วโมงเต็ม หรือครั้งแรกที่เริ่มโปรแกรม
                     self.console.print(f"[blue]🔍 เริ่มสแกนตลาด ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
                     self.console.print(f"[blue]===========================================[/blue]")
                     first_run = False
@@ -316,7 +347,7 @@ class GateIOBreakdownTrader:
                         self.console.print(f"[magenta]   Breakdown Data:[/magenta]")
                         if 't_high' in breakdown_data:
                             candle_color = "🟥 สีแดง" if breakdown_data.get('is_red_candle', False) else "🟩 สีเขียว"
-                            self.console.print(f"[magenta]   T_High={breakdown_data['t_high']:.6f}, Candle_High={breakdown_data['candle_high']:.6f}, Candle_Low={breakdown_data['candle_low']:.6f}, ราคาล่าสุด={latest_price:.6f}, Candle={candle_color}[/magenta]")
+                            self.console.print(f"[magenta]   T_High={breakdown_data['t_high']:.6f}, S_High={breakdown_data['s_high']:.6f}, S_Low={breakdown_data['s_low']:.6f}, Candle_High={breakdown_data['candle_high']:.6f}, Candle_Low={breakdown_data['candle_low']:.6f}, ราคาล่าสุด={latest_price:.6f}, Candle={candle_color}[/magenta]")
                         
                         # แสดงข้อมูลแท่งเทียนล่าสุด
                         if len(df) >= 2:
@@ -373,6 +404,7 @@ class GateIOBreakdownTrader:
                 self.console.print(f"[red]❌ เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
                 time.sleep(60)
 
+
 def main():
     try:
         trader = GateIOBreakdownTrader()
@@ -383,6 +415,7 @@ def main():
     except Exception as e:
         print(f"เกิดข้อผิดพลาดร้ายแรง: {str(e)}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
