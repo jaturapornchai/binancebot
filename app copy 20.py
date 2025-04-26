@@ -318,52 +318,36 @@ class GateIOEMATrader:
         """ตรวจสอบเงื่อนไขปิด position ตามเงื่อนไขที่กำหนดใหม่"""
         try:
             if trend_data is None: return False
-
+           
             size = float(position['size'])
             entry_price = float(position['entry_price'])
-
+           
             # คำนวณ P&L เป็นเปอร์เซ็นต์
             latest_price = self.get_latest_price(contract)
             if latest_price is None: return False
-
+           
             pnl_percentage = ((latest_price - entry_price) / entry_price * 100) if size > 0 else ((entry_price - latest_price) / entry_price * 100)
-
+           
             close_reason = None
-            
-            # ตรวจสอบสีของแท่งเทียนล่าสุด
-            candle_color = trend_data['candle_color']
-            
-            # ตรวจสอบว่าเป็น LONG หรือ SHORT position
             if size > 0:  # LONG position
-                # กรณี 1: มีกำไรเกิน 5% และแท่งเทียนล่าสุดเป็นสีแดง
-                if pnl_percentage >= 5 and candle_color == 'red':
-                    close_reason = f"กำไรเกิน 5% ({pnl_percentage:.2f}%) และแท่งเทียนล่าสุดเป็นสีแดง"
-                # กรณี 2: ขาดทุนเกิน 3%
-                elif pnl_percentage <= -3:
-                    close_reason = f"ขาดทุนเกิน 3% (P&L: {pnl_percentage:.2f}%)"
-                # กรณี 3: ราคาต่ำสุดของแท่งเทียนล่าสุดต่ำกว่า E2 และแท่งเทียนล่าสุดเป็นสีแดง
-                elif trend_data['candle_low'] < trend_data['E2'] and candle_color == 'red':
-                    close_reason = f"ราคาต่ำสุดของแท่งเทียนล่าสุด ({trend_data['candle_low']:.6f}) ต่ำกว่า E2 ({trend_data['E2']:.6f}) และแท่งเทียนเป็นสีแดง"
-            else:  # SHORT position
-                # กรณี 1: มีกำไรเกิน 5% และแท่งเทียนล่าสุดเป็นสีเขียว
-                if pnl_percentage >= 5 and candle_color == 'green':
-                    close_reason = f"กำไรเกิน 5% ({pnl_percentage:.2f}%) และแท่งเทียนล่าสุดเป็นสีเขียว"
-                # กรณี 2: ขาดทุนเกิน 3%
-                elif pnl_percentage <= -3:
-                    close_reason = f"ขาดทุนเกิน 3% (P&L: {pnl_percentage:.2f}%)"
-                # กรณี 3: ราคาสูงสุดของแท่งเทียนล่าสุดสูงกว่า E2 และแท่งเทียนล่าสุดเป็นสีเขียว
-                elif trend_data['candle_high'] > trend_data['E2'] and candle_color == 'green':
-                    close_reason = f"ราคาสูงสุดของแท่งเทียนล่าสุด ({trend_data['candle_high']:.6f}) สูงกว่า E2 ({trend_data['E2']:.6f}) และแท่งเทียนเป็นสีเขียว"
-
+                # เงื่อนไขปิด position long: ราคาต่ำสุดของ CANDLE ปัจจุบัน ต่ำกว่า STOPLONG
+                if trend_data['candle_low'] < trend_data['stoplong']:
+                    close_reason = f"ราคาต่ำสุดของ CANDLE {trend_data['candle_low']:.6f} ต่ำกว่า STOPLONG {trend_data['stoplong']:.6f}"
+            elif size < 0:  # SHORT position
+                # เงื่อนไขปิด position short: ราคาสูงสุดของ CANDLE ปัจจุบัน สูงกว่า STOPSHORT
+                if trend_data['candle_high'] > trend_data['stopshort']:
+                    close_reason = f"ราคาสูงสุดของ CANDLE {trend_data['candle_high']:.6f} สูงกว่า STOPSHORT {trend_data['stopshort']:.6f}"
+           
             if close_reason:
-                self.console.print(f"[yellow]🟡 เข้าเงื่อนไขปิด {'LONG' if size > 0 else 'SHORT'}: {close_reason}[/yellow]")
+                self.console.print(f"[yellow]🟡 เข้าเงื่อนไขปิด {'LONG' if size > 0 else 'SHORT'}: {close_reason} (P&L: {pnl_percentage:.2f}%)[/yellow]")
                 return True
-
+           
             return False
         except Exception as e:
             self.console.print(f"[red]เกิดข้อผิดพลาดในการตรวจสอบเงื่อนไขปิด position: {str(e)}[/red]")
             return False
-        
+
+
     def check_existing_position(self, contract: str) -> Dict:
         """ตรวจสอบว่ามี position ที่เปิดอยู่หรือไม่"""
         try:
@@ -482,6 +466,15 @@ class GateIOEMATrader:
         while True:
             try:
                 current_time = pd.Timestamp.now(tz='Asia/Bangkok')
+                if current_time.minute % 5 == 0:
+                    if current_time.minute == 55:
+                        first_run = True
+                    else:
+                        # ตรวจสอบ Positions ที่มีอยู่
+                        self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
+                        scan_stats = {'positions_closed': self.scan_positions()}
+                        time.sleep(60)  # รอ 1 นาทีเพื่อไม่ให้สแกนซ้ำในช่วงเวลาเดียวกัน
+                   
                 if current_time.minute == 55 or first_run:  # สแกนทุกชั่วโมงเต็ม หรือครั้งแรกที่เริ่มโปรแกรม
                     self.console.print(f"[blue]🔍 เริ่มสแกนตลาด ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
                     self.console.print(f"[blue]===========================================[/blue]")

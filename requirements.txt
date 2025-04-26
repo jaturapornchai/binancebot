@@ -6,3 +6,4 @@ scipy
 gate-api
 load_dotenv
 rich
+
