@@ -40,7 +40,7 @@ class GateIOEMATrader:
             self.rsi_period = 14
            
             # กำหนดพารามิเตอร์สำหรับ trend และ stop loss
-            self.btc_trend_periods = 7  # จำนวน timeframe สำหรับ BTC trend (7 timeframe)
+            self.btc_trend_periods = 5  # จำนวน timeframe สำหรับ BTC trend (7 timeframe)
             self.trend_periods = 14  # จำนวน timeframe สำหรับเหรียญอื่น (14 timeframe)
             self.stop_lookback = 7  # จำนวน timeframes สำหรับหา stop loss
            
