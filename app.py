@@ -488,6 +488,10 @@ class GateIOEMATrader:
                     first_run = False
                     scan_stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0, 'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
                    
+                    # ตรวจสอบ Positions ที่มีอยู่
+                    self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
+                    scan_stats['positions_closed'] = self.scan_positions()
+                   
                     # ตรวจสอบเทรนด์ของ BTC ก่อน
                     self.console.print(f"[blue]📊 ตรวจสอบเทรนด์ของ BTC[/blue]")
                     self.btc_trend = self.check_btc_trend()
@@ -496,90 +500,87 @@ class GateIOEMATrader:
                     if self.btc_trend is None:
                         self.console.print(f"[yellow]⚠️ BTC ไม่อยู่ในเทรนด์ที่ชัดเจน จะไม่เปิด position ใหม่[/yellow]")
                     
-                    # ตรวจสอบ Positions ที่มีอยู่
-                    self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
-                    scan_stats['positions_closed'] = self.scan_positions()
-                   
-                    # ตรวจหาสัญญาณเทรดใหม่ (แม้ BTC ไม่อยู่ในเทรนด์ที่ชัดเจน เราก็ยังตรวจสอบสัญญาอื่น แต่จะไม่เปิด position ใหม่)
-                    self.console.print(f"[blue]📊 ตรวจหาสัญญาณเทรดใหม่[/blue]")
-                    contracts = self.get_futures_contracts()
-                    for i, contract in enumerate(contracts, 1):
-                        # ข้าม BTC เพราะเราตรวจสอบไปแล้ว
-                        if contract == 'BTC_USDT':
-                            continue
-                           
-                        self.console.print(f"[cyan]▶ สแกนสัญญา ({i}/{len(contracts)}): {contract}[/cyan]")
-                        df = self.get_candlesticks(contract)
-                        if df.empty:
-                            self.console.print(f"[red]❌ ไม่สามารถดึงข้อมูลแท่งเทียนของ {contract} ได้[/red]")
-                            continue
-                       
-                        trend_data = self.calculate_trend_signal(df)
-                        if not trend_data:
-                            self.console.print(f"[red]❌ ไม่สามารถคำนวณเทรนด์สำหรับ {contract} ได้[/red]")
-                            continue
-                       
-                        signal = self.check_trading_signal(df, trend_data, contract)
-                        if signal:
-                            if signal == "BUY":
-                                scan_stats['buy_signals'] += 1
-                                # ตรวจสอบ position ที่มีอยู่
-                                existing_position = self.check_existing_position(contract)
-                               
-                                if existing_position:
-                                    if existing_position['type'] == "LONG":
-                                        # มี LONG อยู่แล้ว ไม่ทำอะไร
-                                        self.console.print(f"[yellow]⚠️ มี LONG position อยู่แล้ว ไม่เปิดเพิ่ม[/yellow]")
-                                    else:  # มี SHORT อยู่
-                                        self.console.print(f"[yellow]⚠️ มี SHORT position อยู่ แต่เราต้องการ LONG ตามสัญญาณ BUY[/yellow]")
-                                        self.console.print(f"[yellow]⚠️ เงื่อนไขไม่ได้ระบุให้ปิด SHORT เพื่อเปิด LONG[/yellow]")
-                                else:  # ไม่มี position
-                                    self.console.print(f"[green]🆕 เปิด LONG position ตามสัญญาณ BUY[/green]")
-                                    if self.create_order(contract, True):  # true คือ LONG
-                                        scan_stats['long_opened'] += 1
-                           
-                            elif signal == "SELL":
-                                scan_stats['sell_signals'] += 1
-                                # ตรวจสอบ position ที่มีอยู่
-                                existing_position = self.check_existing_position(contract)
-                               
-                                if existing_position:
-                                    if existing_position['type'] == "SHORT":
-                                        # มี SHORT อยู่แล้ว ไม่ทำอะไร
-                                        self.console.print(f"[yellow]⚠️ มี SHORT position อยู่แล้ว ไม่เปิดเพิ่ม[/yellow]")
-                                    else:  # มี LONG อยู่
-                                        self.console.print(f"[yellow]⚠️ มี LONG position อยู่ แต่เราต้องการ SHORT ตามสัญญาณ SELL[/yellow]")
-                                        self.console.print(f"[yellow]⚠️ เงื่อนไขไม่ได้ระบุให้ปิด LONG เพื่อเปิด SHORT[/yellow]")
-                                else:  # ไม่มี position
-                                    self.console.print(f"[red]🆕 เปิด SHORT position ตามสัญญาณ SELL[/red]")
-                                    if self.create_order(contract, False):  # false คือ SHORT
-                                        scan_stats['short_opened'] += 1
-                        else:
-                            self.console.print(f"[blue]   ไม่พบสัญญาณเทรด[/blue]")
-                        scan_stats['contracts_scanned'] += 1
-                   
-                    # อัปเดตสถิติรวม
-                    for key in stats: stats[key] += scan_stats[key]
-                   
-                    # แสดงสรุปการสแกน
-                    self.console.print(f"[blue]===== สรุปการสแกนรอบนี้ =====[/blue]")
-                    self.console.print(f"[blue]📊 สัญญาที่สแกน: {scan_stats['contracts_scanned']}/{len(contracts)-1}[/blue]")
-                    self.console.print(f"[green]📈 สัญญาณ BUY: {scan_stats['buy_signals']}[/green]")
-                    self.console.print(f"[red]📉 สัญญาณ SELL: {scan_stats['sell_signals']}[/red]")
-                    self.console.print(f"[green]📈 เปิด LONG: {scan_stats['long_opened']}[/green]")
-                    self.console.print(f"[red]📉 เปิด SHORT: {scan_stats['short_opened']}[/red]")
-                    self.console.print(f"[yellow]🔄 ปิด Position: {scan_stats['positions_closed']}[/yellow]")
-                   
-                    # แสดงสถิติรวมทั้งหมด
-                    self.console.print(f"[blue]===== สถิติรวมทั้งหมด =====[/blue]")
-                    self.console.print(f"[blue]📊 สัญญาที่สแกนทั้งหมด: {stats['contracts_scanned']}[/blue]")
-                    self.console.print(f"[green]📈 สัญญาณ BUY ทั้งหมด: {stats['buy_signals']}[/green]")
-                    self.console.print(f"[red]📉 สัญญาณ SELL ทั้งหมด: {stats['sell_signals']}[/red]")
-                    self.console.print(f"[green]📈 เปิด LONG ทั้งหมด: {stats['long_opened']}[/green]")
-                    self.console.print(f"[red]📉 เปิด SHORT ทั้งหมด: {stats['short_opened']}[/red]")
-                    self.console.print(f"[yellow]🔄 ปิด Position ทั้งหมด: {stats['positions_closed']}[/yellow]")
-                    self.console.print(f"[blue]===========================================[/blue]")
-                    time.sleep(30)
+                    if self.btc_trend != None:
+                        # ตรวจหาสัญญาณเทรดใหม่ (แม้ BTC ไม่อยู่ในเทรนด์ที่ชัดเจน เราก็ยังตรวจสอบสัญญาอื่น แต่จะไม่เปิด position ใหม่)
+                        self.console.print(f"[blue]📊 ตรวจหาสัญญาณเทรดใหม่[/blue]")
+                        contracts = self.get_futures_contracts()
+                        for i, contract in enumerate(contracts, 1):
+                            # ข้าม BTC เพราะเราตรวจสอบไปแล้ว
+                            if contract == 'BTC_USDT':
+                                continue
+                            
+                            self.console.print(f"[cyan]▶ สแกนสัญญา ({i}/{len(contracts)}): {contract}[/cyan]")
+                            df = self.get_candlesticks(contract)
+                            if df.empty:
+                                self.console.print(f"[red]❌ ไม่สามารถดึงข้อมูลแท่งเทียนของ {contract} ได้[/red]")
+                                continue
+                        
+                            trend_data = self.calculate_trend_signal(df)
+                            if not trend_data:
+                                self.console.print(f"[red]❌ ไม่สามารถคำนวณเทรนด์สำหรับ {contract} ได้[/red]")
+                                continue
+                        
+                            signal = self.check_trading_signal(df, trend_data, contract)
+                            if signal:
+                                if signal == "BUY":
+                                    scan_stats['buy_signals'] += 1
+                                    # ตรวจสอบ position ที่มีอยู่
+                                    existing_position = self.check_existing_position(contract)
+                                
+                                    if existing_position:
+                                        if existing_position['type'] == "LONG":
+                                            # มี LONG อยู่แล้ว ไม่ทำอะไร
+                                            self.console.print(f"[yellow]⚠️ มี LONG position อยู่แล้ว ไม่เปิดเพิ่ม[/yellow]")
+                                        else:  # มี SHORT อยู่
+                                            self.console.print(f"[yellow]⚠️ มี SHORT position อยู่ แต่เราต้องการ LONG ตามสัญญาณ BUY[/yellow]")
+                                            self.console.print(f"[yellow]⚠️ เงื่อนไขไม่ได้ระบุให้ปิด SHORT เพื่อเปิด LONG[/yellow]")
+                                    else:  # ไม่มี position
+                                        self.console.print(f"[green]🆕 เปิด LONG position ตามสัญญาณ BUY[/green]")
+                                        if self.create_order(contract, True):  # true คือ LONG
+                                            scan_stats['long_opened'] += 1
+                            
+                                elif signal == "SELL":
+                                    scan_stats['sell_signals'] += 1
+                                    # ตรวจสอบ position ที่มีอยู่
+                                    existing_position = self.check_existing_position(contract)
+                                
+                                    if existing_position:
+                                        if existing_position['type'] == "SHORT":
+                                            # มี SHORT อยู่แล้ว ไม่ทำอะไร
+                                            self.console.print(f"[yellow]⚠️ มี SHORT position อยู่แล้ว ไม่เปิดเพิ่ม[/yellow]")
+                                        else:  # มี LONG อยู่
+                                            self.console.print(f"[yellow]⚠️ มี LONG position อยู่ แต่เราต้องการ SHORT ตามสัญญาณ SELL[/yellow]")
+                                            self.console.print(f"[yellow]⚠️ เงื่อนไขไม่ได้ระบุให้ปิด LONG เพื่อเปิด SHORT[/yellow]")
+                                    else:  # ไม่มี position
+                                        self.console.print(f"[red]🆕 เปิด SHORT position ตามสัญญาณ SELL[/red]")
+                                        if self.create_order(contract, False):  # false คือ SHORT
+                                            scan_stats['short_opened'] += 1
+                            else:
+                                self.console.print(f"[blue]   ไม่พบสัญญาณเทรด[/blue]")
+                            scan_stats['contracts_scanned'] += 1
+                    
+                        # อัปเดตสถิติรวม
+                        for key in stats: stats[key] += scan_stats[key]
+                    
+                        # แสดงสรุปการสแกน
+                        self.console.print(f"[blue]===== สรุปการสแกนรอบนี้ =====[/blue]")
+                        self.console.print(f"[blue]📊 สัญญาที่สแกน: {scan_stats['contracts_scanned']}/{len(contracts)-1}[/blue]")
+                        self.console.print(f"[green]📈 สัญญาณ BUY: {scan_stats['buy_signals']}[/green]")
+                        self.console.print(f"[red]📉 สัญญาณ SELL: {scan_stats['sell_signals']}[/red]")
+                        self.console.print(f"[green]📈 เปิด LONG: {scan_stats['long_opened']}[/green]")
+                        self.console.print(f"[red]📉 เปิด SHORT: {scan_stats['short_opened']}[/red]")
+                        self.console.print(f"[yellow]🔄 ปิด Position: {scan_stats['positions_closed']}[/yellow]")
+                    
+                        # แสดงสถิติรวมทั้งหมด
+                        self.console.print(f"[blue]===== สถิติรวมทั้งหมด =====[/blue]")
+                        self.console.print(f"[blue]📊 สัญญาที่สแกนทั้งหมด: {stats['contracts_scanned']}[/blue]")
+                        self.console.print(f"[green]📈 สัญญาณ BUY ทั้งหมด: {stats['buy_signals']}[/green]")
+                        self.console.print(f"[red]📉 สัญญาณ SELL ทั้งหมด: {stats['sell_signals']}[/red]")
+                        self.console.print(f"[green]📈 เปิด LONG ทั้งหมด: {stats['long_opened']}[/green]")
+                        self.console.print(f"[red]📉 เปิด SHORT ทั้งหมด: {stats['short_opened']}[/red]")
+                        self.console.print(f"[yellow]🔄 ปิด Position ทั้งหมด: {stats['positions_closed']}[/yellow]")
+                        self.console.print(f"[blue]===========================================[/blue]")
+                    time.sleep(60)
                 time.sleep(10)
             except KeyboardInterrupt:
                 self.console.print("[yellow]โปรแกรมถูกหยุดโดยผู้ใช้[/yellow]")
