@@ -1,0 +1,167 @@
+2025-05-03 07:16:45,249 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 07:16:45,254 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 07:16:49,344 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_07-16-49.txt เรียบร้อยแล้ว
+2025-05-03 07:16:49,345 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 9, SELL 5, HOLD 28
+2025-05-03 07:17:36,374 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 07:17:42,256 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 07:17:42,258 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 07:17:59,931 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_07-17-59.txt เรียบร้อยแล้ว
+2025-05-03 07:17:59,931 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 40, SELL 49, HOLD 115
+2025-05-03 07:24:42,602 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 07:27:18,436 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 07:27:18,439 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 07:33:28,674 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 07:33:28,677 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 07:33:54,725 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_07-33-54.txt เรียบร้อยแล้ว
+2025-05-03 07:33:54,725 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 83, SELL 79, HOLD 140
+2025-05-03 07:43:07,912 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 07:44:46,467 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 07:44:46,470 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 07:44:52,257 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_07-44-52.txt เรียบร้อยแล้ว
+2025-05-03 07:44:52,258 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 22, SELL 24, HOLD 4
+2025-05-03 07:46:28,036 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 07:46:29,519 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 07:46:29,522 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 07:46:35,415 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_07-46-35.txt เรียบร้อยแล้ว
+2025-05-03 07:46:35,415 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 21, SELL 27, HOLD 2
+2025-05-03 08:01:05,465 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 08:01:10,933 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_08-01-10.txt เรียบร้อยแล้ว
+2025-05-03 08:01:10,933 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 12, SELL 19, HOLD 19
+2025-05-03 08:08:55,576 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:12:32,120 - INFO - Initialization successful
+2025-05-03 08:15:10,174 - INFO - Initialization successful
+2025-05-03 08:15:10,920 - ERROR - Error analyzing VVVUSDT: 'macd_hist'
+2025-05-03 08:15:10,922 - ERROR - Error analyzing SHELLUSDT: 'macd_hist'
+2025-05-03 08:15:10,926 - ERROR - Error analyzing BROCCOLIF3BUSDT: 'macd_hist'
+2025-05-03 08:15:10,928 - ERROR - Error analyzing HIPPOUSDT: 'macd_hist'
+2025-05-03 08:15:10,931 - ERROR - Error analyzing BROCCOLI714USDT: 'macd_hist'
+2025-05-03 08:15:10,940 - ERROR - Error analyzing AVAAIUSDT: 'macd_hist'
+2025-05-03 08:15:10,948 - ERROR - Error analyzing FHEUSDT: 'macd_hist'
+2025-05-03 08:15:10,956 - ERROR - Error analyzing SWARMSUSDT: 'macd_hist'
+2025-05-03 08:15:10,965 - ERROR - Error analyzing HIVEUSDT: 'macd_hist'
+2025-05-03 08:15:10,974 - ERROR - Error analyzing WALUSDT: 'macd_hist'
+2025-05-03 08:15:11,340 - ERROR - Error analyzing FISUSDT: 'macd_hist'
+2025-05-03 08:15:11,392 - ERROR - Error analyzing PROMPTUSDT: 'macd_hist'
+2025-05-03 08:15:11,413 - ERROR - Error analyzing NOTUSDT: 'macd_hist'
+2025-05-03 08:15:11,419 - ERROR - Error analyzing BANKUSDT: 'macd_hist'
+2025-05-03 08:15:11,423 - ERROR - Error analyzing NEIROETHUSDT: 'macd_hist'
+2025-05-03 08:15:11,430 - ERROR - Error analyzing SCRTUSDT: 'macd_hist'
+2025-05-03 08:15:11,433 - ERROR - Error analyzing RUNEUSDT: 'macd_hist'
+2025-05-03 08:15:11,440 - ERROR - Error analyzing HEIUSDT: 'macd_hist'
+2025-05-03 08:15:11,447 - ERROR - Error analyzing DOLOUSDT: 'macd_hist'
+2025-05-03 08:15:11,455 - ERROR - Error analyzing KAITOUSDT: 'macd_hist'
+2025-05-03 08:15:11,545 - ERROR - Error analyzing OMNIUSDT: 'macd_hist'
+2025-05-03 08:15:11,871 - ERROR - Error analyzing GOATUSDT: 'macd_hist'
+2025-05-03 08:15:11,890 - ERROR - Error analyzing CATIUSDT: 'macd_hist'
+2025-05-03 08:15:11,902 - ERROR - Error analyzing ATHUSDT: 'macd_hist'
+2025-05-03 08:15:11,915 - ERROR - Error analyzing AVAUSDT: 'macd_hist'
+2025-05-03 08:15:11,917 - ERROR - Error analyzing MEUSDT: 'macd_hist'
+2025-05-03 08:15:11,923 - ERROR - Error analyzing MYROUSDT: 'macd_hist'
+2025-05-03 08:15:11,935 - ERROR - Error analyzing ARCUSDT: 'macd_hist'
+2025-05-03 08:15:11,942 - ERROR - Error analyzing REZUSDT: 'macd_hist'
+2025-05-03 08:15:11,951 - ERROR - Error analyzing KASUSDT: 'macd_hist'
+2025-05-03 08:15:11,953 - ERROR - Error analyzing DOGSUSDT: 'macd_hist'
+2025-05-03 08:15:12,371 - ERROR - Error analyzing NILUSDT: 'macd_hist'
+2025-05-03 08:15:12,377 - ERROR - Error analyzing WOOUSDT: 'macd_hist'
+2025-05-03 08:15:12,380 - ERROR - Error analyzing SAFEUSDT: 'macd_hist'
+2025-05-03 08:15:12,397 - ERROR - Error analyzing GUNUSDT: 'macd_hist'
+2025-05-03 08:15:12,407 - ERROR - Error analyzing PLUMEUSDT: 'macd_hist'
+2025-05-03 08:15:12,416 - ERROR - Error analyzing BANUSDT: 'macd_hist'
+2025-05-03 08:15:12,434 - ERROR - Error analyzing BICOUSDT: 'macd_hist'
+2025-05-03 08:15:12,437 - ERROR - Error analyzing DRIFTUSDT: 'macd_hist'
+2025-05-03 08:15:12,438 - ERROR - Error analyzing IOUSDT: 'macd_hist'
+2025-05-03 08:15:12,447 - ERROR - Error analyzing PIPPINUSDT: 'macd_hist'
+2025-05-03 08:15:12,783 - ERROR - Error analyzing TSTUSDT: 'macd_hist'
+2025-05-03 08:15:12,821 - ERROR - Error analyzing LUMIAUSDT: 'macd_hist'
+2025-05-03 08:15:12,825 - ERROR - Error analyzing EIGENUSDT: 'macd_hist'
+2025-05-03 08:15:12,836 - ERROR - Error analyzing JASMYUSDT: 'macd_hist'
+2025-05-03 08:15:12,843 - ERROR - Error analyzing FUNUSDT: 'macd_hist'
+2025-05-03 08:15:12,851 - ERROR - Error analyzing MEMEUSDT: 'macd_hist'
+2025-05-03 08:15:12,857 - ERROR - Error analyzing LPTUSDT: 'macd_hist'
+2025-05-03 08:15:12,866 - ERROR - Error analyzing 1000000MOGUSDT: 'macd_hist'
+2025-05-03 08:15:12,875 - ERROR - Error analyzing PYTHUSDT: 'macd_hist'
+2025-05-03 08:15:12,878 - ERROR - Error scanning market: closing tag '[/color]' at position 21 doesn't match any open tag
+2025-05-03 08:16:00,864 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:16:00,867 - INFO - กำลังเริ่มสแกนตลาด
+2025-05-03 08:16:06,264 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_08-16-06.txt เรียบร้อยแล้ว
+2025-05-03 08:16:06,265 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 16, SELL 15, HOLD 19
+2025-05-03 08:22:24,149 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:22:53,520 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:22:54,449 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน STOUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,597 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน BROCCOLI714USDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,664 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน BROCCOLIF3BUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,889 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน AIOTUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,892 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน PENGUUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,892 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน AERGOUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,893 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน PUNDIXUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,894 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน HAEDALUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,895 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน VOXELUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,895 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน AVAAIUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,896 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน CHILLGUYUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:54,943 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน AIXBTUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,026 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน VINEUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,226 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน AI16ZUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,360 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน ENAUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,361 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน SUIUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,362 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน FHEUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,363 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน VIRTUALUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,363 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน IMXUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,364 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน OMUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,366 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน LAYERUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,368 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน FARTCOINUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,628 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน TURBOUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,824 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน WLDUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,826 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน MOVEUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,827 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน SWARMSUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,827 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน HIGHUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,828 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน 1000PEPEUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,828 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน ADAUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,829 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน PNUTUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,829 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน MEMEFIUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:55,830 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน ZEREBROUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,228 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน EOSUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,309 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน CRVUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,309 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน FILUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,310 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน ONDOUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,311 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน BSWUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,312 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน WALUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,312 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน DOGEUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,313 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน 1000BONKUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,313 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน TIAUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,314 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน OPUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,439 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน SIGNUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,549 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน SUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,657 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน NEARUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,658 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน INITUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,658 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน POPCATUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,658 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน HIPPOUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,659 - ERROR - เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน XRPUSDT: 'Rolling' object has no attribute 'values'
+2025-05-03 08:22:56,663 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_08-22-56.txt เรียบร้อยแล้ว
+2025-05-03 08:22:56,665 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 0, SELL 0, HOLD 1
+2025-05-03 08:28:24,454 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:28:26,243 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:28:29,682 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_08-28-29.txt เรียบร้อยแล้ว
+2025-05-03 08:28:29,682 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 16, SELL 6, HOLD 28
+2025-05-03 08:33:15,978 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:33:17,812 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:33:21,455 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_08-33-21.txt เรียบร้อยแล้ว
+2025-05-03 08:33:21,455 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 16, SELL 6, HOLD 28
+2025-05-03 08:42:21,110 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:42:22,771 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:42:26,222 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:43:23,642 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:43:27,013 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_08-43-27.txt เรียบร้อยแล้ว
+2025-05-03 08:43:27,014 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 15, SELL 6, HOLD 29
+2025-05-03 08:58:48,702 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:58:53,751 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:58:57,195 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 08:59:34,310 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 08:59:37,988 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_08-59-37.txt เรียบร้อยแล้ว
+2025-05-03 08:59:37,989 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 14, SELL 7, HOLD 29
+2025-05-03 09:01:11,622 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_09-01-11.txt เรียบร้อยแล้ว
+2025-05-03 09:01:11,624 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 17, SELL 7, HOLD 26
+2025-05-03 09:06:00,572 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้
+2025-05-03 09:06:02,288 - INFO - เริ่มต้นระบบสำเร็จ
+2025-05-03 09:06:11,877 - INFO - บันทึกผลการสแกนลงไฟล์ scan_results/scan_results_2025-05-03_09-06-11.txt เรียบร้อยแล้ว
+2025-05-03 09:06:11,878 - INFO - สแกนตลาดเสร็จสิ้น: พบสัญญาณ BUY 22, SELL 17, HOLD 111
+2025-05-03 09:15:08,054 - INFO - โปรแกรมถูกหยุดโดยผู้ใช้

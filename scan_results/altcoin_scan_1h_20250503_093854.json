@@ -1,0 +1,36 @@
+{
+  "STRONG_BREAKOUT": [],
+  "BREAKOUT": [],
+  "BREAKDOWN": [],
+  "STRONG_BREAKDOWN": [],
+  "CONSOLIDATION": [
+    {
+      "symbol": "BRUSDT",
+      "interval": "1h",
+      "price": 0.05655,
+      "momentum_score": 2.7297764535409685,
+      "signal": "CONSOLIDATION",
+      "strength": 2.7297764535409685,
+      "price_momentum": 3.675783286408695,
+      "volume_momentum": 2.008165870473441,
+      "pattern_score": 2.5,
+      "indicator_score": 2.5,
+      "pattern": [
+        "Rising Wedge",
+        "Inverse Head and Shoulders",
+        "Double Bottom"
+      ],
+      "extra": {
+        "price_change_1d": 5.346497764530556,
+        "price_change_3d": 4.955456570155903,
+        "volume_ratio": 2.338777246982294,
+        "rsi": 66.46808510638294,
+        "macd": 0.0005908375090103654,
+        "macd_hist": 0.00020403624288877278,
+        "bb_percent_b": 1.1344954513335523,
+        "nearest_resistance": 0.05694,
+        "nearest_support": 0.05181,
+        "distance_to_resistance": 0.6896551724137834,
+        "distance_to_support": 8.381962864721487,
+        "atr_pct": 2.8432487053176714,
+        "squeeze_fire": 
