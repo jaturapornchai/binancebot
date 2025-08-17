@@ -1,7 +1,0 @@
-pandas
-numpy
-requests
-python-binance
-scipy
-scikit-learn
-ccxt

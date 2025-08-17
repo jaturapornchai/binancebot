@@ -1,0 +1,46 @@
+# Ignore unnecessary files and directories
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Git files
+.git/
+.gitignore
+
+# Documentation
+README.md
+PROMPT_README.md
+DOCKER_README.md
+docs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Management scripts
+manage-bot.ps1
+build.bat
+
+# Test and debug files
+test_*.py
+debug_*.py
+*_test.py
+
+# Logs
+logs/
+*.log

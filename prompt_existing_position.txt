@@ -1,0 +1,18 @@
+วิเคราะห์ {symbol} multi-timeframe analysis (1h ภาพใหญ่, 15m จุดเข้า)
+ราคาปัจจุบัน: ${current_price}
+PNL ปัจจุบัน: {pnl} USDT ({pnl_status})
+
+{ohlcv_data}
+
+รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h, T{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 15m
+มีสถานะเปิดอยู่: {position_type} ขนาด {position_size}
+ควรปิด (CLOSE) หรือถือ (HOLD) ต่อ?
+
+กรุณาวิเคราะห์ทั้ง 1h (ภาพใหญ่) และ 15m (จุดเข้า) และตอบในรูปแบบ JSON เท่านั้น:
+
+{{
+  "action": "CLOSE" หรือ "HOLD",
+  "confidence": 1-10,
+  "reasoning": "เหตุผลการตัดสินใจรวมถึงสถานะ PNL 2-3 บรรทัด",
+  "patterns": ["รายชื่อ pattern ที่พบ"]
+}}

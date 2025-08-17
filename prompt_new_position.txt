@@ -1,0 +1,18 @@
+วิเคราะห์ {symbol} multi-timeframe analysis (1h ภาพใหญ่, 15m จุดเข้า)
+ราคาปัจจุบัน: ${current_price}
+
+{ohlcv_data}
+
+รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h, T{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 15m
+ยังไม่มีสถานะ ควรเปิด LONG, SHORT หรือ HOLD?
+
+กรุณาวิเคราะห์ทั้ง 1h (ภาพใหญ่) และ 15m (จุดเข้า) และตอบในรูปแบบ JSON เท่านั้น:
+
+{{
+  "action": "LONG" หรือ "SHORT" หรือ "HOLD",
+  "confidence": 1-10,
+  "reasoning": "เหตุผลการตัดสินใจ 2-3 บรรทัด",
+  "patterns": ["รายชื่อ pattern ที่พบ"]
+}}
+
+ถ้าราคาไม่เหมาะสมที่จะเปิด POSITION ให้ HOLD

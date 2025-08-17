@@ -1,22 +1,42 @@
-FROM python:3.11.9
+# Use Python 3.13 as base image
+FROM python:3.13-slim
 
-RUN apt-get update && apt-get install -y build-essential wget
-
+# Set working directory
 WORKDIR /app
 
-COPY requirements.txt requirements.txt
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# ติดตั้ง NumPy ก่อน
-RUN pip install --no-cache-dir numpy==1.23.5
+# Install system dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    gcc \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# ติดตั้ง TA-Lib
-# RUN pip install --no-cache-dir TA-Lib
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
 
-# ติดตั้งแพ็คเกจที่เหลือ
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-ENV OMP_NUM_THREADS=1
+# Copy application code
+COPY app.py .
+COPY prompt_existing_position.txt .
+COPY prompt_new_position.txt .
 
-COPY . .
+# Copy environment file (if exists)
+COPY .env* ./
 
-CMD ["python", "./app.py"]
+# Create non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "print('Bot is running')" || exit 1
+
+# Run the bot
+CMD ["python", "app.py"]

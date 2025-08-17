@@ -1,606 +1,744 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+import os
+import time
+import math
+import json
+from datetime import datetime
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Dict, Any, cast
 
-import os, time, re, sys
-from typing import List, Dict
-import pandas as pd
-import numpy as np
+from binance.um_futures import UMFutures
 from dotenv import load_dotenv
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from rich.console import Console
+from openai import OpenAI
 
-class BinanceEMATrader:
-    def __init__(self):
+
+# --- Config and helpers -----------------------------------------------------
+
+SYMBOLS_DEFAULT = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "LTCUSDT"]
+
+
+@dataclass
+class Config:
+    api_key: str
+    api_secret: str
+    symbols: List[str]
+    timeframe: str
+    min_balance_usdt: float
+    leverage: int
+    margin_per_trade_usdt: float
+    sleep_minutes_between_cycles: int
+    force_buy: bool
+    force_sell: bool
+    deepseek_api_key: Optional[str]
+    recv_window: int = 7000
+
+
+def load_config() -> Config:
+    load_dotenv()
+    api_key = os.getenv("BINANCE_API_KEY", "").strip()
+    api_secret = os.getenv("BINANCE_SECRET_KEY", "").strip()
+    if not api_key or not api_secret:
+        raise RuntimeError("Missing BINANCE_API_KEY or BINANCE_SECRET_KEY in .env")
+
+    symbols_env = os.getenv("SYMBOLS")
+    symbols = [s.strip().upper() for s in symbols_env.split(",")] if symbols_env else SYMBOLS_DEFAULT
+
+    return Config(
+        api_key=api_key,
+        api_secret=api_secret,
+        symbols=symbols,
+        timeframe=os.getenv("TIMEFRAME", "15m"),
+        min_balance_usdt=float(os.getenv("MIN_BALANCE_USDT", "100")),
+        leverage=int(os.getenv("LEVERAGE", "5")),
+        margin_per_trade_usdt=float(os.getenv("MARGIN_PER_TRADE_USDT", "100")),
+        sleep_minutes_between_cycles=int(os.getenv("SLEEP_MINUTES", "15")),
+        force_buy=os.getenv("FORCE_BUY", "false").lower() in ("1", "true", "yes"),
+        force_sell=os.getenv("FORCE_SELL", "false").lower() in ("1", "true", "yes"),
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "sk-f90e70eaf46c4190925a787e94cafb4d").strip() or None,
+    )
+
+
+def retry_call(fn, *args, retries=3, backoff=1.5, **kwargs):
+    last_exc = None
+    delay = 0.6
+    for i in range(retries):
         try:
-            # ปรับการโหลด environment variables ให้ทำงานได้ดีกับ Docker
-            load_dotenv(override=True)
-            self.api_key = os.getenv('BINANCE_API_KEY')
-            self.secret_key = os.getenv('BINANCE_SECRET_KEY')
-           
-            # เพิ่มทางเลือกให้รับ API keys จาก environment variables โดยตรง
-            if not self.api_key:
-                self.api_key = os.environ.get('BINANCE_API_KEY')
-            if not self.secret_key:
-                self.secret_key = os.environ.get('BINANCE_SECRET_KEY')
-               
-            if not self.api_key or not self.secret_key:
-                raise ValueError("API keys ไม่พบในไฟล์ .env หรือ environment variables")
-               
-            # สร้าง Binance client
-            self.client = Client(self.api_key, self.secret_key)
-           
-            # กำหนดค่าต่างๆ
-            self.leverage = 5
-            self.order_amount = 5  # ในหน่วย USDT
-           
-            # กำหนดพารามิเตอร์สำหรับ EMA - เปลี่ยนเป็น EMA7, EMA25, EMA99 ตามเงื่อนไขใหม่
-            self.ema_short = 7       # E1
-            self.ema_mid = 25        # E2
-            self.ema_long = 99       # E3
-           
-            # กำหนดพารามิเตอร์สำหรับ RSI
-            self.rsi_period = 14
-           
-            # กำหนดพารามิเตอร์สำหรับการวิเคราะห์เทรนด์
-            self.trend_lookback = 7  # จำนวน timeframes สำหรับตรวจสอบเทรนด์ -> แก้เป็น 7 ตามเงื่อนไข
-           
-            # กำหนดพารามิเตอร์สำหรับ stop loss
-            self.stop_lookback = 5  # จำนวน timeframes สำหรับหา stop loss
-           
-            # กำหนดค่า profit/loss percentage สำหรับปิด position
-            self.profit_percentage = 3.0  # กำไร 3%
-            self.loss_percentage = 2.0   # ขาดทุน 2%
-           
-            self.console = Console()
-        except Exception as e:
-            print(f"เกิดข้อผิดพลาดในการเริ่มต้น: {str(e)}")
-            sys.exit(1)
+            return fn(*args, **kwargs)
+        except Exception as e:  # broad to keep bot running
+            last_exc = e
+            time.sleep(delay)
+            delay *= backoff
+    if last_exc:
+        raise last_exc
 
-    def get_futures_contracts(self) -> List[str]:
-        """ดึงรายชื่อสัญญา futures ที่มีสภาพคล่องเพียงพอ"""
-        try:
-            self.console.print(f"[blue]กำลังดึงข้อมูลสัญญา futures จาก Binance...[/blue]")
-           
-            # ดึงข้อมูลสัญญา futures ทั้งหมด
-            exchange_info = self.client.futures_exchange_info()
-            symbols = [symbol['symbol'] for symbol in exchange_info['symbols']
-                    if symbol['status'] == 'TRADING' and symbol['quoteAsset'] == 'USDT']
-           
-            self.console.print(f"[blue]พบสัญญา futures ทั้งหมด {len(symbols)} สัญญา[/blue]")
-           
-            # ดึงข้อมูล ticker ทั้งหมดพร้อมกันเพื่อเพิ่มประสิทธิภาพ
-            self.console.print(f"[blue]กำลังดึงข้อมูลปริมาณการซื้อขาย...[/blue]")
-            tickers = self.client.futures_ticker()
-           
-            # สร้าง dictionary ของ ticker เพื่อให้ค้นหาได้เร็วขึ้น
-            ticker_dict = {ticker['symbol']: ticker for ticker in tickers}
-           
-            # กรองสัญญาที่มีสภาพคล่องเพียงพอ
-            valid_contracts = []
-            for symbol in symbols:
-                if symbol in ticker_dict:
-                    ticker = ticker_dict[symbol]
-                    volume = float(ticker['volume']) * float(ticker['lastPrice'])
-                    if volume > 100000:  # ตรวจสอบสภาพคล่อง
-                        valid_contracts.append(symbol)
-            # random
-            np.random.shuffle(valid_contracts)  # สุ่มลำดับสัญญา
-                       
-            self.console.print(f"[green]พบสัญญาที่มีสภาพคล่องจำนวน {len(valid_contracts)} สัญญา[/green]")
-           
-            return valid_contracts
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการดึงรายชื่อสัญญา: {str(e)}[/red]")
-            return []
-       
-    def calculate_rsi(self, data, period=14):
-        """คำนวณ RSI (Relative Strength Index)"""
-        delta = data.diff().dropna()
-        gain = delta.copy()
-        loss = delta.copy()
-        gain[gain < 0] = 0
-        loss[loss > 0] = 0
-        loss = abs(loss)
-       
-        avg_gain = gain.rolling(window=period).mean()
-        avg_loss = loss.rolling(window=period).mean()
-       
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
 
-    def get_candlesticks(self, symbol: str) -> pd.DataFrame:
-        """ดึงข้อมูลแท่งเทียนจาก API โดยใช้ timeframe 1 ชั่วโมง และคำนวณ EMA และ RSI"""
-        try:
-            # ใช้ timeframe เป็น 1 ชั่วโมง
-            candles = self.client.futures_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1HOUR, limit=500)
-           
-            if not candles:
-                return pd.DataFrame()
-               
-            # แปลงข้อมูลแท่งเทียน
-            data = []
-            for candle in candles:
-                data.append({
-                    'timestamp': float(candle[0]),
-                    'open': float(candle[1]),
-                    'high': float(candle[2]),
-                    'low': float(candle[3]),
-                    'close': float(candle[4]),
-                    'volume': float(candle[5])
-                })
-               
-            df = pd.DataFrame(data)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df = df.sort_values('timestamp')
-           
-            # คำนวณ EMA (E1=EMA7, E2=EMA25, E3=EMA99)
-            df[f'E1'] = df['close'].ewm(span=self.ema_short, adjust=False).mean()
-            df[f'E2'] = df['close'].ewm(span=self.ema_mid, adjust=False).mean()
-            df[f'E3'] = df['close'].ewm(span=self.ema_long, adjust=False).mean()
-           
-            # คำนวณ RSI
-            df['rsi'] = self.calculate_rsi(df['close'], period=self.rsi_period)
-           
-            # คำนวณข้อมูลเพิ่มเติม
-            df['candle_color'] = np.where(df['close'] > df['open'], 'green', np.where(df['close'] < df['open'], 'red', 'doji'))
-           
-            return df
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการดึงข้อมูลแท่งเทียน {symbol}: {str(e)}[/red]")
-            return pd.DataFrame()
+# --- Binance Futures helpers -------------------------------------------------
 
-    def is_e1_above_e2_above_e3(self, df: pd.DataFrame, lookback: int) -> bool:
-        """ตรวจสอบว่า E1 > E2 > E3 ต่อเนื่องหรือไม่"""
-        if len(df) < lookback:
-            return False
-       
-        for i in range(1, lookback + 1):
-            if not (df.iloc[-i]['E1'] > df.iloc[-i]['E2'] > df.iloc[-i]['E3']):
-                return False
-        return True
-
-    def is_e1_below_e2_below_e3(self, df: pd.DataFrame, lookback: int) -> bool:
-        """ตรวจสอบว่า E1 < E2 < E3 ต่อเนื่องหรือไม่"""
-        if len(df) < lookback:
-            return False
-       
-        for i in range(1, lookback + 1):
-            if not (df.iloc[-i]['E1'] < df.iloc[-i]['E2'] < df.iloc[-i]['E3']):
-                return False
-        return True
-
-    def candle_crosses_ema(self, candle, ema_value) -> bool:
-        """ตรวจสอบว่าแท่งเทียนทับ EMA หรือไม่ (แท่งเทียนตัด EMA)"""
-        return candle['low'] <= ema_value <= candle['high']
-
-    def calculate_trend_signal(self, df: pd.DataFrame) -> dict:
-        """คำนวณสัญญาณเทรดตามเงื่อนไขใหม่"""
-        try:
-            # ตรวจสอบว่ามีข้อมูลเพียงพอหรือไม่
-            if len(df) < self.trend_lookback + 1:
-                return {
-                    'uptrend': False,
-                    'downtrend': False,
-                    'buy_signal': False,
-                    'sell_signal': False
-                }
-           
-            # คำนวณ HIGHPRICE, LOWPRICE
-            if len(df) >= self.stop_lookback + 1:
-                stop_period = df.iloc[-self.stop_lookback-1:-1]  # ไม่รวม timeframe ปัจจุบัน
-                highprice = stop_period['high'].max()
-                lowprice = stop_period['low'].min()
-            else:
-                highprice = df['high'].max()
-                lowprice = df['low'].min()
-           
-            # ดึงข้อมูล CANDLE ล่าสุดและแท่งเทียนก่อนหน้า
-            previous_candle = df.iloc[-2] if len(df) >= 2 else None
-            if previous_candle is None:
-                return {'buy_signal': False, 'sell_signal': False}
-           
-            # เปลี่ยนเงื่อนไขการกำหนด UPTREND และ DOWNTREND ตามเงื่อนไขใหม่
-            uptrend = self.is_e1_above_e2_above_e3(df, self.trend_lookback)
-            downtrend = self.is_e1_below_e2_below_e3(df, self.trend_lookback)
-           
-            # ตรวจสอบว่าแท่งเทียนก่อนหน้าทับ EMA1 หรือไม่
-            crosses_ema1 = self.candle_crosses_ema(previous_candle, previous_candle['E1'])
-           
-            # เงื่อนไขใหม่:
-            # BUY = C1 เป็นสีเขียว และ C1 ทับเส้น EMA1 และเป็น UPTREND
-            buy_signal = (previous_candle['candle_color'] == 'green' and
-                          crosses_ema1 and
-                          uptrend)
-           
-            # SELL = C1 เป็นสีแดง และ C1 ทับเส้น EMA1 และเป็น DOWNTREND
-            sell_signal = (previous_candle['candle_color'] == 'red' and
-                           crosses_ema1 and
-                           downtrend)
-           
-            return {
-                'highprice': highprice,
-                'lowprice': lowprice,
-                'uptrend': uptrend,
-                'downtrend': downtrend,
-                'buy_signal': buy_signal,
-                'sell_signal': sell_signal,
-                'candle_color': previous_candle['candle_color'],
-                'crosses_ema1': crosses_ema1,
-                'latest_price': df.iloc[-1]['close'],
-                'previous_price': previous_candle['close'],
-                'E1': previous_candle['E1'],
-                'E2': previous_candle['E2'],
-                'E3': previous_candle['E3'],
-                'candle_low': previous_candle['low'],
-                'candle_high': previous_candle['high'],
-                'rsi': previous_candle['rsi']
-            }
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการคำนวณเทรนด์: {str(e)}[/red]")
-            return {'buy_signal': False, 'sell_signal': False}
-
-    def get_latest_price(self, symbol: str) -> float:
-        """ดึงราคาล่าสุดของสัญญา"""
-        try:
-            ticker = self.client.futures_symbol_ticker(symbol=symbol)
-            return float(ticker['price'])
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการดึงราคาล่าสุด {symbol}: {str(e)}[/red]")
-            return None
-
-    def check_trading_signal(self, df: pd.DataFrame, trend_data: dict, symbol: str = None) -> str:
-        """ตรวจสอบสัญญาณการเทรดตามเงื่อนไขใหม่"""
-        try:
-            if not trend_data: return None
-            latest_price = self.get_latest_price(symbol)
-            if latest_price is None: return None
-           
-            # แสดงข้อมูลการวิเคราะห์
-            self.console.print(f"[blue]   ตรวจสอบสัญญาณ: ราคาล่าสุด={latest_price:.6f}[/blue]")
-            self.console.print(f"[blue]   EMA: E1(7)={trend_data['E1']:.6f}, E2(25)={trend_data['E2']:.6f}, E3(99)={trend_data['E3']:.6f}[/blue]")
-            self.console.print(f"[blue]   TREND: UPTREND={trend_data['uptrend']}, DOWNTREND={trend_data['downtrend']}[/blue]")
-            self.console.print(f"[blue]   PRICES: HIGHPRICE={trend_data['highprice']:.6f}, LOWPRICE={trend_data['lowprice']:.6f}[/blue]")
-            self.console.print(f"[blue]   RSI: {trend_data['rsi']:.2f}[/blue]")
-           
-            candle_color_display = "🟩 สีเขียว" if trend_data['candle_color'] == 'green' else "🟥 สีแดง" if trend_data['candle_color'] == 'red' else "⬛ Doji"
-            self.console.print(f"[blue]   แท่งเทียนก่อนหน้า: {candle_color_display}, Low={trend_data['candle_low']:.6f}, High={trend_data['candle_high']:.6f}[/blue]")
-           
-            # แสดงสถานะเงื่อนไขสำหรับแท่งเทียนทับ EMA1
-            if trend_data['crosses_ema1']:
-                self.console.print(f"[green]   ✓ แท่งเทียนก่อนหน้าทับ EMA1 (Low: {trend_data['candle_low']:.6f}, EMA1: {trend_data['E1']:.6f}, High: {trend_data['candle_high']:.6f})[/green]")
-            else:
-                self.console.print(f"[blue]   ✗ แท่งเทียนก่อนหน้าไม่ทับ EMA1[/blue]")
-           
-            # แสดงสถานะ UPTREND/DOWNTREND ตามเงื่อนไขใหม่
-            if trend_data['uptrend']:
-                self.console.print(f"[green]   ✓ เข้าเงื่อนไข UPTREND (E1>E2>E3 ต่อเนื่อง {self.trend_lookback} timeframes)[/green]")
-            else:
-                self.console.print(f"[blue]   ✗ ไม่เข้าเงื่อนไข UPTREND[/blue]")
-               
-            if trend_data['downtrend']:
-                self.console.print(f"[red]   ✓ เข้าเงื่อนไข DOWNTREND (E1<E2<E3 ต่อเนื่อง {self.trend_lookback} timeframes)[/red]")
-            else:
-                self.console.print(f"[blue]   ✗ ไม่เข้าเงื่อนไข DOWNTREND[/blue]")
-           
-            # ตรวจสอบเงื่อนไข BUY/SELL ตามเงื่อนไขใหม่
-            if trend_data.get('buy_signal', False):
-                self.console.print(f"[green]🟢 สัญญาณ BUY: แท่งเทียนก่อนหน้าสีเขียว + ทับ EMA1 + UPTREND[/green]")
-                return "BUY"
-           
-            if trend_data.get('sell_signal', False):
-                self.console.print(f"[red]🔴 สัญญาณ SELL: แท่งเทียนก่อนหน้าสีแดง + ทับ EMA1 + DOWNTREND[/red]")
-                return "SELL"
-           
-            # ถ้าไม่เข้าเงื่อนไข ให้ HOLD
-            self.console.print(f"[blue]🔵 สัญญาณ HOLD: ไม่เข้าเงื่อนไข BUY หรือ SELL[/blue]")
-            return "HOLD"
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการตรวจสอบสัญญาณ: {str(e)}[/red]")
-            return None
-
-    def check_existing_position(self, symbol: str) -> Dict:
-        """ตรวจสอบว่ามี position ที่เปิดอยู่หรือไม่"""
-        try:
-            # ดึงข้อมูล position จาก Binance
-            positions = self.client.futures_position_information()
-           
-            for pos in positions:
-                if pos['symbol'] == symbol:
-                    amt = float(pos['positionAmt'])
-                    if amt == 0:  # ไม่มี position
-                        continue
-                       
-                    position_type = "LONG" if amt > 0 else "SHORT"
-                    entry_price = float(pos['entryPrice'])
-                    leverage = float(pos['leverage'])
-                   
-                    self.console.print(f"[yellow]พบ position {position_type} สำหรับ {symbol}: ขนาด={abs(amt)}, ราคาเข้า={entry_price}, leverage={leverage}[/yellow]")
-                   
-                    return {
-                        'type': position_type,
-                        'data': {
-                            'symbol': symbol,
-                            'size': amt,
-                            'entry_price': entry_price,
-                            'leverage': leverage
-                        }
-                    }
-           
-            return None
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการตรวจสอบ position ที่มีอยู่: {str(e)}[/red]")
-            return None
-
-    def set_leverage(self, symbol: str) -> bool:
-        """ตั้งค่า leverage สำหรับการเทรด"""
-        try:
-            self.client.futures_change_leverage(symbol=symbol, leverage=self.leverage)
-            self.console.print(f"[yellow]ตั้งค่า leverage {self.leverage}x สำหรับ {symbol}[/yellow]")
-            return True
-        except Exception as e:
-            self.console.print(f"[red]ไม่สามารถตั้งค่า leverage สำหรับ {symbol}: {str(e)}[/red]")
-            return False
-
-    def close_position(self, symbol: str, position: Dict) -> bool:
-        """ปิด position ที่มีอยู่"""
-        try:
-            amt = float(position['data']['size'])
-            if amt == 0: return False
-           
-            # สร้างคำสั่งปิด position
-            side = "SELL" if amt > 0 else "BUY"  # ถ้าเป็น LONG ให้ SELL, ถ้าเป็น SHORT ให้ BUY
-            order = self.client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type='MARKET',
-                quantity=abs(amt),
-                reduceOnly=True
-            )
-           
-            self.console.print(f"[green]✅ ปิด position {'LONG' if amt > 0 else 'SHORT'} สำหรับ {symbol}: ขนาด={abs(amt)}[/green]")
-            return True
-        except Exception as e:
-            self.console.print(f"[red]ไม่สามารถปิด position สำหรับ {symbol}: {str(e)}[/red]")
-            return False
-
-    def create_order(self, symbol: str, is_long: bool) -> Dict:
-        """เปิด position LONG หรือ SHORT"""
-        try:
-            if not self.set_leverage(symbol): return None
-           
-            # ดึงราคาล่าสุด
-            price = self.get_latest_price(symbol)
-            if not price: return None
-           
-            # ดึงข้อมูลสัญญา เพื่อหาค่า min_qty และ precision
-            exchange_info = self.client.futures_exchange_info()
-            symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == symbol), None)
-           
-            if not symbol_info:
-                self.console.print(f"[red]ไม่พบข้อมูลสัญญา {symbol}[/red]")
-                return None
-               
-            # หา precision สำหรับจำนวน
-            qty_precision = 0
-            for flt in symbol_info['filters']:
-                if flt['filterType'] == 'LOT_SIZE':
-                    step_size = float(flt['stepSize'])
-                    qty_precision = len(str(step_size).rstrip('0').split('.')[1]) if '.' in str(step_size) else 0
-                    min_qty = float(flt['minQty'])
-                    break
-           
-            # คำนวณจำนวนที่จะเทรด
-            usd_amount = self.order_amount * self.leverage
-            qty = usd_amount / price
-            qty = max(min_qty, round(qty, qty_precision))
-           
-            # สร้างคำสั่งเปิด position
-            side = "BUY" if is_long else "SELL"
-            order = self.client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type='MARKET',
-                quantity=qty
-            )
-           
-            position_type = "LONG" if is_long else "SHORT"
-            self.console.print(f"[{'green' if is_long else 'red'}]✅ เปิด position {position_type}: {symbol} ขนาด={qty}[/{'green' if is_long else 'red'}]")
-           
-            return order
-        except Exception as e:
-            self.console.print(f"[red]ไม่สามารถเปิด {'LONG' if is_long else 'SHORT'} สำหรับ {symbol}: {str(e)}[/red]")
-            return None
-
-    def scan_positions(self):
-        """สแกน positions ที่เปิดอยู่เพื่อทำการปิดตามเงื่อนไขใหม่ (กำไร 3% หรือขาดทุน 2%)"""
-        try:
-            # ดึงข้อมูล positions ทั้งหมด
-            positions = [p for p in self.client.futures_position_information() if float(p['positionAmt']) != 0]
-           
-            self.console.print(f"[blue]===== สแกน {len(positions)} positions ที่เปิดอยู่ =====[/blue]")
-            positions_checked, positions_closed = 0, 0
-           
-            for pos in positions:
-                symbol = pos['symbol']
-                amt = float(pos['positionAmt'])
-                position_type = "LONG" if amt > 0 else "SHORT"
-               
-                entry_price = float(pos['entryPrice'])
-                latest_price = self.get_latest_price(symbol)
-               
-                if not latest_price:
-                    self.console.print(f"[red]❌ ไม่สามารถดึงราคาล่าสุดของ {symbol} ได้[/red]")
-                    continue
-               
-                # คำนวณ P&L เป็นเปอร์เซ็นต์
-                pnl_percentage = ((latest_price - entry_price) / entry_price * 100) if amt > 0 else ((entry_price - latest_price) / entry_price * 100)
-               
-                self.console.print(f"[cyan]▶ ตรวจสอบ: {symbol} ({position_type}) - ราคาเข้า: {entry_price:.6f} - ขนาด: {abs(amt)}[/cyan]")
-                self.console.print(f"[{'green' if pnl_percentage > 0 else 'red'}]   P&L: {pnl_percentage:.2f}%[/{'green' if pnl_percentage > 0 else 'red'}]")
-               
-                # ตรวจสอบเงื่อนไขการปิด position (กำไร 3% หรือขาดทุน 2%)
-                close_position = False
-                close_reason = ""
-               
-                if pnl_percentage >= self.profit_percentage:
-                    close_position = True
-                    close_reason = f"ทำกำไร {pnl_percentage:.2f}% (เกณฑ์: {self.profit_percentage}%)"
-                elif pnl_percentage <= -self.loss_percentage:
-                    close_position = True
-                    close_reason = f"ขาดทุน {abs(pnl_percentage):.2f}% (เกณฑ์: {self.loss_percentage}%)"
-               
-                if close_position:
-                    self.console.print(f"[yellow]🔔 ปิด {position_type} position: {symbol} - {close_reason}[/yellow]")
-                   
-                    # สร้าง position dictionary ในรูปแบบที่ close_position ใช้
-                    pos_dict = {
-                        'data': {
-                            'symbol': symbol,
-                            'size': amt,
-                            'entry_price': entry_price
-                        }
-                    }
-                   
-                    if self.close_position(symbol, pos_dict):
-                        positions_closed += 1
-                else:
-                    self.console.print(f"[blue]   ยังไม่เข้าเงื่อนไขการปิด position (P&L = {pnl_percentage:.2f}%, เกณฑ์กำไร = {self.profit_percentage}%, เกณฑ์ขาดทุน = {self.loss_percentage}%)[/blue]")
-               
-                positions_checked += 1
-           
-            self.console.print(f"[blue]สรุป: ตรวจสอบ {positions_checked}/{len(positions)}, ปิด {positions_closed} positions[/blue]")
-            return positions_closed
-        except Exception as e:
-            self.console.print(f"[red]เกิดข้อผิดพลาดในการสแกน positions: {str(e)}[/red]")
-            return 0
-
-    def scan_market(self):
-        """สแกนตลาดเพื่อหาสัญญาณการเทรดและจัดการ positions"""
-        first_run = True
-        stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0, 'hold_signals': 0, 'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
-        while True:
-            try:
-                current_time = pd.Timestamp.now(tz='Asia/Bangkok')
-                if current_time.minute % 15 == 0:
-                    if current_time.minute == 0:
-                        first_run = True
-                    else:
-                        # ตรวจสอบ Positions ที่มีอยู่
-                        self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
-                        positions_closed = self.scan_positions()
-                        stats['positions_closed'] += positions_closed
-                        time.sleep(60)  # รอ 1 นาทีเพื่อไม่ให้สแกนบ่อยเกินไป
-                if current_time.minute == 0 or first_run:  # สแกนทุกชั่วโมง หรือครั้งแรกที่เริ่มโปรแกรม
-                    self.console.print(f"[blue]🔍 เริ่มสแกนตลาด ณ เวลา {current_time.strftime('%Y-%m-%d %H:%M:%S')}[/blue]")
-                    self.console.print(f"[blue]===========================================[/blue]")
-                    first_run = False
-                    scan_stats = {'contracts_scanned': 0, 'buy_signals': 0, 'sell_signals': 0, 'hold_signals': 0, 'long_opened': 0, 'short_opened': 0, 'positions_closed': 0}
-                   
-                    # ตรวจสอบ Positions ที่มีอยู่
-                    self.console.print(f"[blue]📊 ตรวจสอบ Positions ที่มีอยู่[/blue]")
-                    scan_stats['positions_closed'] = self.scan_positions()
-                   
-                    # ตรวจหาสัญญาณเทรดใหม่
-                    self.console.print(f"[blue]📊 ตรวจหาสัญญาณเทรดใหม่[/blue]")
-                    symbols = self.get_futures_contracts()
-                    for i, symbol in enumerate(symbols, 1):
-                        self.console.print(f"[cyan]▶ สแกนสัญญา ({i}/{len(symbols)}): {symbol}[/cyan]")
-                        df = self.get_candlesticks(symbol)
-                        if df.empty:
-                            self.console.print(f"[red]❌ ไม่สามารถดึงข้อมูลแท่งเทียนของ {symbol} ได้[/red]")
-                            continue
-                       
-                        trend_data = self.calculate_trend_signal(df)
-                        if not trend_data:
-                            self.console.print(f"[red]❌ ไม่สามารถคำนวณเทรนด์สำหรับ {symbol} ได้[/red]")
-                            continue
-                       
-                        signal = self.check_trading_signal(df, trend_data, symbol)
-                        if signal == "BUY":
-                            scan_stats['buy_signals'] += 1
-                            # ตรวจสอบ position ที่มีอยู่
-                            existing_position = self.check_existing_position(symbol)
-                           
-                            if existing_position:
-                                if existing_position['type'] == "LONG":
-                                    # มี LONG อยู่แล้ว ไม่ทำอะไร
-                                    self.console.print(f"[yellow]⚠️ มี LONG position อยู่แล้ว ไม่เปิดเพิ่ม[/yellow]")
-                                else:  # มี SHORT อยู่
-                                    self.console.print(f"[yellow]⚠️ มี SHORT position อยู่ แต่เราต้องการ LONG ตามสัญญาณ BUY[/yellow]")
-                                    self.console.print(f"[yellow]⚠️ เงื่อนไขไม่ได้ระบุให้ปิด SHORT เพื่อเปิด LONG[/yellow]")
-                            else:  # ไม่มี position
-                                self.console.print(f"[green]🆕 เปิด LONG position ตามสัญญาณ BUY[/green]")
-                                if self.create_order(symbol, True):  # true คือ LONG
-                                    scan_stats['long_opened'] += 1
-                       
-                        elif signal == "SELL":
-                            scan_stats['sell_signals'] += 1
-                            # ตรวจสอบ position ที่มีอยู่
-                            existing_position = self.check_existing_position(symbol)
-                           
-                            if existing_position:
-                                if existing_position['type'] == "SHORT":
-                                    # มี SHORT อยู่แล้ว ไม่ทำอะไร
-                                    self.console.print(f"[yellow]⚠️ มี SHORT position อยู่แล้ว ไม่เปิดเพิ่ม[/yellow]")
-                                else:  # มี LONG อยู่
-                                    self.console.print(f"[yellow]⚠️ มี LONG position อยู่ แต่เราต้องการ SHORT ตามสัญญาณ SELL[/yellow]")
-                                    self.console.print(f"[yellow]⚠️ เงื่อนไขไม่ได้ระบุให้ปิด LONG เพื่อเปิด SHORT[/yellow]")
-                            else:  # ไม่มี position
-                                self.console.print(f"[red]🆕 เปิด SHORT position ตามสัญญาณ SELL[/red]")
-                                if self.create_order(symbol, False):  # false คือ SHORT
-                                    scan_stats['short_opened'] += 1
-                        elif signal == "HOLD":
-                            scan_stats['hold_signals'] += 1
-                            self.console.print(f"[blue]   สัญญาณ HOLD: ไม่เข้าเงื่อนไขการเปิด position[/blue]")
-                        else:
-                            self.console.print(f"[red]   ไม่สามารถวิเคราะห์สัญญาณได้[/red]")
-                           
-                        scan_stats['contracts_scanned'] += 1
-                   
-                    # อัปเดตสถิติรวม
-                    for key in stats: stats[key] += scan_stats[key]
-                   
-                    # แสดงสรุปการสแกน
-                    self.console.print(f"[blue]===== สรุปการสแกนรอบนี้ =====[/blue]")
-                    self.console.print(f"[blue]📊 สัญญาที่สแกน: {scan_stats['contracts_scanned']}/{len(symbols)}[/blue]")
-                    self.console.print(f"[green]📈 สัญญาณ BUY: {scan_stats['buy_signals']}[/green]")
-                    self.console.print(f"[red]📉 สัญญาณ SELL: {scan_stats['sell_signals']}[/red]")
-                    self.console.print(f"[blue]🔄 สัญญาณ HOLD: {scan_stats['hold_signals']}[/blue]")
-                    self.console.print(f"[green]📈 เปิด LONG: {scan_stats['long_opened']}[/green]")
-                    self.console.print(f"[red]📉 เปิด SHORT: {scan_stats['short_opened']}[/red]")
-                    self.console.print(f"[yellow]🔄 ปิด Position: {scan_stats['positions_closed']}[/yellow]")
-                   
-                    # แสดงสถิติรวมทั้งหมด
-                    self.console.print(f"[blue]===== สถิติรวมทั้งหมด =====[/blue]")
-                    self.console.print(f"[blue]📊 สัญญาที่สแกนทั้งหมด: {stats['contracts_scanned']}[/blue]")
-                    self.console.print(f"[green]📈 สัญญาณ BUY ทั้งหมด: {stats['buy_signals']}[/green]")
-                    self.console.print(f"[red]📉 สัญญาณ SELL ทั้งหมด: {stats['sell_signals']}[/red]")
-                    self.console.print(f"[blue]🔄 สัญญาณ HOLD ทั้งหมด: {stats['hold_signals']}[/blue]")
-                    self.console.print(f"[green]📈 เปิด LONG ทั้งหมด: {stats['long_opened']}[/green]")
-                    self.console.print(f"[red]📉 เปิด SHORT ทั้งหมด: {stats['short_opened']}[/red]")
-                    self.console.print(f"[yellow]🔄 ปิด Position ทั้งหมด: {stats['positions_closed']}[/yellow]")
-                    self.console.print(f"[blue]===========================================[/blue]")
-                    time.sleep(30)
-                time.sleep(10)
-            except KeyboardInterrupt:
-                self.console.print("[yellow]โปรแกรมถูกหยุดโดยผู้ใช้[/yellow]")
-                break
-            except Exception as e:
-                self.console.print(f"[red]❌ เกิดข้อผิดพลาดในการสแกนตลาด: {str(e)}[/red]")
-                time.sleep(60)
-
-def main():
+def ensure_one_way_mode(um: UMFutures):
     try:
-        trader = BinanceEMATrader()
-        trader.console.print("[blue]เริ่มต้นระบบเทรดอัตโนมัติด้วย EMA Strategy บน Binance Futures...[/blue]")
-        trader.scan_market()
-    except KeyboardInterrupt:
-        print("\nโปรแกรมถูกหยุดโดยผู้ใช้")
+        mode = retry_call(um.get_position_mode)
+        if isinstance(mode, dict):
+            dual = bool(mode.get("dualSidePosition", False))
+            if dual:
+                retry_call(um.change_position_mode, dualSidePosition=False)
+                print("- Switched position mode to One-way")
     except Exception as e:
-        print(f"เกิดข้อผิดพลาดร้ายแรง: {str(e)}")
-        sys.exit(1)
+        # Non-fatal
+        print(f"! Could not verify/set position mode: {e}")
+
+
+def get_available_usdt(um: UMFutures) -> float:
+    bals = retry_call(um.balance)
+    if not isinstance(bals, list):
+        return 0.0
+    for b in bals:
+        if isinstance(b, dict) and b.get("asset") == "USDT":
+            try:
+                return float(b.get("availableBalance", b.get("balance", 0.0)))
+            except Exception:
+                try:
+                    return float(b.get("balance", 0.0))
+                except Exception:
+                    return 0.0
+    return 0.0
+
+
+def get_mark_price(um: UMFutures, symbol: str) -> float:
+    data = retry_call(um.mark_price, symbol=symbol)
+    try:
+        if isinstance(data, dict):
+            mp = data.get("markPrice", 0.0)
+            return float(mp if mp is not None else 0.0)
+    except Exception:
+        pass
+    # Fallback via ticker price if needed
+    ticker = retry_call(um.ticker_price, symbol=symbol)
+    if isinstance(ticker, dict):
+        return float(ticker.get("price", 0.0))
+    return 0.0
+
+
+def get_exchange_filters(um: UMFutures) -> Dict[str, Dict[str, Any]]:
+    info = retry_call(um.exchange_info)
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(info, dict):
+        return out
+    for s in info.get("symbols", []) or []:
+        sym = s.get("symbol")
+        filters_list = s.get("filters", []) or []
+        filt: Dict[str, Any] = {cast(str, f.get("filterType")): f for f in filters_list if isinstance(f, dict) and isinstance(f.get("filterType"), str)}
+        if isinstance(sym, str) and sym:
+            out[sym] = filt
+    return out
+
+
+def get_multi_timeframe_data(um: UMFutures, symbol: str, limit: int = 144) -> Dict[str, Dict[str, List[float]]]:
+    """Get OHLCV data for multiple timeframes (1h for big picture, 15m for entry points)"""
+    timeframes = ["1h", "15m"]
+    result = {}
+    
+    for tf in timeframes:
+        opens, highs, lows, closes, volumes = get_klines_data(um, symbol, tf, limit)
+        result[tf] = {
+            "opens": opens,
+            "highs": highs, 
+            "lows": lows,
+            "closes": closes,
+            "volumes": volumes
+        }
+    
+    return result
+
+
+def get_klines_data(um: UMFutures, symbol: str, interval: str, limit: int = 144) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
+    """Get OHLCV data from klines. Returns (opens, highs, lows, closes, volumes)"""
+    klines = retry_call(um.klines, symbol=symbol, interval=interval, limit=limit)
+    if not isinstance(klines, list):
+        return ([], [], [], [], [])
+    
+    opens, highs, lows, closes, volumes = [], [], [], [], []
+    for k in klines:
+        if isinstance(k, list) and len(k) >= 6:
+            try:
+                opens.append(float(k[1]))    # open
+                highs.append(float(k[2]))    # high
+                lows.append(float(k[3]))     # low
+                closes.append(float(k[4]))   # close
+                volumes.append(float(k[5]))  # volume
+            except (ValueError, TypeError):
+                continue
+    return (opens, highs, lows, closes, volumes)
+
+
+def load_prompt_template(filename: str) -> str:
+    """Load prompt template from file"""
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print(f"⚠️ Prompt file {filename} not found, using default template")
+        return ""
+    except Exception as e:
+        print(f"⚠️ Error loading prompt file {filename}: {e}")
+        return ""
+
+
+def decide_signals_via_deepseek(symbol: str, timeframe_data: Dict[str, Dict[str, List[float]]], api_key: str, current_position: float = 0.0, pnl: float = 0.0) -> Tuple[bool, bool, bool]:
+    """Call DeepSeek to decide LONG/SHORT/CLOSE/HOLD from Thai prompt using multi-timeframe analysis.
+    Returns (buy_sig, sell_sig, hold_sig). On error, returns (False, False, False).
+    """
+    # Guard: need enough data - send all to AI for analysis
+    if not timeframe_data or "15m" not in timeframe_data or len(timeframe_data["15m"]["closes"]) < 20:
+        print("! Not enough price data for AI analysis")
+        return (False, False, False)
+
+    current_price = timeframe_data["15m"]["closes"][-1]
+
+    # สร้าง multi-timeframe OHLCV data text
+    ohlcv_data = ""
+    
+    # 1h data for big picture (ภาพใหญ่)
+    if "1h" in timeframe_data:
+        ohlcv_data += "=== 1H TIMEFRAME (ภาพใหญ่) ===\n"
+        h1_data = timeframe_data["1h"]
+        h1_opens = h1_data["opens"]
+        h1_highs = h1_data["highs"] 
+        h1_lows = h1_data["lows"]
+        h1_closes = h1_data["closes"]
+        h1_volumes = h1_data["volumes"]
+        
+        min_len = min(len(h1_opens), len(h1_highs), len(h1_lows), len(h1_closes), len(h1_volumes))
+        for i in range(min_len):
+            ohlcv_data += f"H{i+1}[{h1_opens[i]},{h1_highs[i]},{h1_lows[i]},{h1_closes[i]}]V{int(h1_volumes[i])}"
+            if (i + 1) % 10 == 0:
+                ohlcv_data += "\n"
+            else:
+                ohlcv_data += " "
+        ohlcv_data += "\n\n"
+    
+    # 15m data for entry points (จุดเข้า)
+    ohlcv_data += "=== 15M TIMEFRAME (จุดเข้า) ===\n"
+    if "15m" in timeframe_data:
+        m15_data = timeframe_data["15m"]
+        m15_opens = m15_data["opens"]
+        m15_highs = m15_data["highs"]
+        m15_lows = m15_data["lows"]
+        m15_closes = m15_data["closes"]
+        m15_volumes = m15_data["volumes"]
+        
+        min_len = min(len(m15_opens), len(m15_highs), len(m15_lows), len(m15_closes), len(m15_volumes))
+        for i in range(min_len):
+            ohlcv_data += f"T{i+1}[{m15_opens[i]},{m15_highs[i]},{m15_lows[i]},{m15_closes[i]}]V{int(m15_volumes[i])}"
+            if (i + 1) % 10 == 0:
+                ohlcv_data += "\n"
+            else:
+                ohlcv_data += " "
+    
+    # เลือก prompt template ตามสถานการณ์
+    if abs(current_position) > 1e-12:
+        # CASE 1: มี position อยู่แล้ว - ใช้ prompt_existing_position.txt
+        template = load_prompt_template("prompt_existing_position.txt")
+        if not template:
+            # Fallback to default
+            template = """วิเคราะห์ {symbol} multi-timeframe (1h ภาพใหญ่, 15m จุดเข้า)
+ราคาปัจจุบัน: ${current_price}
+PNL ปัจจุบัน: {pnl} USDT ({pnl_status})
+
+{ohlcv_data}
+
+รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h, T{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 15m
+มีสถานะเปิดอยู่: {position_type} ขนาด {position_size}
+ควรปิด (CLOSE) หรือถือ (HOLD) ต่อ?
+
+กรุณาวิเคราะห์ทั้ง 1h (ภาพใหญ่) และ 15m (จุดเข้า) และตอบในรูปแบบ JSON เท่านั้น:
+
+{{
+  "action": "CLOSE หรือ HOLD",
+  "confidence": 1-10,
+  "reasoning": "เหตุผลการตัดสินใจรวมถึงสถานะ PNL 2-3 บรรทัด",
+  "patterns": ["รายชื่อ pattern ที่พบ"]
+}}"""
+
+        pnl_status = "กำไร" if pnl > 0 else "ขาดทุน" if pnl < 0 else "เท่าทุน"
+        position_type = "LONG" if current_position > 0 else "SHORT"
+        
+        prompt = template.format(
+            symbol=symbol,
+            current_price=f"{current_price:.2f}",
+            ohlcv_data=ohlcv_data,
+            position_type=position_type,
+            position_size=f"{abs(current_position):.6f}",
+            pnl=f"{pnl:.2f}",
+            pnl_status=pnl_status
+        )
+    else:
+        # CASE 2: ยังไม่มี position - ใช้ prompt_new_position.txt
+        template = load_prompt_template("prompt_new_position.txt")
+        if not template:
+            # Fallback to default
+            template = """วิเคราะห์ {symbol} multi-timeframe (1h ภาพใหญ่, 15m จุดเข้า)
+ราคาปัจจุบัน: ${current_price}
+
+{ohlcv_data}
+
+รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h, T{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 15m
+ยังไม่มีสถานะ ควรเปิด LONG, SHORT หรือ HOLD?
+
+กรุณาวิเคราะห์ทั้ง 1h (ภาพใหญ่) และ 15m (จุดเข้า) และตอบในรูปแบบ JSON เท่านั้น:
+
+{{
+  "action": "LONG หรือ SHORT หรือ HOLD",
+  "confidence": 1-10,
+  "reasoning": "เหตุผลการตัดสินใจ 2-3 บรรทัด",
+  "patterns": ["รายชื่อ pattern ที่พบ"]
+}}"""
+        
+        prompt = template.format(
+            symbol=symbol,
+            current_price=f"{current_price:.2f}",
+            ohlcv_data=ohlcv_data
+        )
+
+    try:
+        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+        print(f"🔗 Connecting to DeepSeek API...")
+        
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "คุณคือผู้เชี่ยวชาญด้านการเทรดคริปโตฯ ประสบการณ์มากกว่า 10 ปี วิเคราะห์ราคา แนวโน้ม และความเสี่ยง เพื่อให้คำแนะนำที่ชัดเจน ตอบในรูปแบบ JSON เท่านั้น"},
+                {"role": "user", "content": prompt},
+            ],
+            stream=False,
+            temperature=0.3,
+            max_tokens=1000,  # เพิ่ม tokens เพื่อให้ AI ตอบได้ครบ
+            top_p=0.8,
+        )
+        
+        print(f"✅ DeepSeek Response received")
+
+        print(f"\n{'='*60}")
+        print(f"🤖 DEEPSEEK DETAILED ANALYSIS for {symbol}")
+        print(f"{'='*60}")
+        print(f"📤 PROMPT SENT TO AI (TH):")
+        print(f"{prompt}")
+        print(f"📥 AI RESPONSE:")
+
+        content = ""
+        reasoning_content = ""
+        choices = getattr(response, "choices", [])
+        if choices:
+            message = getattr(choices[0], "message", None)
+            if message:
+                msg_content = getattr(message, "content", "") or ""
+                reasoning_content = getattr(message, "reasoning_content", "") or ""
+                
+                # ใช้ msg_content หรือ reasoning_content ไหนก็ได้ที่มีเนื้อหา
+                if msg_content.strip():
+                    content = msg_content.strip()
+                elif reasoning_content.strip():
+                    content = reasoning_content.strip()
+                    print("🔄 Using reasoning_content as main content")
+                
+                # แสดงทั้ง thinking และ response ตามข้อกำหนด
+                if reasoning_content:
+                    print("💭 AI THINKING/REASONING:")
+                    print(f"{reasoning_content}")
+                if msg_content:
+                    print(f"\n📝 AI FINAL ANSWER:")
+                    print(f"{msg_content}")
+                elif content and content != reasoning_content:
+                    print(f"\n📝 AI RESPONSE:")
+                    print(f"{content}")
+        
+        # ตรวจสอบ response structure เพิ่มเติมถ้าไม่เจอ content
+        if not content:
+            print("🔍 DEBUG - Searching for content in alternative locations...")
+            if hasattr(response, '__dict__'):
+                available_attrs = [attr for attr in dir(response) if not attr.startswith('_')]
+                print(f"🔍 Available attributes: {available_attrs}")
+                
+                # ลองดึงจาก attributes อื่นๆ
+                for attr in ['text', 'content', 'data', 'result']:
+                    if hasattr(response, attr):
+                        alt_content = str(getattr(response, attr, '')).strip()
+                        if alt_content:
+                            content = alt_content
+                            print(f"✅ Found content in response.{attr}")
+                            break
+                
+        if not content:
+            print("❌ No response content from DeepSeek - trying alternative extraction...")
+            print(f"🔍 Response type: {type(response)}")
+            print(f"🔍 Response: {str(response)[:300]}...")
+            return (False, False, False)
+        print(f"💲 Current Price: ${current_price:.4f}")
+        if abs(current_position) > 1e-12:
+            pos_type = "LONG" if current_position > 0 else "SHORT"
+            print(f"🏦 Current Position: {pos_type} {abs(current_position):.6f}")
+
+        final_action = "HOLD"
+        # Try JSON first if AI returned JSON-like text
+        try:
+            # ลองหา JSON content ที่อาจจะถูกแต่งด้วย markdown หรือ text อื่น
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                json_content = content[json_start:json_end]
+                parsed = json.loads(json_content)
+                action = str(parsed.get("action", "")).upper()
+                confidence = parsed.get("confidence", 0)
+                reasoning = parsed.get("reasoning", "")
+                patterns = parsed.get("patterns", [])
+                
+                print(f"🎯 JSON Parsed Successfully:")
+                print(f"   Action: {action}")
+                print(f"   Confidence: {confidence}/10")
+                print(f"   Reasoning: {reasoning}")
+                print(f"   Patterns: {patterns}")
+                
+                if action in ("LONG", "SHORT", "HOLD", "CLOSE"):
+                    final_action = action
+            else:
+                raise ValueError("No JSON found in response")
+                
+        except Exception as e:
+            print(f"⚠️ JSON parsing failed: {e}")
+            print("🔄 Falling back to text parsing...")
+            # Fallback to text parsing with Enhanced Signal Detection
+            text_lower = content.lower()
+            scores = {"CLOSE": 0, "HOLD": 0, "LONG": 0, "SHORT": 0}
+
+            # Enhanced Signal Detection Keywords (ตามข้อกำหนดใน command.md)
+            keywords = {
+                "LONG": ["long", "buy", "ซื้อ", "เปิดลอง", "bullish"],
+                "SHORT": ["short", "sell", "ขาย", "เปิดช็อต", "bearish"],
+                "HOLD": ["hold", "รอ", "ถือ", "คงสถานะ", "sideway"],
+                "CLOSE": ["close", "ปิด", "exit", "ทำกำไร", "ตัดขาดทุน"]
+            }
+
+            # ให้คะแนน +2 สำหรับแต่ละคำที่พบ
+            for action, terms in keywords.items():
+                for term in terms:
+                    if term in text_lower:
+                        scores[action] += 2
+
+            # เลือกสัญญาณที่ได้คะแนนสูงสุด
+            max_score = max(scores.values())
+            if max_score > 0:
+                # หาคีย์ที่มีคะแนนสูงสุด
+                for action, score in scores.items():
+                    if score == max_score:
+                        final_action = action
+                        break
+            else:
+                final_action = "HOLD"  # ค่าเริ่มต้น
+
+            # ปรับตรรกะสำหรับ position ที่มีอยู่
+            if abs(current_position) > 1e-12:
+                # มี position อยู่: เลือกระหว่าง CLOSE/HOLD
+                if final_action == "CLOSE":
+                    final_action = "CLOSE"
+                else:
+                    final_action = "HOLD"
+            # ไม่มี position: ใช้ final_action ตามที่ AI แนะนำ
+
+            print(f"🎯 Parsed Action: {final_action}")
+            print(f"📊 Signal Scores: {scores}")
+            print(f"{'='*60}\n")
+
+        # Map action to signals
+        if final_action == "HOLD" and abs(current_position) > 1e-12:
+            return (False, False, True)
+        if final_action == "CLOSE" and abs(current_position) > 1e-12:
+            return (False, True, False) if current_position > 0 else (True, False, False)
+        if final_action == "LONG":
+            return (True, False, False)
+        if final_action == "SHORT":
+            return (False, True, False)
+        return (False, False, False)
+
+    except TimeoutError as e:
+        print(f"⏰ DeepSeek API timeout: {e}")
+        print("🔄 You may want to try again later or check your internet connection")
+        return (False, False, False)
+    except ConnectionError as e:
+        print(f"🌐 DeepSeek connection error: {e}")
+        print("🔄 Please check your internet connection and API endpoint")
+        return (False, False, False)
+    except Exception as e:
+        print(f"❌ DeepSeek API error: {type(e).__name__}: {e}")
+        print(f"🔍 Full error details: {str(e)}")
+        return (False, False, False)
+
+
+def floor_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return value
+    precision = max(0, int(round(-math.log10(step))))
+    return math.floor(value / step) * step if precision == 0 else float(f"{math.floor(value / step) * step:.{precision}f}")
+
+
+def round_qty_for_symbol(symbol: str, qty: float, filters: Dict[str, Dict[str, Any]]) -> Optional[float]:
+    f = filters.get(symbol, {}) or {}
+    lot = f.get("LOT_SIZE")
+    if not isinstance(lot, dict):
+        return qty
+    step = float(lot.get("stepSize", 0.0001))
+    min_qty = float(lot.get("minQty", 0))
+    max_qty = float(lot.get("maxQty", 1e12))
+    qty2 = max(min(floor_to_step(qty, step), max_qty), min_qty)
+    if qty2 <= 0:
+        return None
+    return qty2
+
+
+def meets_notional(symbol: str, qty: float, price: float, filters: Dict[str, Dict[str, Any]]) -> bool:
+    f = filters.get(symbol, {}) or {}
+    notional = f.get("NOTIONAL") or f.get("MIN_NOTIONAL")
+    if not isinstance(notional, dict):
+        return True
+    min_notional = float(notional.get("notional", notional.get("minNotional", 0)))
+    return (qty * price) >= min_notional
+
+
+def current_position_amt(um: UMFutures, symbol: str) -> float:
+    pos = retry_call(um.get_position_risk, symbol=symbol)
+    # positionAmt string: positive for long, negative for short, 0 if flat
+    try:
+        if isinstance(pos, list):
+            for p in pos:
+                if p.get("symbol") == symbol:
+                    return float(p.get("positionAmt", 0) or 0)
+        elif isinstance(pos, dict):
+            return float(pos.get("positionAmt", 0) or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
+def get_position_pnl(um: UMFutures, symbol: str) -> float:
+    """ดึงค่า unrealized PNL ของ position"""
+    try:
+        pos = retry_call(um.get_position_risk, symbol=symbol)
+        if isinstance(pos, list):
+            for p in pos:
+                if p.get("symbol") == symbol:
+                    return float(p.get("unRealizedProfit", 0) or 0)
+        elif isinstance(pos, dict):
+            return float(pos.get("unRealizedProfit", 0) or 0)
+    except Exception as e:
+        print(f"! Error getting PNL for {symbol}: {e}")
+    return 0.0
+
+
+def close_position_if_any(um: UMFutures, symbol: str, qty: float):
+    amt = current_position_amt(um, symbol)
+    if abs(amt) < 1e-12:
+        return
+    side = "SELL" if amt > 0 else "BUY"  # opposite side to close
+    retry_call(
+        um.new_order,
+        symbol=symbol,
+        side=side,
+        type="MARKET",
+        quantity=abs(amt),
+        reduceOnly=True,
+        newOrderRespType="RESULT",
+    )
+    print(f"- Closed existing position {symbol} amt={amt}")
+
+
+def ensure_leverage(um: UMFutures, symbol: str, leverage: int):
+    try:
+        retry_call(um.change_leverage, symbol=symbol, leverage=leverage)
+    except Exception as e:
+        # Non-fatal if already set or restricted by bracket
+        print(f"! change_leverage failed for {symbol}: {e}")
+
+
+def ensure_isolated_margin(um: UMFutures, symbol: str):
+    try:
+        retry_call(um.change_margin_type, symbol=symbol, marginType="ISOLATED")
+        print(f"- Set {symbol} to ISOLATED margin")
+    except Exception as e:
+        # Non-fatal if already set or not supported
+        print(f"! change_margin_type failed for {symbol}: {e}")
+
+
+def place_market_order(um: UMFutures, symbol: str, side: str, qty: float) -> Dict[str, Any]:
+    res = retry_call(
+        um.new_order,
+        symbol=symbol,
+        side=side,
+        type="MARKET",
+        quantity=qty,
+        newOrderRespType="RESULT",
+    )
+    return res if isinstance(res, dict) else {}
+
+
+# --- Main bot loop -----------------------------------------------------------
+
+def run():
+    cfg = load_config()
+    um = UMFutures(key=cfg.api_key, secret=cfg.api_secret)
+
+    print("Binance Futures bot started")
+    print(json.dumps({
+        "symbols": cfg.symbols,
+        "timeframe": cfg.timeframe,
+        "min_balance_usdt": cfg.min_balance_usdt,
+        "leverage": cfg.leverage,
+        "margin_per_trade_usdt": cfg.margin_per_trade_usdt,
+        "sleep_minutes": cfg.sleep_minutes_between_cycles,
+        "force_buy": cfg.force_buy,
+        "force_sell": cfg.force_sell,
+        "deepseek_enabled": bool(cfg.deepseek_api_key),
+    }, indent=2))
+
+    ensure_one_way_mode(um)
+    filters = get_exchange_filters(um)
+    
+    first_run = True
+    while True:
+        try:
+            # LOOP1: Time sync - align to minute (0, 15, 30, 45) if not first run
+            if not first_run:
+                now = datetime.now()
+                if now.minute % 15 != 0:
+                    print("Minute not at 0/15/30/45; sleeping 30s before LOOP1 checks…")
+                    time.sleep(30)
+                    continue
+                    
+            first_run = False
+
+            # LOOP2: ดึง POSITION ที่เปิดอยู่ทั้งหมด และตัดสินใจปิดหรือถือไว้
+            print("=== LOOP2: Checking existing positions ===")
+            positions_to_close = []
+            
+            for symbol in cfg.symbols:
+                try:
+                    current_pos = current_position_amt(um, symbol)
+                    if abs(current_pos) > 1e-12:  # มี position อยู่
+                        print(f"Found existing position: {symbol} amt={current_pos:.6f}")
+                        
+                        # คำนวณ PNL ปัจจุบัน
+                        current_pnl = get_position_pnl(um, symbol)
+                        
+                        # ดึงข้อมูลย้อนหลัง multi-timeframe (144 timeframes)
+                        timeframe_data = get_multi_timeframe_data(um, symbol, limit=144)
+                        
+                        # ถาม AI ว่าควรปิดหรือถือไว้
+                        if cfg.deepseek_api_key:
+                            close_buy, close_sell, hold_sig = decide_signals_via_deepseek(symbol, timeframe_data, cfg.deepseek_api_key, current_pos, current_pnl)
+                            
+                            if close_buy or close_sell:
+                                print(f"- AI recommends CLOSING position {symbol} (PNL: {current_pnl:.2f})")
+                                positions_to_close.append((symbol, current_pos))
+                            elif hold_sig:
+                                print(f"- AI recommends HOLDING position {symbol} (PNL: {current_pnl:.2f})")
+                        else:
+                            print(f"! No DeepSeek config - cannot analyze position {symbol}")
+                            
+                except Exception as e:
+                    print(f"! Error checking position {symbol}: {e}")
+                    
+            # ทำการปิด positions ตาม AI ที่แนะนำ
+            for symbol, pos_amt in positions_to_close:
+                try:
+                    close_position_if_any(um, symbol, abs(pos_amt))
+                    print(f"- Closed position {symbol} amt={pos_amt}")
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"! Error closing position {symbol}: {e}")
+
+            # LOOP3: ตรวจสอบเหรียญที่ไม่มี position และตัดสินใจเปิดใหม่
+            print("=== LOOP3: Checking coins for new positions ===")
+            
+            # ดึงยอดคงเหลือ
+            avail = get_available_usdt(um)
+            print(f"Available USDT: {avail:.2f}")
+            if avail < cfg.min_balance_usdt:
+                print("- Balance below threshold; waiting 1 minute before LOOP1")
+                time.sleep(60)
+                continue
+            
+            for symbol in cfg.symbols:
+                try:
+                    # ดึงมาทีละ 1 เหรียญ ไม่เอาเหรียญที่มี POSITION อยู่
+                    current_pos = current_position_amt(um, symbol)
+                    if abs(current_pos) > 1e-12:
+                        print(f"- Skipping {symbol} (has existing position)")
+                        continue
+                    
+                    # ถาม AI ว่าควรเปิด POSITION ใหม่หรือไม่
+                    if cfg.force_buy and cfg.force_sell:
+                        buy_sig, sell_sig = True, True
+                        print(f"{symbol} signals: buy={buy_sig} sell={sell_sig} (FORCED)")
+                    elif cfg.force_buy:
+                        buy_sig, sell_sig = True, False
+                        print(f"{symbol} signals: buy={buy_sig} sell={sell_sig} (FORCED BUY)")
+                    elif cfg.force_sell:
+                        buy_sig, sell_sig = False, True
+                        print(f"{symbol} signals: buy={buy_sig} sell={sell_sig} (FORCED SELL)")
+                    else:
+                        # ดึงข้อมูลย้อนหลัง multi-timeframe (144 timeframes)
+                        timeframe_data = get_multi_timeframe_data(um, symbol, limit=144)
+                        
+                        # ถาม AI สำหรับ position ใหม่
+                        if cfg.deepseek_api_key:
+                            buy_sig, sell_sig, _ = decide_signals_via_deepseek(symbol, timeframe_data, cfg.deepseek_api_key, 0.0, 0.0)
+                            print(f"{symbol} new position signals: buy={buy_sig} sell={sell_sig} via DeepSeek")
+                        else:
+                            print(f"! No DeepSeek config found - no signals for {symbol}")
+                            buy_sig, sell_sig = False, False
+
+                    if not (buy_sig or sell_sig):
+                        continue
+
+                    # OPEN ORDER
+                    mark = get_mark_price(um, symbol)
+                    notional = cfg.margin_per_trade_usdt * cfg.leverage
+                    raw_qty = notional / mark
+                    qty = round_qty_for_symbol(symbol, raw_qty, filters)
+                    
+                    if qty is None or qty <= 0:
+                        print(f"! Skipped {symbol}: qty invalid after rounding")
+                        continue
+                        
+                    if not meets_notional(symbol, qty, mark, filters):
+                        print(f"! Skipped {symbol}: below min notional (qty*price={qty*mark:.2f})")
+                        continue
+
+                    # Execute OPEN ORDER steps
+                    close_position_if_any(um, symbol, qty)
+                    ensure_isolated_margin(um, symbol)
+                    ensure_leverage(um, symbol, cfg.leverage)
+
+                    side = "BUY" if buy_sig else "SELL"
+                    order = place_market_order(um, symbol, side, qty)
+                    order_price = order.get("avgPrice", mark)
+                    
+                    print(f"- Placed {side} {symbol} qty={qty} -> status={order.get('status')} avg={order_price}")
+                    print(json.dumps({
+                        "symbol": symbol,
+                        "side": "LONG" if side == "BUY" else "SHORT", 
+                        "price": str(order_price)
+                    }))
+
+                    time.sleep(1)
+                    
+                except Exception as e:
+                    print(f"! Error processing {symbol}: {e}")
+                    time.sleep(1)
+            
+            print("=== Cycle complete - waiting 1 minute before LOOP1 ===")
+            time.sleep(60)
+            
+        except Exception as e:
+            print(f"! Main loop error: {e}")
+            time.sleep(5)
+
 
 if __name__ == "__main__":
-    main()
+    run()
