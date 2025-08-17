@@ -9,7 +9,6 @@ Automated Binance Futures trading bot powered by DeepSeek AI for intelligent mar
 - **Enhanced Signal Detection System** for parsing Thai/English AI responses
 - **Dual content extraction** supporting both `message.content` and `message.reasoning_content`
 - **Compact OHLCV format** for token efficiency (144 timeframes = 36 hours)
-- **Multi-coin support**: BTCUSDT, ETHUSDT, BNBUSDT, XRPUSDT, DOGEUSDT, LTCUSDT
 - **Automated position management** with 5x leverage
 - **Continuous loop operation** aligned to 15-minute intervals
 

@@ -1,31 +1,60 @@
-import os
-import time
-import math
 import json
-from datetime import datetime
+import math
+import os
+import random
+import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any, cast
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from binance.um_futures import UMFutures
 from dotenv import load_dotenv
 from openai import OpenAI
 
 
-# --- Config and helpers -----------------------------------------------------
+def countdown_sleep(total_seconds: int, target_hour: int, reason: str = "Waiting"):
+    """
+    🕐 Real-time countdown display with live updates every second
+    Shows dynamic countdown timer that refreshes every second until target time
+    """
+    if total_seconds <= 0:
+        print("⏰ Already past the target time, continuing immediately")
+        time.sleep(1)
+        return
+    
+    print(f"\n{reason} until {target_hour:02d}:00:00")
+    print("=" * 50)
+    
+    for remaining in range(int(total_seconds), 0, -1):
+        minutes = remaining // 60
+        seconds = remaining % 60
+        hours = minutes // 60
+        minutes = minutes % 60
+        
+        if hours > 0:
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            time_str = f"{minutes:02d}:{seconds:02d}"
+            
+        print(f"\r⏰ {reason}: {time_str} remaining...", end="", flush=True)
+        time.sleep(1)
+    
+    print(f"\r⏰ {reason}: 00:00 - Time's up! Continuing...{' ' * 20}")
+    print("=" * 50)
 
-SYMBOLS_DEFAULT = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "LTCUSDT"]
+
+# --- Config and helpers -----------------------------------------------------
 
 
 @dataclass
 class Config:
     api_key: str
     api_secret: str
-    symbols: List[str]
     timeframe: str
     min_balance_usdt: float
     leverage: int
     margin_per_trade_usdt: float
-    sleep_minutes_between_cycles: int
+    min_volume_usdt: float
     force_buy: bool
     force_sell: bool
     deepseek_api_key: Optional[str]
@@ -39,18 +68,14 @@ def load_config() -> Config:
     if not api_key or not api_secret:
         raise RuntimeError("Missing BINANCE_API_KEY or BINANCE_SECRET_KEY in .env")
 
-    symbols_env = os.getenv("SYMBOLS")
-    symbols = [s.strip().upper() for s in symbols_env.split(",")] if symbols_env else SYMBOLS_DEFAULT
-
     return Config(
         api_key=api_key,
         api_secret=api_secret,
-        symbols=symbols,
-        timeframe=os.getenv("TIMEFRAME", "15m"),
+        timeframe=os.getenv("TIMEFRAME", "1h"),
         min_balance_usdt=float(os.getenv("MIN_BALANCE_USDT", "100")),
         leverage=int(os.getenv("LEVERAGE", "5")),
         margin_per_trade_usdt=float(os.getenv("MARGIN_PER_TRADE_USDT", "100")),
-        sleep_minutes_between_cycles=int(os.getenv("SLEEP_MINUTES", "15")),
+        min_volume_usdt=float(os.getenv("MIN_VOLUME_USDT", "10000000")),
         force_buy=os.getenv("FORCE_BUY", "false").lower() in ("1", "true", "yes"),
         force_sell=os.getenv("FORCE_SELL", "false").lower() in ("1", "true", "yes"),
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "sk-f90e70eaf46c4190925a787e94cafb4d").strip() or None,
@@ -131,25 +156,76 @@ def get_exchange_filters(um: UMFutures) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def get_multi_timeframe_data(um: UMFutures, symbol: str, limit: int = 144) -> Dict[str, Dict[str, List[float]]]:
-    """Get OHLCV data for multiple timeframes (1h for big picture, 15m for entry points)"""
-    timeframes = ["1h", "15m"]
-    result = {}
-    
-    for tf in timeframes:
-        opens, highs, lows, closes, volumes = get_klines_data(um, symbol, tf, limit)
-        result[tf] = {
-            "opens": opens,
-            "highs": highs, 
-            "lows": lows,
-            "closes": closes,
-            "volumes": volumes
-        }
-    
-    return result
+def get_high_volume_symbols(um: UMFutures, min_volume_usdt: float = 10_000_000) -> List[str]:
+    """
+    🔍 Dynamic Coin Discovery: ค้นหาเหรียญใน Binance Futures ที่มี 24h volume > $10,000,000
+    🎲 Random Shuffling: สับไพ่เหรียญที่ผ่านเกณฑ์เพื่อกระจายโอกาส
+    """
+    try:
+        # ดึงข้อมูล 24h ticker statistics
+        tickers = retry_call(um.ticker_24hr_price_change)
+        if not isinstance(tickers, list):
+            print("! Failed to get 24h ticker data, no symbols available")
+            return []
+        
+        high_volume_symbols = []
+        
+        for ticker in tickers:
+            if not isinstance(ticker, dict):
+                continue
+                
+            symbol = ticker.get("symbol", "")
+            quote_volume = ticker.get("quoteVolume", "0")
+            
+            try:
+                # ตรวจสอบว่าเป็น USDT pair และ volume สูงกว่าเกณฑ์
+                if (symbol.endswith("USDT") and 
+                    float(quote_volume) >= min_volume_usdt and
+                    symbol not in ["USDCUSDT", "BUSDUSDT", "TUSDUSDT"]):  # หลีกเลี่ยง stablecoin pairs
+                    
+                    high_volume_symbols.append(symbol)
+                    
+            except (ValueError, TypeError):
+                continue
+        
+        # เรียงลำดับตาม volume (สูงไปต่ำ)
+        high_volume_symbols.sort(key=lambda x: float(
+            next((t.get("quoteVolume", "0") for t in tickers if t.get("symbol") == x), "0")
+        ), reverse=True)
+        
+        # 🎲 สับไพ่เหรียญที่ผ่านเกณฑ์ - เก็บ top 50 แล้วสับไพ่
+        if len(high_volume_symbols) > 50:
+            top_symbols = high_volume_symbols[:50]
+        else:
+            top_symbols = high_volume_symbols
+            
+        random.shuffle(top_symbols)
+        
+        print(f"🔍 Found {len(high_volume_symbols)} symbols with volume > ${min_volume_usdt:,.0f}")
+        print(f"🎲 Shuffled top {len(top_symbols)} symbols for trading")
+        
+        # ส่งคืน symbols ถ้าเจอ
+        return top_symbols
+        
+    except Exception as e:
+        print(f"! Error in get_high_volume_symbols: {e}")
+        print("! No symbols available")
+        return []
 
 
-def get_klines_data(um: UMFutures, symbol: str, interval: str, limit: int = 144) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
+def get_1h_data(um: UMFutures, symbol: str, limit: int = 288) -> Dict[str, List[float]]:
+    """Get OHLCV data for 1h timeframe only"""
+    opens, highs, lows, closes, volumes = get_klines_data(um, symbol, "1h", limit)
+    return {
+        "opens": opens,
+        "highs": highs, 
+        "lows": lows,
+        "closes": closes,
+        "volumes": volumes
+    }
+
+
+def get_klines_data(um: UMFutures, symbol: str, interval: str, limit: int = 288) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
     """Get OHLCV data from klines. Returns (opens, highs, lows, closes, volumes)"""
     klines = retry_call(um.klines, symbol=symbol, interval=interval, limit=limit)
     if not isinstance(klines, list):
@@ -182,81 +258,47 @@ def load_prompt_template(filename: str) -> str:
         return ""
 
 
-def decide_signals_via_deepseek(symbol: str, timeframe_data: Dict[str, Dict[str, List[float]]], api_key: str, current_position: float = 0.0, pnl: float = 0.0) -> Tuple[bool, bool, bool]:
-    """Call DeepSeek to decide LONG/SHORT/CLOSE/HOLD from Thai prompt using multi-timeframe analysis.
+def decide_signals_via_deepseek(symbol: str, data_1h: Dict[str, List[float]], api_key: str, current_position: float = 0.0, pnl: float = 0.0) -> Tuple[bool, bool, bool]:
+    """Call DeepSeek to decide LONG/SHORT/CLOSE/HOLD from Thai prompt using 1h analysis.
     Returns (buy_sig, sell_sig, hold_sig). On error, returns (False, False, False).
     """
     # Guard: need enough data - send all to AI for analysis
-    if not timeframe_data or "15m" not in timeframe_data or len(timeframe_data["15m"]["closes"]) < 20:
+    if not data_1h or len(data_1h.get("closes", [])) < 20:
         print("! Not enough price data for AI analysis")
         return (False, False, False)
 
-    current_price = timeframe_data["15m"]["closes"][-1]
+    current_price = data_1h["closes"][-1]
 
-    # สร้าง multi-timeframe OHLCV data text
+    # สร้าง 1h OHLCV data text
     ohlcv_data = ""
     
-    # 1h data for big picture (ภาพใหญ่)
-    if "1h" in timeframe_data:
-        ohlcv_data += "=== 1H TIMEFRAME (ภาพใหญ่) ===\n"
-        h1_data = timeframe_data["1h"]
-        h1_opens = h1_data["opens"]
-        h1_highs = h1_data["highs"] 
-        h1_lows = h1_data["lows"]
-        h1_closes = h1_data["closes"]
-        h1_volumes = h1_data["volumes"]
-        
-        min_len = min(len(h1_opens), len(h1_highs), len(h1_lows), len(h1_closes), len(h1_volumes))
-        for i in range(min_len):
-            ohlcv_data += f"H{i+1}[{h1_opens[i]},{h1_highs[i]},{h1_lows[i]},{h1_closes[i]}]V{int(h1_volumes[i])}"
-            if (i + 1) % 10 == 0:
-                ohlcv_data += "\n"
-            else:
-                ohlcv_data += " "
-        ohlcv_data += "\n\n"
+    # 1h data only
+    ohlcv_data += "=== 1H TIMEFRAME ===\n"
+    h1_opens = data_1h["opens"]
+    h1_highs = data_1h["highs"] 
+    h1_lows = data_1h["lows"]
+    h1_closes = data_1h["closes"]
+    h1_volumes = data_1h["volumes"]
     
-    # 15m data for entry points (จุดเข้า)
-    ohlcv_data += "=== 15M TIMEFRAME (จุดเข้า) ===\n"
-    if "15m" in timeframe_data:
-        m15_data = timeframe_data["15m"]
-        m15_opens = m15_data["opens"]
-        m15_highs = m15_data["highs"]
-        m15_lows = m15_data["lows"]
-        m15_closes = m15_data["closes"]
-        m15_volumes = m15_data["volumes"]
-        
-        min_len = min(len(m15_opens), len(m15_highs), len(m15_lows), len(m15_closes), len(m15_volumes))
-        for i in range(min_len):
-            ohlcv_data += f"T{i+1}[{m15_opens[i]},{m15_highs[i]},{m15_lows[i]},{m15_closes[i]}]V{int(m15_volumes[i])}"
-            if (i + 1) % 10 == 0:
-                ohlcv_data += "\n"
-            else:
-                ohlcv_data += " "
+    min_len = min(len(h1_opens), len(h1_highs), len(h1_lows), len(h1_closes), len(h1_volumes))
+    for i in range(min_len):
+        ohlcv_data += f"H{i+1}[{h1_opens[i]},{h1_highs[i]},{h1_lows[i]},{h1_closes[i]}]V{int(h1_volumes[i])}"
+        if (i + 1) % 10 == 0:
+            ohlcv_data += "\n"
+        else:
+            ohlcv_data += " "
+    ohlcv_data += "\n\n"
     
     # เลือก prompt template ตามสถานการณ์
     if abs(current_position) > 1e-12:
         # CASE 1: มี position อยู่แล้ว - ใช้ prompt_existing_position.txt
         template = load_prompt_template("prompt_existing_position.txt")
         if not template:
-            # Fallback to default
-            template = """วิเคราะห์ {symbol} multi-timeframe (1h ภาพใหญ่, 15m จุดเข้า)
-ราคาปัจจุบัน: ${current_price}
-PNL ปัจจุบัน: {pnl} USDT ({pnl_status})
-
-{ohlcv_data}
-
-รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h, T{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 15m
-มีสถานะเปิดอยู่: {position_type} ขนาด {position_size}
-ควรปิด (CLOSE) หรือถือ (HOLD) ต่อ?
-
-กรุณาวิเคราะห์ทั้ง 1h (ภาพใหญ่) และ 15m (จุดเข้า) และตอบในรูปแบบ JSON เท่านั้น:
-
-{{
-  "action": "CLOSE หรือ HOLD",
-  "confidence": 1-10,
-  "reasoning": "เหตุผลการตัดสินใจรวมถึงสถานะ PNL 2-3 บรรทัด",
-  "patterns": ["รายชื่อ pattern ที่พบ"]
-}}"""
+            # ถ้าไม่มี .txt ให้หยุดระบบ
+            print("❌ CRITICAL ERROR: prompt_existing_position.txt not found!")
+            print("🛑 System cannot continue without proper AI prompt templates")
+            print("📁 Please ensure prompt_existing_position.txt exists in the project directory")
+            raise SystemExit("Missing required prompt template file: prompt_existing_position.txt")
 
         pnl_status = "กำไร" if pnl > 0 else "ขาดทุน" if pnl < 0 else "เท่าทุน"
         position_type = "LONG" if current_position > 0 else "SHORT"
@@ -274,23 +316,11 @@ PNL ปัจจุบัน: {pnl} USDT ({pnl_status})
         # CASE 2: ยังไม่มี position - ใช้ prompt_new_position.txt
         template = load_prompt_template("prompt_new_position.txt")
         if not template:
-            # Fallback to default
-            template = """วิเคราะห์ {symbol} multi-timeframe (1h ภาพใหญ่, 15m จุดเข้า)
-ราคาปัจจุบัน: ${current_price}
-
-{ohlcv_data}
-
-รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h, T{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 15m
-ยังไม่มีสถานะ ควรเปิด LONG, SHORT หรือ HOLD?
-
-กรุณาวิเคราะห์ทั้ง 1h (ภาพใหญ่) และ 15m (จุดเข้า) และตอบในรูปแบบ JSON เท่านั้น:
-
-{{
-  "action": "LONG หรือ SHORT หรือ HOLD",
-  "confidence": 1-10,
-  "reasoning": "เหตุผลการตัดสินใจ 2-3 บรรทัด",
-  "patterns": ["รายชื่อ pattern ที่พบ"]
-}}"""
+            # ถ้าไม่มี .txt ให้หยุดระบบ
+            print("❌ CRITICAL ERROR: prompt_new_position.txt not found!")
+            print("🛑 System cannot continue without proper AI prompt templates")
+            print("📁 Please ensure prompt_new_position.txt exists in the project directory")
+            raise SystemExit("Missing required prompt template file: prompt_new_position.txt")
         
         prompt = template.format(
             symbol=symbol,
@@ -585,12 +615,12 @@ def run():
 
     print("Binance Futures bot started")
     print(json.dumps({
-        "symbols": cfg.symbols,
         "timeframe": cfg.timeframe,
         "min_balance_usdt": cfg.min_balance_usdt,
         "leverage": cfg.leverage,
         "margin_per_trade_usdt": cfg.margin_per_trade_usdt,
-        "sleep_minutes": cfg.sleep_minutes_between_cycles,
+        "min_volume_usdt": cfg.min_volume_usdt,
+        "dynamic_coin_discovery": True,
         "force_buy": cfg.force_buy,
         "force_sell": cfg.force_sell,
         "deepseek_enabled": bool(cfg.deepseek_api_key),
@@ -602,11 +632,11 @@ def run():
     first_run = True
     while True:
         try:
-            # LOOP1: Time sync - align to minute (0, 15, 30, 45) if not first run
+            # LOOP1: Time sync - align to hour (minute 0) if not first run
             if not first_run:
                 now = datetime.now()
-                if now.minute % 15 != 0:
-                    print("Minute not at 0/15/30/45; sleeping 30s before LOOP1 checks…")
+                if now.minute != 0:
+                    print("Not at hour start (minute 0); sleeping 30s before LOOP1 checks…")
                     time.sleep(30)
                     continue
                     
@@ -616,32 +646,48 @@ def run():
             print("=== LOOP2: Checking existing positions ===")
             positions_to_close = []
             
-            for symbol in cfg.symbols:
-                try:
-                    current_pos = current_position_amt(um, symbol)
-                    if abs(current_pos) > 1e-12:  # มี position อยู่
-                        print(f"Found existing position: {symbol} amt={current_pos:.6f}")
-                        
-                        # คำนวณ PNL ปัจจุบัน
-                        current_pnl = get_position_pnl(um, symbol)
-                        
-                        # ดึงข้อมูลย้อนหลัง multi-timeframe (144 timeframes)
-                        timeframe_data = get_multi_timeframe_data(um, symbol, limit=144)
-                        
-                        # ถาม AI ว่าควรปิดหรือถือไว้
-                        if cfg.deepseek_api_key:
-                            close_buy, close_sell, hold_sig = decide_signals_via_deepseek(symbol, timeframe_data, cfg.deepseek_api_key, current_pos, current_pnl)
+            # ดึงรายการ positions ปัจจุบันจาก Binance
+            try:
+                all_positions = retry_call(um.get_position_risk)
+                active_symbols = []
+                
+                if isinstance(all_positions, list):
+                    for pos in all_positions:
+                        if isinstance(pos, dict):
+                            symbol = pos.get("symbol", "")
+                            pos_amt = float(pos.get("positionAmt", 0) or 0)
+                            if abs(pos_amt) > 1e-12:  # มี position อยู่
+                                active_symbols.append(symbol)
+                
+                for symbol in active_symbols:
+                    try:
+                        current_pos = current_position_amt(um, symbol)
+                        if abs(current_pos) > 1e-12:  # มี position อยู่
+                            print(f"Found existing position: {symbol} amt={current_pos:.6f}")
                             
-                            if close_buy or close_sell:
-                                print(f"- AI recommends CLOSING position {symbol} (PNL: {current_pnl:.2f})")
-                                positions_to_close.append((symbol, current_pos))
-                            elif hold_sig:
-                                print(f"- AI recommends HOLDING position {symbol} (PNL: {current_pnl:.2f})")
-                        else:
-                            print(f"! No DeepSeek config - cannot analyze position {symbol}")
+                            # คำนวณ PNL ปัจจุบัน
+                            current_pnl = get_position_pnl(um, symbol)
                             
-                except Exception as e:
-                    print(f"! Error checking position {symbol}: {e}")
+                            # ดึงข้อมูลย้อนหลัง 1h (288 bars)
+                            data_1h = get_1h_data(um, symbol, limit=288)
+                            
+                            # ถาม AI ว่าควรปิดหรือถือไว้
+                            if cfg.deepseek_api_key:
+                                close_buy, close_sell, hold_sig = decide_signals_via_deepseek(symbol, data_1h, cfg.deepseek_api_key, current_pos, current_pnl)
+                                
+                                if close_buy or close_sell:
+                                    print(f"- AI recommends CLOSING position {symbol} (PNL: {current_pnl:.2f})")
+                                    positions_to_close.append((symbol, current_pos))
+                                elif hold_sig:
+                                    print(f"- AI recommends HOLDING position {symbol} (PNL: {current_pnl:.2f})")
+                            else:
+                                print(f"! No DeepSeek config - cannot analyze position {symbol}")
+                                
+                    except Exception as e:
+                        print(f"! Error checking position {symbol}: {e}")
+                        
+            except Exception as e:
+                print(f"! Error getting positions: {e}")
                     
             # ทำการปิด positions ตาม AI ที่แนะนำ
             for symbol, pos_amt in positions_to_close:
@@ -659,11 +705,47 @@ def run():
             avail = get_available_usdt(um)
             print(f"Available USDT: {avail:.2f}")
             if avail < cfg.min_balance_usdt:
-                print("- Balance below threshold; waiting 1 minute before LOOP1")
-                time.sleep(60)
+                print("- Balance below threshold; waiting until next hour's first minute")
+                
+                # คำนวณเวลาที่ต้องรอให้ถึงนาทีแรกของชั่วโมงถัดไป
+                now = time.time()
+                current_time = time.localtime(now)
+                
+                # หาชั่วโมงถัดไป
+                next_hour = (current_time.tm_hour + 1) % 24
+                next_day = current_time.tm_mday
+                next_month = current_time.tm_mon
+                next_year = current_time.tm_year
+                
+                # ถ้าเป็น 23:xx จะเปลี่ยนเป็นวันถัดไป
+                if current_time.tm_hour == 23:
+                    import calendar
+                    days_in_month = calendar.monthrange(next_year, next_month)[1]
+                    if next_day == days_in_month:
+                        next_day = 1
+                        next_month += 1
+                        if next_month > 12:
+                            next_month = 1
+                            next_year += 1
+                    else:
+                        next_day += 1
+                
+                # สร้างเวลาเป้าหมาย (นาทีแรกของชั่วโมงถัดไป)
+                target_time = time.mktime((next_year, next_month, next_day, next_hour, 0, 0, 0, 0, -1))
+                wait_seconds = target_time - now
+                
+                if wait_seconds > 0:
+                    countdown_sleep(int(wait_seconds), next_hour, "💰 Insufficient balance")
+                else:
+                    print("⏰ Already past the target time, continuing immediately")
+                    time.sleep(1)
                 continue
             
-            for symbol in cfg.symbols:
+            # 🔍 Dynamic Coin Discovery: ค้นหาเหรียญที่มี 24h volume > $1,000,000
+            # 🎲 Random Shuffling: สับไพ่เหรียญที่ผ่านเกณฑ์เพื่อกระจายโอกาส
+            dynamic_symbols = get_high_volume_symbols(um, min_volume_usdt=cfg.min_volume_usdt)
+            
+            for symbol in dynamic_symbols:
                 try:
                     # ดึงมาทีละ 1 เหรียญ ไม่เอาเหรียญที่มี POSITION อยู่
                     current_pos = current_position_amt(um, symbol)
@@ -682,12 +764,12 @@ def run():
                         buy_sig, sell_sig = False, True
                         print(f"{symbol} signals: buy={buy_sig} sell={sell_sig} (FORCED SELL)")
                     else:
-                        # ดึงข้อมูลย้อนหลัง multi-timeframe (144 timeframes)
-                        timeframe_data = get_multi_timeframe_data(um, symbol, limit=144)
+                        # ดึงข้อมูลย้อนหลัง 1h (288 bars)
+                        data_1h = get_1h_data(um, symbol, limit=288)
                         
                         # ถาม AI สำหรับ position ใหม่
                         if cfg.deepseek_api_key:
-                            buy_sig, sell_sig, _ = decide_signals_via_deepseek(symbol, timeframe_data, cfg.deepseek_api_key, 0.0, 0.0)
+                            buy_sig, sell_sig, _ = decide_signals_via_deepseek(symbol, data_1h, cfg.deepseek_api_key, 0.0, 0.0)
                             print(f"{symbol} new position signals: buy={buy_sig} sell={sell_sig} via DeepSeek")
                         else:
                             print(f"! No DeepSeek config found - no signals for {symbol}")
@@ -732,8 +814,40 @@ def run():
                     print(f"! Error processing {symbol}: {e}")
                     time.sleep(1)
             
-            print("=== Cycle complete - waiting 1 minute before LOOP1 ===")
-            time.sleep(60)
+            print("=== Cycle complete - waiting until next hour's first minute ===")
+            
+            # คำนวณเวลาที่ต้องรอให้ถึงนาทีแรกของชั่วโมงถัดไป
+            now = time.time()
+            current_time = time.localtime(now)
+            
+            # หาชั่วโมงถัดไป
+            next_hour = (current_time.tm_hour + 1) % 24
+            next_day = current_time.tm_mday
+            next_month = current_time.tm_mon
+            next_year = current_time.tm_year
+            
+            # ถ้าเป็น 23:xx จะเปลี่ยนเป็นวันถัดไป
+            if current_time.tm_hour == 23:
+                import calendar
+                days_in_month = calendar.monthrange(next_year, next_month)[1]
+                if next_day == days_in_month:
+                    next_day = 1
+                    next_month += 1
+                    if next_month > 12:
+                        next_month = 1
+                        next_year += 1
+                else:
+                    next_day += 1
+            
+            # สร้างเวลาเป้าหมาย (นาทีแรกของชั่วโมงถัดไป)
+            target_time = time.mktime((next_year, next_month, next_day, next_hour, 0, 0, 0, 0, -1))
+            wait_seconds = target_time - now
+            
+            if wait_seconds > 0:
+                countdown_sleep(int(wait_seconds), next_hour, "⏰ Cycle complete")
+            else:
+                print("⏰ Already past the target time, continuing immediately")
+                time.sleep(1)
             
         except Exception as e:
             print(f"! Main loop error: {e}")
