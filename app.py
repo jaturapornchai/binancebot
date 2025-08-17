@@ -22,8 +22,9 @@ def countdown_sleep(total_seconds: int, target_hour: int, reason: str = "Waiting
         time.sleep(1)
         return
     
-    print(f"\n{reason} until {target_hour:02d}:00:00")
-    print("=" * 50)
+    # Convert to Thailand time (UTC+7)
+    thailand_target_hour = (target_hour + 7) % 24
+    print(f"\n{reason} until {thailand_target_hour:02d}:00:00 (Thailand Time)")                        # ดึงข้อมูลย้อนหลัง 1h (144 bars) สำหรับการวิเคราะห์    print("=" * 50)
     
     for remaining in range(int(total_seconds), 0, -1):
         minutes = remaining // 60
@@ -193,19 +194,14 @@ def get_high_volume_symbols(um: UMFutures, min_volume_usdt: float = 10_000_000) 
             next((t.get("quoteVolume", "0") for t in tickers if t.get("symbol") == x), "0")
         ), reverse=True)
         
-        # 🎲 สับไพ่เหรียญที่ผ่านเกณฑ์ - เก็บ top 50 แล้วสับไพ่
-        if len(high_volume_symbols) > 50:
-            top_symbols = high_volume_symbols[:50]
-        else:
-            top_symbols = high_volume_symbols
-            
-        random.shuffle(top_symbols)
+        # 🎲 สับไพ่เหรียญที่ผ่านเกณฑ์ทั้งหมด
+        random.shuffle(high_volume_symbols)
         
         print(f"🔍 Found {len(high_volume_symbols)} symbols with volume > ${min_volume_usdt:,.0f}")
-        print(f"🎲 Shuffled top {len(top_symbols)} symbols for trading")
+        print(f"🎲 Shuffled all {len(high_volume_symbols)} symbols for trading")
         
-        # ส่งคืน symbols ถ้าเจอ
-        return top_symbols
+        # ส่งคืน symbols ทั้งหมดที่ผ่านเกณฑ์
+        return high_volume_symbols
         
     except Exception as e:
         print(f"! Error in get_high_volume_symbols: {e}")
@@ -213,7 +209,7 @@ def get_high_volume_symbols(um: UMFutures, min_volume_usdt: float = 10_000_000) 
         return []
 
 
-def get_1h_data(um: UMFutures, symbol: str, limit: int = 288) -> Dict[str, List[float]]:
+def get_1h_data(um: UMFutures, symbol: str, limit: int = 144) -> Dict[str, List[float]]:
     """Get OHLCV data for 1h timeframe only"""
     opens, highs, lows, closes, volumes = get_klines_data(um, symbol, "1h", limit)
     return {
@@ -225,7 +221,101 @@ def get_1h_data(um: UMFutures, symbol: str, limit: int = 288) -> Dict[str, List[
     }
 
 
-def get_klines_data(um: UMFutures, symbol: str, interval: str, limit: int = 288) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
+def calculate_ema(prices: List[float], period: int) -> List[float]:
+    """Calculate Exponential Moving Average (EMA) for 1h timeframe"""
+    if not prices or len(prices) < 2:
+        return []
+    
+    ema_values = []
+    multiplier = 2 / (period + 1)
+    
+    # For EMA, we can start with the first price if we don't have enough data for SMA
+    if len(prices) < period:
+        # Use first price as initial EMA when insufficient data
+        ema_values.append(prices[0])
+        start_idx = 1
+    else:
+        # Start with SMA for the first value when we have enough data
+        sma = sum(prices[:period]) / period
+        ema_values.append(sma)
+        start_idx = period
+    
+    # Calculate EMA for remaining values
+    for i in range(start_idx, len(prices)):
+        ema = (prices[i] * multiplier) + (ema_values[-1] * (1 - multiplier))
+        ema_values.append(ema)
+    
+    return ema_values
+
+
+def is_candle_crossing_ema99(symbol: str, data_1h: Dict[str, List[float]]) -> bool:
+    """
+    🔍 Technical Filter: Check EMA alignment and candle crossing EMA25
+    Returns True if:
+    1. EMA7 > EMA25 > EMA99 (uptrend) OR EMA7 < EMA25 < EMA99 (downtrend)
+    2. Latest candle crosses EMA25 line
+    Optimized for 1h timeframe with 144 bars (6 days) of data
+    """
+    try:
+        closes = data_1h.get("closes", [])
+        highs = data_1h.get("highs", [])
+        lows = data_1h.get("lows", [])
+        
+        # Need at least 99 candles for EMA99 calculation
+        if not closes or len(closes) < 99:
+            print(f"    ❌ EMA Filter {symbol}: Insufficient data ({len(closes)} bars)")
+            return False
+            
+        # Calculate all EMAs
+        ema7_values = calculate_ema(closes, 7)
+        ema25_values = calculate_ema(closes, 25)
+        ema99_values = calculate_ema(closes, 99)
+        
+        if not ema7_values or not ema25_values or not ema99_values:
+            print(f"    ❌ EMA Filter {symbol}: EMA calculation failed")
+            return False
+            
+        # Get latest EMA values
+        latest_ema7 = ema7_values[-1]
+        latest_ema25 = ema25_values[-1]
+        latest_ema99 = ema99_values[-1]
+        latest_high = highs[-1]
+        latest_low = lows[-1]
+        latest_close = closes[-1]
+        
+        # Check EMA alignment: 7>25>99 (uptrend) or 7<25<99 (downtrend)
+        uptrend_alignment = latest_ema7 > latest_ema25 > latest_ema99
+        downtrend_alignment = latest_ema7 < latest_ema25 < latest_ema99
+        ema_aligned = uptrend_alignment or downtrend_alignment
+        
+        # Check if candle crosses EMA25 (candle body or wick touches EMA25)
+        candle_crosses_ema25 = (latest_low <= latest_ema25 <= latest_high)
+        
+        # Final decision: EMA aligned AND candle crosses EMA25
+        filter_passed = ema_aligned and candle_crosses_ema25
+        
+        if filter_passed:
+            trend = "uptrend" if uptrend_alignment else "downtrend"
+            print(f"    ✅ EMA Filter {symbol}: {trend} alignment + candle crosses EMA25")
+            print(f"       EMA7:{latest_ema7:.4f} EMA25:{latest_ema25:.4f} EMA99:{latest_ema99:.4f}")
+            print(f"       Candle: H:{latest_high:.4f} L:{latest_low:.4f} C:{latest_close:.4f}")
+        else:
+            if not ema_aligned:
+                print(f"    ❌ EMA Filter {symbol}: EMAs not aligned")
+                print(f"       EMA7:{latest_ema7:.4f} EMA25:{latest_ema25:.4f} EMA99:{latest_ema99:.4f}")
+            elif not candle_crosses_ema25:
+                trend = "uptrend" if uptrend_alignment else "downtrend"
+                print(f"    ❌ EMA Filter {symbol}: {trend} aligned but candle doesn't cross EMA25")
+                print(f"       EMA25:{latest_ema25:.4f} Candle: H:{latest_high:.4f} L:{latest_low:.4f}")
+            
+        return filter_passed
+        
+    except Exception as e:
+        print(f"    ⚠️ EMA calculation error {symbol}: {e}")
+        return False
+
+
+def get_klines_data(um: UMFutures, symbol: str, interval: str, limit: int = 144) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
     """Get OHLCV data from klines. Returns (opens, highs, lows, closes, volumes)"""
     klines = retry_call(um.klines, symbol=symbol, interval=interval, limit=limit)
     if not isinstance(klines, list):
@@ -416,13 +506,11 @@ def decide_signals_via_deepseek(symbol: str, data_1h: Dict[str, List[float]], ap
                 json_content = content[json_start:json_end]
                 parsed = json.loads(json_content)
                 action = str(parsed.get("action", "")).upper()
-                confidence = parsed.get("confidence", 0)
                 reasoning = parsed.get("reasoning", "")
                 patterns = parsed.get("patterns", [])
                 
                 print(f"🎯 JSON Parsed Successfully:")
                 print(f"   Action: {action}")
-                print(f"   Confidence: {confidence}/10")
                 print(f"   Reasoning: {reasoning}")
                 print(f"   Patterns: {patterns}")
                 
@@ -668,8 +756,8 @@ def run():
                             # คำนวณ PNL ปัจจุบัน
                             current_pnl = get_position_pnl(um, symbol)
                             
-                            # ดึงข้อมูลย้อนหลัง 1h (288 bars)
-                            data_1h = get_1h_data(um, symbol, limit=288)
+                            # ดึงข้อมูลย้อนหลัง 1h (144 bars)
+                            data_1h = get_1h_data(um, symbol, limit=144)
                             
                             # ถาม AI ว่าควรปิดหรือถือไว้
                             if cfg.deepseek_api_key:
@@ -746,6 +834,7 @@ def run():
             dynamic_symbols = get_high_volume_symbols(um, min_volume_usdt=cfg.min_volume_usdt)
             
             for symbol in dynamic_symbols:
+                symbol = "DOTUSDT"
                 try:
                     # ดึงมาทีละ 1 เหรียญ ไม่เอาเหรียญที่มี POSITION อยู่
                     current_pos = current_position_amt(um, symbol)
@@ -764,10 +853,15 @@ def run():
                         buy_sig, sell_sig = False, True
                         print(f"{symbol} signals: buy={buy_sig} sell={sell_sig} (FORCED SELL)")
                     else:
-                        # ดึงข้อมูลย้อนหลัง 1h (288 bars)
-                        data_1h = get_1h_data(um, symbol, limit=288)
+                        # ดึงข้อมูลย้อนหลัง 1h (288 bars) สำหรับการวิเคราะห์
+                        data_1h = get_1h_data(um, symbol, limit=144)
                         
-                        # ถาม AI สำหรับ position ใหม่
+                        # 🔍 Technical Filter: เอาเฉพาะเหรียญที่ EMA เรียงกัน (7>25>99 หรือ 7<25<99) และแท่งเทียนทับ EMA25
+                        if not is_candle_crossing_ema99(symbol, data_1h):
+                            print(f"- Skipping {symbol} (EMA not aligned or candle doesn't cross EMA25)")
+                            continue
+                        
+                        # ถาม AI สำหรับ position ใหม่ (เฉพาะเหรียญที่ผ่าน EMA alignment filter)
                         if cfg.deepseek_api_key:
                             buy_sig, sell_sig, _ = decide_signals_via_deepseek(symbol, data_1h, cfg.deepseek_api_key, 0.0, 0.0)
                             print(f"{symbol} new position signals: buy={buy_sig} sell={sell_sig} via DeepSeek")
