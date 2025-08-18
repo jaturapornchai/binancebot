@@ -1,16 +1,27 @@
 วิเคราะห์ {symbol} analysis (1h)
 ราคาปัจจุบัน: ${current_price}
-
+{ema_color_info}
 {ohlcv_data}
 
 รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h
 ควรเปิด LONG, SHORT หรือ HOLD?
-ใช้ harmonic pattern หลายรูปแบบ เกิดสัญญาณตอนไหนก็ได้ ถ้ามีสัญญาณ harmonic ให้เลือกว่าจะ SHORT/LONG เลย
+
+⚡ หากมีสัญญาณ EMA Color Change (เปลี่ยนจาก GREEN→RED หรือ RED→GREEN) ให้พิจารณาในการตัดสินใจ
+
+⚡ **MANDATORY**: หากแนะนำ LONG หรือ SHORT **ต้องระบุ Stop Loss และ Take Profit ทุกครั้ง** จากการวิเคราะห์ Support/Resistance, Fibonacci, หรือ ATR
+
+⚡ **STOP LOSS & TAKE PROFIT Rules**:
+- Stop Loss: ระยะห่าง 1-3% จากราคาเปิด position 
+- Take Profit: Risk/Reward ratio อย่างน้อย 1:2 (TP ห่างจากราคาเปิด 2 เท่าของ SL)
+- ใช้ Support/Resistance levels เป็นหลักในการกำหนด SL/TP
+
 กรุณาวิเคราะห์ 1h และตอบในรูปแบบ JSON เท่านั้น:
 
 {{
   "action": "LONG" หรือ "SHORT" หรือ "HOLD",
-  "reasoning": "เหตุผลการตัดสินใจ 2-3 บรรทัด",
-  "patterns": ["รายชื่อ pattern ที่พบ"]
+  "reasoning": "เหตุผลการตัดสินใจ 2-3 บรรทัด รวมถึงสัญญาณ EMA Color หากมี",
+  "stop_loss": "ราคา stop loss ที่แนะนำ (ใส่ตัวเลขเท่านั้น - MANDATORY สำหรับ LONG/SHORT)",
+  "take_profit": "ราคา take profit ที่แนะนำ (ใส่ตัวเลขเท่านั้น - MANDATORY สำหรับ LONG/SHORT)",
+  "patterns": ["รายชื่อ technical patterns ที่พบ เช่น support/resistance, trend lines เป็นต้น"]
 }}
 
