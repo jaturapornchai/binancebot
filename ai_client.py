@@ -1,6 +1,20 @@
 """
 🤖 DeepSeek AI Client for Trading Analysis
-Handles AI trading analysis and decision making
+Handles AI trading an        user_prompt = existi        user_prompt = template.format(
+            symbol=symbol,
+            current_price=f"{current_price:.6f}",
+            macd_analysis_info=macd_analysis_info,
+            ohlcv_data=ohlcv_data
+        )plate.format(
+            symbol=symbol,
+            side=side,
+            entry_price=f"{entry_price:.6f}",
+            current_price=f"{current_price:.6f}",
+            pnl=calculated_pnl,
+            pnl_percent=pnl_percent,
+            macd_analysis_info=macd_analysis_info,
+            ohlcv_data=ohlcv_data
+        ) decision making
 """
 
 import json
@@ -8,7 +22,8 @@ import os
 from typing import Dict, Optional, Tuple
 
 from openai import OpenAI
-from ema_analysis import get_ema_analysis_text, format_ohlcv_data
+
+from macd_analysis import format_ohlcv_data, get_macd_analysis_text
 
 # Global API config - will be set by main
 api_cfg = None
@@ -33,7 +48,7 @@ def load_prompt_template(filename: str) -> Optional[str]:
 
 
 def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float, 
-                         current_position: float = 0.0, pnl: float = 0.0) -> Optional[Dict]:
+                         current_position: float = 0.0, pnl: float = 0.0, entry_price: float = 0.0) -> Optional[Dict]:
     """
     🤖 Analyze trading opportunity using DeepSeek AI
     Returns parsed AI decision or None if error
@@ -42,17 +57,39 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
         print("! DeepSeek API key not configured")
         return None
     
-    # Generate EMA analysis text
-    ema_color_info = get_ema_analysis_text(symbol, data_1h, current_price)
+    # Generate MACD analysis text
+    macd_analysis_info = get_macd_analysis_text(symbol, data_1h, current_price)
     
     # Format OHLCV data
     ohlcv_data = format_ohlcv_data(data_1h)
     
     # เลือก prompt template ตามสถานการณ์
     if abs(current_position) > 1e-12:
-        # CASE 1: มี position อยู่แล้ว - ไม่ใช้แล้วตาม user request
-        print(f"! Position exists for {symbol} but prompt_existing_position.txt was removed per user request")
-        return None
+        # CASE 1: มี position อยู่แล้ว - ใช้ prompt_existing_position.txt
+        template = load_prompt_template("prompt_existing_position.txt")
+        if not template:
+            print(f"❌ CRITICAL ERROR: prompt_existing_position.txt not found!")
+            print("🛑 Cannot analyze existing position without proper template")
+            return None
+            
+        # Use the passed PNL or calculate if entry_price is provided
+        calculated_pnl = pnl
+        if entry_price and abs(entry_price) > 1e-12 and pnl == 0.0:
+            calculated_pnl = (current_price - entry_price) * abs(current_position)
+            
+        pnl_percent = (calculated_pnl / (abs(current_position) * entry_price) * 100) if entry_price and abs(current_position * entry_price) > 1e-12 else 0
+        side = "LONG" if current_position > 0 else "SHORT"
+        
+        user_prompt = template.format(
+            symbol=symbol,
+            side=side,
+            entry_price=f"{entry_price:.6f}",
+            current_price=f"{current_price:.6f}",
+            pnl=calculated_pnl,
+            pnl_percent=pnl_percent,
+            macd_analysis_info=macd_analysis_info,
+            ohlcv_data=ohlcv_data
+        )
     else:
         # CASE 2: ยังไม่มี position - ใช้ prompt_new_position.txt
         template = load_prompt_template("prompt_new_position.txt")
@@ -62,10 +99,10 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
             print("📁 Please ensure prompt_new_position.txt exists in the project directory")
             return None
         
-        prompt = template.format(
+        user_prompt = template.format(
             symbol=symbol,
             current_price=f"{current_price:.2f}",
-            ema_color_info=ema_color_info,
+            macd_analysis_info=macd_analysis_info,
             ohlcv_data=ohlcv_data
         )
 
@@ -77,7 +114,7 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
             model="deepseek-chat",
             messages=[
                 {"role": "system", "content": "คุณคือผู้เชี่ยวชาญด้านการเทรดคริปโตฯ ประสบการณ์มากกว่า 10 ปี วิเคราะห์ราคา แนวโน้ม และความเสี่ยง เพื่อให้คำแนะนำที่ชัดเจน ตอบในรูปแบบ JSON เท่านั้น"},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": user_prompt},
             ],
             stream=False,
             temperature=0.3,
@@ -91,7 +128,7 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
         print(f"🤖 DEEPSEEK DETAILED ANALYSIS for {symbol}")
         print(f"{'='*60}")
         print(f"📤 PROMPT SENT TO AI (TH):")
-        print(f"{prompt}")
+        print(f"{user_prompt}")
         print(f"📥 AI RESPONSE:")
 
         content = ""
@@ -150,30 +187,15 @@ def parse_ai_response(content: str, current_price: float, symbol: str = "UNKNOWN
         print(f"🎯 JSON Parsed Successfully:")
         print(f"   Action: {ai_data.get('action', 'UNKNOWN')}")
         print(f"   Reasoning: {ai_data.get('reasoning', 'N/A')}")
-        
-        # Parse stop loss and take profit
-        stop_loss = ai_data.get('stop_loss')
-        take_profit = ai_data.get('take_profit')
-        
-        if stop_loss:
-            try:
-                stop_loss = float(stop_loss)
-                print(f"   Stop Loss: ${stop_loss:.6f}")
-            except (ValueError, TypeError):
-                print(f"   Stop Loss: Invalid value - {stop_loss}")
-                stop_loss = None
-        
-        if take_profit:
-            try:
-                take_profit = float(take_profit)
-                print(f"   Take Profit: ${take_profit:.6f}")
-            except (ValueError, TypeError):
-                print(f"   Take Profit: Invalid value - {take_profit}")
-                take_profit = None
+        print(f"   Confidence: {ai_data.get('confidence', 'N/A')}")
         
         patterns = ai_data.get('patterns', [])
         if patterns:
             print(f"   Patterns: {patterns}")
+        
+        market_condition = ai_data.get('market_condition')
+        if market_condition:
+            print(f"   Market Condition: {market_condition}")
         
         # Determine buy/sell signals
         action = ai_data.get('action', '').upper()
@@ -185,9 +207,9 @@ def parse_ai_response(content: str, current_price: float, symbol: str = "UNKNOWN
         return {
             'action': action,
             'reasoning': ai_data.get('reasoning', ''),
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
+            'confidence': ai_data.get('confidence', 'N/A'),
             'patterns': patterns,
+            'market_condition': market_condition,
             'buy_signal': buy_signal,
             'sell_signal': sell_signal
         }

@@ -7,11 +7,11 @@ import json
 from typing import Dict, List, Optional
 
 from binance.um_futures import UMFutures
+
+from binance_client import (calculate_quantity, cancel_order, get_mark_price,
+                            get_open_orders, place_order, set_leverage,
+                            set_margin_type)
 from config import cfg
-from binance_client import (
-    get_mark_price, set_margin_type, set_leverage, 
-    calculate_quantity, place_order, get_open_orders, cancel_order, close_position
-)
 from utils import safe_float
 
 
@@ -19,23 +19,12 @@ def execute_trade(um: UMFutures, symbol: str, ai_decision: Dict,
                  margin_usdt: float, leverage: int, 
                  filters: Dict[str, Dict]) -> Optional[Dict]:
     """
-    Execute trade based on AI decision with Stop Loss and Take Profit
+    Execute trade based on AI decision without automatic SL/TP
+    AI will manage position closure through analysis
     Returns trade result or None if failed
     """
     try:
         if not ai_decision.get('buy_signal') and not ai_decision.get('sell_signal'):
-            return None
-        
-        # Validate mandatory SL/TP before proceeding
-        stop_loss = ai_decision.get('stop_loss')
-        take_profit = ai_decision.get('take_profit')
-        
-        if not stop_loss or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
-            print(f"! {symbol}: Missing or invalid Stop Loss - Trade execution aborted")
-            return None
-            
-        if not take_profit or not isinstance(take_profit, (int, float)) or take_profit <= 0:
-            print(f"! {symbol}: Missing or invalid Take Profit - Trade execution aborted")
             return None
         
         current_price = get_mark_price(um, symbol)
@@ -64,65 +53,26 @@ def execute_trade(um: UMFutures, symbol: str, ai_decision: Dict,
         
         print(f"- Placed {side} {symbol} qty={quantity} -> status={order_result.get('status', 'UNKNOWN')} avg=${safe_float(order_result.get('avgPrice', '0')):.6f}")
         
-        # Use validated SL/TP levels from AI decision
-        print(f"   📉 Stop Loss: ${stop_loss:.6f}")
-        print(f"   📈 Take Profit: ${take_profit:.6f}")
-        
-        # Place Stop Loss and Take Profit orders
-        sl_tp_result = place_sl_tp_orders(um, symbol, side, quantity, stop_loss, take_profit)
+        # No automatic SL/TP - AI will manage position closure
+        print(f"🤖 AI will manage this position - no automatic SL/TP")
+        print(f"   Confidence Level: {ai_decision.get('confidence', 'N/A')}")
         
         trade_result = {
             "symbol": symbol,
             "side": side.replace("BUY", "LONG").replace("SELL", "SHORT"),
             "price": safe_float(order_result.get('avgPrice', '0')),
-            "sl_tp": sl_tp_result
+            "confidence": ai_decision.get('confidence', 'N/A'),
+            "reasoning": ai_decision.get('reasoning', '')
         }
         
-        print(f"🎯 AI-recommended SL/TP placed for {trade_result['side']} {symbol}: {sl_tp_result}")
-        print(json.dumps(trade_result, separators=(',', ':')))
+        print(f"🎯 {trade_result['side']} {symbol} position opened - AI will decide when to close")
+        print(json.dumps(trade_result, separators=(',', ':'), ensure_ascii=False))
         
         return trade_result
         
     except Exception as e:
         print(f"! Error executing trade for {symbol}: {e}")
         return None
-
-
-def place_sl_tp_orders(um: UMFutures, symbol: str, side: str, quantity: float, 
-                      stop_loss: Optional[float], take_profit: Optional[float]) -> str:
-    """
-    Place Stop Loss and Take Profit orders
-    Returns status string
-    """
-    try:
-        orders_placed = []
-        
-        if stop_loss:
-            # For LONG position: SL is SELL STOP order below entry
-            # For SHORT position: SL is BUY STOP order above entry
-            sl_side = "SELL" if side == "BUY" else "BUY"
-            
-            sl_order = place_order(um, symbol, sl_side, quantity, "STOP_MARKET", stop_loss)
-            if sl_order:
-                orders_placed.append("SL")
-        
-        if take_profit:
-            # For LONG position: TP is SELL LIMIT order above entry
-            # For SHORT position: TP is BUY LIMIT order below entry
-            tp_side = "SELL" if side == "BUY" else "BUY"
-            
-            tp_order = place_order(um, symbol, tp_side, quantity, "TAKE_PROFIT_MARKET", take_profit)
-            if tp_order:
-                orders_placed.append("TP")
-        
-        if orders_placed:
-            return "/".join(orders_placed)
-        else:
-            return "none"
-            
-    except Exception as e:
-        print(f"! Error placing SL/TP orders for {symbol}: {e}")
-        return "error"
 
 
 def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict, 
@@ -152,24 +102,25 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
                 print(f"❌ {symbol}: Failed to parse klines data")
                 continue
             
-            # Check for EMA color change signal
+            # Check for MACD color change signal
             if not is_signal_func(symbol, data_1h):
-                # แสดงสี EMA ปัจจุบันสำหรับ debug (แสดงแค่ 5 เหรียญแรก)
+                # แสดงสี MACD ปัจจุบันสำหรับ debug (แสดงแค่ 5 เหรียญแรก)
                 if symbols_checked <= 5:
                     closes = data_1h.get("closes", [])
-                    if len(closes) >= 10:
-                        from ema_analysis import calculate_ema, get_ema_color
-                        ema8_values = calculate_ema(closes, 8)
-                        if len(ema8_values) >= 3:
-                            current_color = get_ema_color(ema8_values, -1)
-                            previous_color = get_ema_color(ema8_values, -2)
-                            print(f"⚪ {symbol}: No EMA signal ({previous_color}→{current_color})")
+                    if len(closes) >= 30:
+                        from macd_analysis import (calculate_macd,
+                                                   get_macd_color)
+                        macd_line, _, _ = calculate_macd(closes)
+                        if len(macd_line) >= 2:
+                            current_color = get_macd_color(macd_line, -1)
+                            previous_color = get_macd_color(macd_line, -2)
+                            print(f"⚪ {symbol}: No MACD signal ({previous_color}→{current_color})")
                         else:
-                            print(f"⚪ {symbol}: No EMA signal")
+                            print(f"⚪ {symbol}: No MACD signal")
                     else:
-                        print(f"⚪ {symbol}: No EMA signal")
+                        print(f"⚪ {symbol}: No MACD signal")
                 else:
-                    print(f"⚪ {symbol}: No EMA signal")
+                    print(f"⚪ {symbol}: No MACD signal")
                 continue
             
             # Signal detected!
@@ -188,59 +139,14 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
                 print(f"❌ {symbol}: AI analysis failed")
                 continue
             
-            # Execute trade if AI recommends action AND provides valid SL/TP
+            # Execute trade if AI recommends action
             if ai_decision.get('buy_signal') or ai_decision.get('sell_signal'):
                 action = "BUY" if ai_decision.get('buy_signal') else "SELL"
+                confidence = ai_decision.get('confidence', 'N/A')
                 
-                # Validate mandatory Stop Loss and Take Profit
-                stop_loss = ai_decision.get('stop_loss')
-                take_profit = ai_decision.get('take_profit')
+                print(f"✅ {symbol}: AI recommended {action} (Confidence: {confidence}/10) - Executing trade")
+                print(f"   💡 Reasoning: {ai_decision.get('reasoning', 'N/A')}")
                 
-                if not stop_loss or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
-                    print(f"❌ {symbol}: Invalid or missing Stop Loss (SL={stop_loss}) - Trade rejected")
-                    continue
-                
-                if not take_profit or not isinstance(take_profit, (int, float)) or take_profit <= 0:
-                    print(f"❌ {symbol}: Invalid or missing Take Profit (TP={take_profit}) - Trade rejected")
-                    continue
-                
-                # Additional validation: SL/TP direction and risk/reward ratio
-                if action == "BUY":  # LONG position
-                    if stop_loss >= current_price:
-                        print(f"❌ {symbol}: Stop Loss must be below entry price for LONG (SL={stop_loss:.6f}, Price={current_price:.6f}) - Trade rejected")
-                        continue
-                    if take_profit <= current_price:
-                        print(f"❌ {symbol}: Take Profit must be above entry price for LONG (TP={take_profit:.6f}, Price={current_price:.6f}) - Trade rejected")
-                        continue
-                    
-                    # Calculate risk/reward ratio for LONG
-                    risk = current_price - stop_loss  # How much we can lose
-                    reward = take_profit - current_price  # How much we can gain
-                    
-                else:  # SHORT position
-                    if stop_loss <= current_price:
-                        print(f"❌ {symbol}: Stop Loss must be above entry price for SHORT (SL={stop_loss:.6f}, Price={current_price:.6f}) - Trade rejected")
-                        continue
-                    if take_profit >= current_price:
-                        print(f"❌ {symbol}: Take Profit must be below entry price for SHORT (TP={take_profit:.6f}, Price={current_price:.6f}) - Trade rejected")
-                        continue
-                    
-                    # Calculate risk/reward ratio for SHORT
-                    risk = stop_loss - current_price  # How much we can lose
-                    reward = current_price - take_profit  # How much we can gain
-                
-                # Check minimum risk/reward ratio (1:1.5 minimum)
-                if risk <= 0 or reward <= 0:
-                    print(f"❌ {symbol}: Invalid risk/reward calculation (Risk={risk:.6f}, Reward={reward:.6f}) - Trade rejected")
-                    continue
-                
-                risk_reward_ratio = reward / risk
-                if risk_reward_ratio < 1.5:
-                    print(f"❌ {symbol}: Risk/Reward ratio too low ({risk_reward_ratio:.2f}:1, minimum 1.5:1) - Trade rejected")
-                    continue
-                
-                print(f"✅ {symbol}: AI recommended {action} with valid SL/TP (R/R: {risk_reward_ratio:.2f}:1) - Executing trade")
-                print(f"   📍 Entry: ${current_price:.6f} | SL: ${stop_loss:.6f} | TP: ${take_profit:.6f}")
                 execute_trade(um, symbol, ai_decision, cfg.margin_per_trade_usdt, 
                             cfg.leverage, filters)
             else:
@@ -291,9 +197,9 @@ def parse_klines_data(klines: List[List]) -> Dict[str, List]:
 
 def cleanup_positions_and_orders(um: UMFutures, positions: List[Dict]) -> Dict:
     """
-    🧹 ทำความสะอาด positions และ orders:
-    - ปิด positions ที่มี orders ไม่ครบ 2 orders (SL + TP)
-    - ลบ orders ที่ไม่มี position
+    🧹 Clean up positions and orders:
+    - Cancel orphaned orders that don't have corresponding positions
+    - Leave existing positions for AI to manage
     """
     cleanup_stats = {
         "positions_checked": 0,
@@ -304,8 +210,8 @@ def cleanup_positions_and_orders(um: UMFutures, positions: List[Dict]) -> Dict:
     
     print("\n🧹 === CLEANUP: Checking positions and orders ===")
     
-    # Get all open orders
-    all_open_orders = get_open_orders(um)
+    # Get all open orders (for all symbols)
+    all_open_orders = get_open_orders(um, None)
     
     # Group orders by symbol
     orders_by_symbol = {}
@@ -331,27 +237,21 @@ def cleanup_positions_and_orders(um: UMFutures, positions: List[Dict]) -> Dict:
             
             print(f"📊 {symbol}: Position={position_size:.6f}, Orders={order_count}")
             
-            # If position has less than 2 orders (should have SL + TP), close it
-            if order_count < 2:
-                print(f"⚠️ {symbol}: Only {order_count} orders (expected 2 for SL+TP)")
-                print(f"🚫 Closing {symbol} position...")
+            # Since we're no longer using automatic SL/TP, just cancel any orphaned orders
+            # but leave positions for AI to manage
+            if order_count > 0:
+                print(f"🧹 {symbol}: Cancelling {order_count} orphaned orders (AI will manage position)")
                 
-                # Cancel existing orders first
+                # Cancel existing orders to prevent interference with AI decisions
                 for order in symbol_orders:
                     order_id = order.get("orderId")
                     if order_id:
                         if cancel_order(um, symbol, str(order_id)):
                             cleanup_stats["orders_cancelled"] += 1
                 
-                # Close position
-                if close_position(um, symbol, position_size):
-                    cleanup_stats["positions_closed"] += 1
-                    print(f"✅ {symbol}: Position closed successfully")
-                else:
-                    cleanup_stats["errors"] += 1
-                    print(f"❌ {symbol}: Failed to close position")
+                print(f"✅ {symbol}: Orphaned orders cancelled, position will be managed by AI")
             else:
-                print(f"✅ {symbol}: Has {order_count} orders (OK)")
+                print(f"✅ {symbol}: Clean position, ready for AI management")
                 
         except Exception as e:
             cleanup_stats["errors"] += 1

@@ -22,7 +22,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY app.py .
+COPY *.py .
 COPY prompt_existing_position.txt .
 COPY prompt_new_position.txt .
 

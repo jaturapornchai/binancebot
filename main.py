@@ -4,9 +4,10 @@ Main application entry point - simplified and modular
 """
 
 import json
-import sys
 import os
+import sys
 from datetime import datetime
+
 from dotenv import load_dotenv
 
 # Load environment variables first
@@ -15,17 +16,18 @@ load_dotenv()
 # Add current directory to Python path for module imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import all modules
-from config import cfg, APIConfig
-from utils import get_thailand_time, countdown_sleep
-import binance_client
 import ai_client
-from binance_client import (
-    setup_trading_mode, get_available_usdt,
-    get_exchange_filters, get_high_volume_symbols, get_klines, get_current_positions
-)
-from ema_analysis import is_ema_color_changed
-from trading_engine import scan_symbols_for_signals, print_scan_summary, parse_klines_data, cleanup_positions_and_orders
+import binance_client
+from binance_client import (close_position, get_available_usdt,
+                            get_current_positions, get_exchange_filters,
+                            get_high_volume_symbols, get_klines,
+                            setup_trading_mode)
+# Import all modules
+from config import APIConfig, cfg
+from macd_analysis import is_macd_color_changed
+from trading_engine import (cleanup_positions_and_orders, parse_klines_data,
+                            print_scan_summary, scan_symbols_for_signals)
+from utils import countdown_sleep, get_thailand_time
 
 # Initialize API config after loading environment
 api_cfg = APIConfig()
@@ -35,9 +37,9 @@ binance_client.set_api_config(api_cfg)
 ai_client.set_api_config(api_cfg)
 
 
-def check_existing_positions(um):
-    """Check and display existing positions"""
-    print("=== LOOP2: Checking existing positions ===")
+def check_and_analyze_existing_positions(um):
+    """Check existing positions and analyze with AI for potential closure"""
+    print("=== LOOP2: Analyzing existing positions with AI ===")
     positions = get_current_positions(um)
     
     if not positions:
@@ -52,7 +54,47 @@ def check_existing_positions(um):
         pnl = float(pos.get("unRealizedProfit", "0"))
         
         side = "LONG" if size > 0 else "SHORT"
-        print(f"📊 {symbol}: {side} size={abs(size):.6f} entry=${entry_price:.6f} mark=${mark_price:.6f} PNL=${pnl:.2f}")
+        pnl_percent = (pnl / (abs(size) * entry_price) * 100) if entry_price and abs(size * entry_price) > 1e-12 else 0
+        
+        print(f"📊 Analyzing {symbol}: {side} size={abs(size):.6f} entry=${entry_price:.6f} mark=${mark_price:.6f} PNL=${pnl:.2f} ({pnl_percent:+.2f}%)")
+        
+        # Get 1h klines data for AI analysis  
+        klines_1h = get_klines(um, symbol, "1h", 288)
+        if not klines_1h or len(klines_1h) < 50:
+            print(f"❌ {symbol}: Insufficient klines data for analysis")
+            continue
+            
+        # Parse klines data
+        from trading_engine import parse_klines_data
+        data_1h = parse_klines_data(klines_1h)
+        if not data_1h["closes"]:
+            print(f"❌ {symbol}: Failed to parse klines data")
+            continue
+        
+        # Analyze position with AI
+        ai_decision = ai_client.analyze_with_deepseek(
+            symbol, data_1h, mark_price, current_position=size, pnl=pnl, entry_price=entry_price
+        )
+        
+        if not ai_decision:
+            print(f"❌ {symbol}: AI analysis failed")
+            continue
+            
+        action = ai_decision.get('action', '').upper()
+        if action == 'CLOSE':
+            print(f"🤖 AI recommends CLOSING {symbol} position")
+            print(f"   Reasoning: {ai_decision.get('reasoning', 'N/A')}")
+            print(f"   Confidence: {ai_decision.get('confidence', 'N/A')}/10")
+            
+            # Close the position
+            if close_position(um, symbol, size):
+                print(f"✅ {symbol}: Position closed successfully")
+            else:
+                print(f"❌ {symbol}: Failed to close position")
+        else:
+            print(f"🤖 AI recommends HOLDING {symbol} position")
+            print(f"   Reasoning: {ai_decision.get('reasoning', 'N/A')}")
+            print(f"   Confidence: {ai_decision.get('confidence', 'N/A')}/10")
 
 
 def main_trading_loop():
@@ -83,10 +125,10 @@ def main_trading_loop():
                     
             first_run = False
             
-            # LOOP2: Check existing positions (no AI analysis needed - SL/TP handles them)
-            check_existing_positions(um)
+            # LOOP2: Check and analyze existing positions with AI
+            check_and_analyze_existing_positions(um)
             
-            # CLEANUP: ทำความสะอาด positions และ orders ก่อนเริ่มสแกน
+            # CLEANUP: Clean up any orphaned orders before scanning
             current_positions = get_current_positions(um)
             if current_positions:
                 cleanup_stats = cleanup_positions_and_orders(um, current_positions)
@@ -121,7 +163,7 @@ def main_trading_loop():
             # Scan all symbols for opportunities
             scan_results = scan_symbols_for_signals(
                 um, dynamic_symbols, filters,
-                get_klines, is_ema_color_changed, ai_client.analyze_with_deepseek
+                get_klines, is_macd_color_changed, ai_client.analyze_with_deepseek
             )
             
             # Print scan summary

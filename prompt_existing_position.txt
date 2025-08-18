@@ -1,0 +1,20 @@
+วิเคราะห์ Position {symbol} ({side} @ ${entry_price})
+ราคาปัจจุบัน: ${current_price}
+PNL: ${pnl:.4f} USDT ({pnl_percent:+.2f}%)
+{ohlcv_data}
+
+รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h
+
+CLOSE=ถ้ามีสัญญาณกลับตัวชัดเจน, momentum หมดลง, หรือพบ reversal patterns
+HOLD=ถ้ายังไม่มีสัญญาณกลับตัว, momentum ยังคงอยู่, หรือพบ continuation patterns
+
+กรุณาวิเคราะห์และตัดสินใจในรูปแบบ JSON เท่านั้น:
+
+{{
+  "action": "CLOSE" หรือ "HOLD",
+  "reasoning": "เหตุผลการตัดสินใจโดยละเอียด 3-4 บรรทัด รวมถึงสถานะ PNL, MACD signals, Technical analysis และ Market momentum",
+  "confidence": "ระดับความมั่นใจ 1-10",
+  "market_condition": "สภาพตลาดปัจจุบัน เช่น trending, ranging, volatile",
+  "patterns": ["รายชื่อ technical patterns ที่พบ"]
+}}
+
