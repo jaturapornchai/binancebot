@@ -1,21 +1,19 @@
-วิเคราะห์ {symbol} analysis (1h)
+วิเคราะห์ {symbol} analysis ({timeframe})
 ราคาปัจจุบัน: ${current_price}
-{macd_analysis_info}
 {ohlcv_data}
 
-รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h
+รูปแบบ: ลำดับ:O,H,L,C,V (แต่ละแท่ง {timeframe})
 ควรเปิด LONG, SHORT หรือ HOLD?
 
-**AI จะตัดสินใจปิด position เอง** ไม่ต้องกำหนด Stop Loss/Take Profit อัตโนมัติ
+**AI จะตัดสินใจปิด position เอง** 
 วิเคราะห์ทั้ง Technical Analysis และ Market Context เพื่อตัดสินใจเปิด position
-**MACD Signal**: กรองเข้า position เมื่อ MACD เปลี่ยนสี เขียว=Long (>0), แดง=Short (<0)
 
-กรุณาวิเคราะห์ 1h และตอบในรูปแบบ JSON เท่านั้น:
+กรุณาวิเคราะห์ {timeframe} และตอบในรูปแบบ JSON เท่านั้น:
 
 {{
   "action": "LONG" หรือ "SHORT" หรือ "HOLD",
-  "reasoning": "เหตุผลการตัดสินใจโดยละเอียด 3-4 บรรทัด รวมถึงสัญญาณ MACD Color, Technical patterns, และ Market momentum",
+  "reasoning": "เหตุผลการตัดสินใจโดยละเอียด (ภาษาไทย)",
   "confidence": "ระดับความมั่นใจ 1-10",
-  "patterns": ["รายชื่อ technical patterns ที่พบ เช่น support/resistance, trend lines, candlestick patterns เป็นต้น"]
+  "patterns": ["รายชื่อ technical patterns ที่พบ"]
 }}
 

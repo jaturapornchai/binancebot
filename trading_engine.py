@@ -83,6 +83,15 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
     """
     symbols_checked = 0
     symbols_with_signals = 0
+    symbols_skipped = 0
+    
+    # Get current open positions to avoid duplicate trades
+    from binance_client import get_current_positions
+    current_positions = get_current_positions(um)
+    existing_symbols = {pos.get("symbol") for pos in current_positions if abs(float(pos.get("positionAmt", "0"))) > 1e-12}
+    
+    if existing_symbols:
+        print(f"🔒 Existing positions: {len(existing_symbols)} symbols - {list(existing_symbols)}")
     
     print(f"🐛 Debug - All {len(symbols)} symbols: {symbols}")
     
@@ -90,37 +99,49 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
         try:
             symbols_checked += 1
             
-            # Get 1h data (288 candles = 12 days of 1h data)
-            klines_1h = get_klines_func(um, symbol, "1h", 288)
-            if not klines_1h or len(klines_1h) < 50:
-                print(f"❌ {symbol}: Insufficient data (klines: {len(klines_1h) if klines_1h else 0})")
+            # Skip symbols that already have open positions
+            if symbol in existing_symbols:
+                symbols_skipped += 1
+                print(f"⏭️ {symbol}: Skipped (existing position)")
+                continue
+            
+            # Get data (200 candles for Trend Line analysis)
+            klines = get_klines_func(um, symbol, cfg.timeframe, 200)
+            if not klines or len(klines) < 50:
+                print(f"❌ {symbol}: Insufficient data (klines: {len(klines) if klines else 0})")
                 continue
             
             # Parse klines data
-            data_1h = parse_klines_data(klines_1h)
-            if not data_1h["closes"]:
+            data = parse_klines_data(klines)
+            if not data["closes"]:
                 print(f"❌ {symbol}: Failed to parse klines data")
                 continue
             
-            # Check for MACD color change signal
-            if not is_signal_func(symbol, data_1h):
-                # แสดงสี MACD ปัจจุบันสำหรับ debug (แสดงแค่ 5 เหรียญแรก)
+            # Check for Trend Line crossing signal
+            if not is_signal_func(symbol, klines):
+                # แสดงสถานะ Trend Line ปัจจุบันสำหรับ debug (แสดงแค่ 5 เหรียญแรก)
                 if symbols_checked <= 5:
-                    closes = data_1h.get("closes", [])
-                    if len(closes) >= 30:
-                        from macd_analysis import (calculate_macd,
-                                                   get_macd_color)
-                        macd_line, _, _ = calculate_macd(closes)
-                        if len(macd_line) >= 2:
-                            current_color = get_macd_color(macd_line, -1)
-                            previous_color = get_macd_color(macd_line, -2)
-                            print(f"⚪ {symbol}: No MACD signal ({previous_color}→{current_color})")
-                        else:
-                            print(f"⚪ {symbol}: No MACD signal")
-                    else:
-                        print(f"⚪ {symbol}: No MACD signal")
+                    try:
+                        from trend_line_analysis import TrendLineAnalyzer
+                        analyzer = TrendLineAnalyzer()
+                        
+                        # Convert raw klines to proper format
+                        klines_list = []
+                        for kline in klines:
+                            klines_list.append({
+                                'open': str(kline[1]),
+                                'high': str(kline[2]),
+                                'low': str(kline[3]),
+                                'close': str(kline[4]),
+                                'volume': str(kline[5])
+                            })
+                        
+                        result = analyzer.analyze_symbol(klines_list)
+                        print(f"⚪ {symbol}: No Trend Line signal ({result['reason']})")
+                    except Exception as e:
+                        print(f"⚪ {symbol}: No Trend Line signal")
                 else:
-                    print(f"⚪ {symbol}: No MACD signal")
+                    print(f"⚪ {symbol}: No Trend Line signal")
                 continue
             
             # Signal detected!
@@ -134,7 +155,7 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
                 continue
             
             # Analyze with AI
-            ai_decision = analyze_func(symbol, data_1h, current_price)
+            ai_decision = analyze_func(symbol, data, current_price)
             if not ai_decision:
                 print(f"❌ {symbol}: AI analysis failed")
                 continue
@@ -163,6 +184,7 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
     return {
         "total_symbols": len(symbols),
         "symbols_checked": symbols_checked,
+        "symbols_skipped": symbols_skipped,
         "signals_found": symbols_with_signals,
         "completion_rate": (symbols_checked / len(symbols) * 100) if symbols else 0
     }
@@ -195,94 +217,13 @@ def parse_klines_data(klines: List[List]) -> Dict[str, List]:
     return data
 
 
-def cleanup_positions_and_orders(um: UMFutures, positions: List[Dict]) -> Dict:
-    """
-    🧹 Clean up positions and orders:
-    - Cancel orphaned orders that don't have corresponding positions
-    - Leave existing positions for AI to manage
-    """
-    cleanup_stats = {
-        "positions_checked": 0,
-        "positions_closed": 0,
-        "orders_cancelled": 0,
-        "errors": 0
-    }
-    
-    print("\n🧹 === CLEANUP: Checking positions and orders ===")
-    
-    # Get all open orders (for all symbols)
-    all_open_orders = get_open_orders(um, None)
-    
-    # Group orders by symbol
-    orders_by_symbol = {}
-    for order in all_open_orders:
-        symbol = order.get("symbol", "")
-        if symbol not in orders_by_symbol:
-            orders_by_symbol[symbol] = []
-        orders_by_symbol[symbol].append(order)
-    
-    # Check each position
-    for pos in positions:
-        try:
-            cleanup_stats["positions_checked"] += 1
-            symbol = pos.get("symbol", "")
-            position_size = safe_float(pos.get("positionAmt", "0"))
-            
-            if position_size == 0:
-                continue
-            
-            # Count orders for this symbol
-            symbol_orders = orders_by_symbol.get(symbol, [])
-            order_count = len(symbol_orders)
-            
-            print(f"📊 {symbol}: Position={position_size:.6f}, Orders={order_count}")
-            
-            # Since we're no longer using automatic SL/TP, just cancel any orphaned orders
-            # but leave positions for AI to manage
-            if order_count > 0:
-                print(f"🧹 {symbol}: Cancelling {order_count} orphaned orders (AI will manage position)")
-                
-                # Cancel existing orders to prevent interference with AI decisions
-                for order in symbol_orders:
-                    order_id = order.get("orderId")
-                    if order_id:
-                        if cancel_order(um, symbol, str(order_id)):
-                            cleanup_stats["orders_cancelled"] += 1
-                
-                print(f"✅ {symbol}: Orphaned orders cancelled, position will be managed by AI")
-            else:
-                print(f"✅ {symbol}: Clean position, ready for AI management")
-                
-        except Exception as e:
-            cleanup_stats["errors"] += 1
-            print(f"! Error checking {symbol}: {e}")
-    
-    # Check for orphaned orders (orders without positions)
-    position_symbols = {pos.get("symbol") for pos in positions if safe_float(pos.get("positionAmt", "0")) != 0}
-    
-    for symbol, orders in orders_by_symbol.items():
-        if symbol not in position_symbols:
-            print(f"🗑️ {symbol}: Found {len(orders)} orphaned orders (no position)")
-            for order in orders:
-                order_id = order.get("orderId")
-                if order_id:
-                    if cancel_order(um, symbol, str(order_id)):
-                        cleanup_stats["orders_cancelled"] += 1
-    
-    # Print cleanup summary
-    print(f"\n📊 CLEANUP SUMMARY:")
-    print(f"   Positions checked: {cleanup_stats['positions_checked']}")
-    print(f"   Positions closed: {cleanup_stats['positions_closed']}")
-    print(f"   Orders cancelled: {cleanup_stats['orders_cancelled']}")
-    print(f"   Errors: {cleanup_stats['errors']}")
-    print("=" * 60)
-    
 def print_scan_summary(results: Dict):
     """Print final scan summary"""
     print("=" * 60)
     print(f"📊 SCAN COMPLETE:")
     print(f"   Total symbols available: {results['total_symbols']}")  
     print(f"   Symbols scanned: {results['symbols_checked']}")
+    print(f"   Symbols skipped (existing positions): {results.get('symbols_skipped', 0)}")
     print(f"   Signals detected: {results['signals_found']}")
     print(f"   Completion rate: {results['completion_rate']:.1f}%")
     print("=" * 60)

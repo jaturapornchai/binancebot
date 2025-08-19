@@ -3,18 +3,19 @@
 PNL: ${pnl:.4f} USDT ({pnl_percent:+.2f}%)
 {ohlcv_data}
 
-รูปแบบ: H{{ลำดับ}}[O,H,L,C]V{{Volume}} สำหรับ 1h
+รูปแบบ: ลำดับ:O,H,L,C,V (แต่ละแท่ง {timeframe})
 
-CLOSE=ถ้ามีสัญญาณกลับตัวชัดเจน, momentum หมดลง, หรือพบ reversal patterns
-HOLD=ถ้ายังไม่มีสัญญาณกลับตัว, momentum ยังคงอยู่, หรือพบ continuation patterns
+ถ้า Position เป็น Long ให้ดูว่า เริ่มหมดแรงขึ้นต่อหรือไม่ ถ้าเริ่มหมดแรงให้ปิด Position
+ถ้า Position เป็น Short ให้ดูว่า เริ่มหมดแรงลงต่อหรือไม่ ถ้าเริ่มหมดแรงให้ปิด Position
+ถ้ามีความเสี่ยงขาดทุนสูง ให้ปิด Position
 
 กรุณาวิเคราะห์และตัดสินใจในรูปแบบ JSON เท่านั้น:
 
 {{
   "action": "CLOSE" หรือ "HOLD",
-  "reasoning": "เหตุผลการตัดสินใจโดยละเอียด 3-4 บรรทัด รวมถึงสถานะ PNL, MACD signals, Technical analysis และ Market momentum",
+  "reasoning": "เหตุผลการตัดสินใจ (ภาษาไทย)",
   "confidence": "ระดับความมั่นใจ 1-10",
-  "market_condition": "สภาพตลาดปัจจุบัน เช่น trending, ranging, volatile",
+  "market_condition": "สภาพตลาดปัจจุบัน",
   "patterns": ["รายชื่อ technical patterns ที่พบ"]
 }}
 

@@ -24,8 +24,8 @@ from binance_client import (close_position, get_available_usdt,
                             setup_trading_mode)
 # Import all modules
 from config import APIConfig, cfg
-from macd_analysis import is_macd_color_changed
-from trading_engine import (cleanup_positions_and_orders, parse_klines_data,
+from trend_line_analysis import is_trend_line_signal_valid
+from trading_engine import (parse_klines_data,
                             print_scan_summary, scan_symbols_for_signals)
 from utils import countdown_sleep, get_thailand_time
 
@@ -58,22 +58,22 @@ def check_and_analyze_existing_positions(um):
         
         print(f"📊 Analyzing {symbol}: {side} size={abs(size):.6f} entry=${entry_price:.6f} mark=${mark_price:.6f} PNL=${pnl:.2f} ({pnl_percent:+.2f}%)")
         
-        # Get 1h klines data for AI analysis  
-        klines_1h = get_klines(um, symbol, "1h", 288)
-        if not klines_1h or len(klines_1h) < 50:
+        # Get klines data for AI analysis (144 candles = 6 days of 1h data)  
+        klines_data = get_klines(um, symbol, cfg.timeframe, 144)
+        if not klines_data or len(klines_data) < 50:
             print(f"❌ {symbol}: Insufficient klines data for analysis")
             continue
             
         # Parse klines data
         from trading_engine import parse_klines_data
-        data_1h = parse_klines_data(klines_1h)
-        if not data_1h["closes"]:
+        data = parse_klines_data(klines_data)
+        if not data["closes"]:
             print(f"❌ {symbol}: Failed to parse klines data")
             continue
         
         # Analyze position with AI
         ai_decision = ai_client.analyze_with_deepseek(
-            symbol, data_1h, mark_price, current_position=size, pnl=pnl, entry_price=entry_price
+            symbol, data, mark_price, current_position=size, pnl=pnl, entry_price=entry_price
         )
         
         if not ai_decision:
@@ -128,11 +128,6 @@ def main_trading_loop():
             # LOOP2: Check and analyze existing positions with AI
             check_and_analyze_existing_positions(um)
             
-            # CLEANUP: Clean up any orphaned orders before scanning
-            current_positions = get_current_positions(um)
-            if current_positions:
-                cleanup_stats = cleanup_positions_and_orders(um, current_positions)
-            
             # LOOP3: Scan for new trading opportunities
             print("=== LOOP3: Checking coins for new positions ===")
             available_usdt = get_available_usdt(um)
@@ -163,7 +158,7 @@ def main_trading_loop():
             # Scan all symbols for opportunities
             scan_results = scan_symbols_for_signals(
                 um, dynamic_symbols, filters,
-                get_klines, is_macd_color_changed, ai_client.analyze_with_deepseek
+                get_klines, is_trend_line_signal_valid, ai_client.analyze_with_deepseek
             )
             
             # Print scan summary

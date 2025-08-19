@@ -1,20 +1,6 @@
 """
 🤖 DeepSeek AI Client for Trading Analysis
-Handles AI trading an        user_prompt = existi        user_prompt = template.format(
-            symbol=symbol,
-            current_price=f"{current_price:.6f}",
-            macd_analysis_info=macd_analysis_info,
-            ohlcv_data=ohlcv_data
-        )plate.format(
-            symbol=symbol,
-            side=side,
-            entry_price=f"{entry_price:.6f}",
-            current_price=f"{current_price:.6f}",
-            pnl=calculated_pnl,
-            pnl_percent=pnl_percent,
-            macd_analysis_info=macd_analysis_info,
-            ohlcv_data=ohlcv_data
-        ) decision making
+Handles AI trading decision making using EMA analysis
 """
 
 import json
@@ -22,8 +8,28 @@ import os
 from typing import Dict, Optional, Tuple
 
 from openai import OpenAI
+import openai
 
-from macd_analysis import format_ohlcv_data, get_macd_analysis_text
+from trend_line_analysis import get_trend_line_analysis_text
+from config import cfg
+
+def format_ohlcv_data(data):
+    """Format OHLCV data for AI analysis"""
+    opens = data.get("opens", [])
+    highs = data.get("highs", [])
+    lows = data.get("lows", [])
+    closes = data.get("closes", [])
+    volumes = data.get("volumes", [])
+    
+    if not opens or not highs or not lows or not closes or not volumes:
+        return "No OHLCV data available"
+    
+    # Take last 20 candles for AI analysis
+    recent_data = []
+    for i in range(max(0, len(opens) - 20), len(opens)):
+        recent_data.append(f"{opens[i]:.4f},{highs[i]:.4f},{lows[i]:.4f},{closes[i]:.4f},{volumes[i]:.0f}")
+    
+    return "\n".join(recent_data)
 
 # Global API config - will be set by main
 api_cfg = None
@@ -47,7 +53,7 @@ def load_prompt_template(filename: str) -> Optional[str]:
         return None
 
 
-def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float, 
+def analyze_with_deepseek(symbol: str, data: Dict, current_price: float, 
                          current_position: float = 0.0, pnl: float = 0.0, entry_price: float = 0.0) -> Optional[Dict]:
     """
     🤖 Analyze trading opportunity using DeepSeek AI
@@ -57,11 +63,8 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
         print("! DeepSeek API key not configured")
         return None
     
-    # Generate MACD analysis text
-    macd_analysis_info = get_macd_analysis_text(symbol, data_1h, current_price)
-    
     # Format OHLCV data
-    ohlcv_data = format_ohlcv_data(data_1h)
+    ohlcv_data = format_ohlcv_data(data)
     
     # เลือก prompt template ตามสถานการณ์
     if abs(current_position) > 1e-12:
@@ -71,6 +74,8 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
             print(f"❌ CRITICAL ERROR: prompt_existing_position.txt not found!")
             print("🛑 Cannot analyze existing position without proper template")
             return None
+        
+        print(f"📄 Using prompt_existing_position.txt template for {symbol}")
             
         # Use the passed PNL or calculate if entry_price is provided
         calculated_pnl = pnl
@@ -87,8 +92,8 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
             current_price=f"{current_price:.6f}",
             pnl=calculated_pnl,
             pnl_percent=pnl_percent,
-            macd_analysis_info=macd_analysis_info,
-            ohlcv_data=ohlcv_data
+            ohlcv_data=ohlcv_data,
+            timeframe=cfg.timeframe
         )
     else:
         # CASE 2: ยังไม่มี position - ใช้ prompt_new_position.txt
@@ -99,21 +104,27 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
             print("📁 Please ensure prompt_new_position.txt exists in the project directory")
             return None
         
+        print(f"📄 Using prompt_new_position.txt template for {symbol}")
+        
         user_prompt = template.format(
             symbol=symbol,
             current_price=f"{current_price:.2f}",
-            macd_analysis_info=macd_analysis_info,
-            ohlcv_data=ohlcv_data
+            ohlcv_data=ohlcv_data,
+            timeframe=cfg.timeframe
         )
 
     try:
-        client = OpenAI(api_key=api_cfg.deepseek_api_key, base_url="https://api.deepseek.com/v1")
-        print(f"🔗 Connecting to DeepSeek API...")
+        client = OpenAI(
+            api_key=api_cfg.deepseek_api_key, 
+            base_url="https://api.deepseek.com/v1",
+            timeout=30.0  # 30 second timeout
+        )
+        print(f"🔗 Connecting to DeepSeek API (30s timeout)...")
         
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": "คุณคือผู้เชี่ยวชาญด้านการเทรดคริปโตฯ ประสบการณ์มากกว่า 10 ปี วิเคราะห์ราคา แนวโน้ม และความเสี่ยง เพื่อให้คำแนะนำที่ชัดเจน ตอบในรูปแบบ JSON เท่านั้น"},
+                {"role": "system", "content": "คุณคือผู้เชี่ยวชาญด้านการเทรดคริปโตฯ ตลาดฟิวเจอร์ วิเคราะห์ราคา แนวโน้ม และความเสี่ยง เพื่อให้คำแนะนำที่ชัดเจน ตอบในรูปแบบ JSON เท่านั้น"},
                 {"role": "user", "content": user_prompt},
             ],
             stream=False,
@@ -161,8 +172,31 @@ def analyze_with_deepseek(symbol: str, data_1h: Dict, current_price: float,
         parsed_decision = parse_ai_response(content, current_price, symbol)
         return parsed_decision
 
+    except openai.APITimeoutError as e:
+        print(f"⏰ DeepSeek API timeout for {symbol}: {e}")
+        print(f"🔄 API call took longer than 30 seconds")
+        return None
+    except openai.APIConnectionError as e:
+        print(f"🌐 DeepSeek API connection error for {symbol}: {e}")
+        print(f"🔄 Please check network connectivity")
+        return None
+    except openai.RateLimitError as e:
+        print(f"⚠️ DeepSeek API rate limit for {symbol}: {e}")
+        print(f"🔄 Please wait before making another request")
+        return None
+    except openai.APIError as e:
+        print(f"🔥 DeepSeek API error for {symbol}: {e}")
+        print(f"🔄 API returned an error")
+        return None
+    except TimeoutError as e:
+        print(f"⏰ Network timeout for {symbol}: {e}")
+        return None
+    except ConnectionError as e:
+        print(f"🌐 Network connection error for {symbol}: {e}")
+        return None
     except Exception as e:
-        print(f"! DeepSeek API error for {symbol}: {e}")
+        print(f"❌ Unexpected error for {symbol}: {e}")
+        print(f"🔄 Error type: {type(e).__name__}")
         return None
 
 
