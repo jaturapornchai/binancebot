@@ -5,8 +5,11 @@
 รูปแบบ: ลำดับ:O,H,L,C,V (แต่ละแท่ง {timeframe})
 ควรเปิด LONG, SHORT หรือ HOLD?
 
-**AI จะตัดสินใจปิด position เอง** 
-วิเคราะห์ทั้ง Technical Analysis และ Market Context เพื่อตัดสินใจเปิด position
+**AI จะตัดสินใจเปิด position เอง** 
+ให้ความสำคัญกับ RSI Divergence ด้วย และวิเคราะห์จากข้อมูลที่มีทั้งหมด เพื่อที่จะ short/long/hold
+ถ้า long ก็ต้องมั่นใจว่าจะได้กำไร
+ถ้า short ก็ต้องมั่นใจว่าจะได้กำไร
+ถ้าไม่มั่นใจก็ให้ hold
 
 กรุณาวิเคราะห์ {timeframe} และตอบในรูปแบบ JSON เท่านั้น:
 

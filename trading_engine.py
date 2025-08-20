@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from binance.um_futures import UMFutures
 
-from binance_client import (calculate_quantity, cancel_order, get_mark_price,
+from binance_client import (calculate_quantity, get_mark_price,
                             get_open_orders, place_order, set_leverage,
                             set_margin_type)
 from config import cfg
@@ -99,16 +99,25 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
         try:
             symbols_checked += 1
             
+            # Check available balance before processing each symbol
+            from binance_client import get_available_usdt
+            available_usdt = get_available_usdt(um)
+            
+            if available_usdt < cfg.min_balance_usdt:
+                print(f"💰 Balance check: ${available_usdt:.2f} < ${cfg.min_balance_usdt} minimum")
+                print(f"⏸️ Insufficient balance - stopping scan and waiting for next cycle")
+                break
+            
             # Skip symbols that already have open positions
             if symbol in existing_symbols:
                 symbols_skipped += 1
                 print(f"⏭️ {symbol}: Skipped (existing position)")
                 continue
             
-            # Get data (200 candles for Trend Line analysis)
-            klines = get_klines_func(um, symbol, cfg.timeframe, 200)
-            if not klines or len(klines) < 50:
-                print(f"❌ {symbol}: Insufficient data (klines: {len(klines) if klines else 0})")
+            # Get data (288 candles = 12 วัน สำหรับ EMA99 analysis)
+            klines = get_klines_func(um, symbol, cfg.timeframe, 288)
+            if not klines or len(klines) < 100:  # Need at least 100 candles for EMA99
+                print(f"❌ {symbol}: Insufficient data for EMA99 (klines: {len(klines) if klines else 0})")
                 continue
             
             # Parse klines data
@@ -117,13 +126,13 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
                 print(f"❌ {symbol}: Failed to parse klines data")
                 continue
             
-            # Check for Trend Line crossing signal
+            # Check for RSI Divergence signal (ตรวจหา Bullish/Bearish Divergence ใน 12 แท่งย้อนหลัง)
             if not is_signal_func(symbol, klines):
-                # แสดงสถานะ Trend Line ปัจจุบันสำหรับ debug (แสดงแค่ 5 เหรียญแรก)
+                # แสดงสถานะ RSI Divergence ปัจจุบันสำหรับ debug (แสดงแค่ 5 เหรียญแรก)
                 if symbols_checked <= 5:
                     try:
-                        from trend_line_analysis import TrendLineAnalyzer
-                        analyzer = TrendLineAnalyzer()
+                        from rsi_divergence_analysis import RSIDivergenceAnalyzer
+                        analyzer = RSIDivergenceAnalyzer()
                         
                         # Convert raw klines to proper format
                         klines_list = []
@@ -137,11 +146,14 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
                             })
                         
                         result = analyzer.analyze_symbol(klines_list)
-                        print(f"⚪ {symbol}: No Trend Line signal ({result['reason']})")
+                        current_rsi = result.get('current_rsi', 0)
+                        signal_type = result.get('signal_type', 'NO_SIGNAL')
+                        recent_signals = len(result.get('recent_buy_signals', [])) + len(result.get('recent_sell_signals', []))
+                        print(f"⚪ {symbol}: No RSI Divergence signal (RSI: {current_rsi:.1f}, Recent signals: {recent_signals}, Status: {signal_type})")
                     except Exception as e:
-                        print(f"⚪ {symbol}: No Trend Line signal")
+                        print(f"⚪ {symbol}: No RSI Divergence signal")
                 else:
-                    print(f"⚪ {symbol}: No Trend Line signal")
+                    print(f"⚪ {symbol}: No RSI Divergence signal")
                 continue
             
             # Signal detected!
@@ -154,10 +166,27 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
                 print(f"❌ {symbol}: Invalid price: {current_price}")
                 continue
             
-            # Analyze with AI
-            ai_decision = analyze_func(symbol, data, current_price)
+            # Analyze with AI (with retry)
+            ai_decision = None
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    ai_decision = analyze_func(symbol, data, current_price)
+                    if ai_decision:
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            print(f"🔄 {symbol}: AI attempt {attempt + 1} failed, retrying...")
+                            import time
+                            time.sleep(2)  # Wait 2 seconds before retry
+                except Exception as e:
+                    print(f"❌ {symbol}: AI analysis error attempt {attempt + 1}: {e}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(2)
+            
             if not ai_decision:
-                print(f"❌ {symbol}: AI analysis failed")
+                print(f"❌ {symbol}: AI analysis failed after {max_retries} attempts")
                 continue
             
             # Execute trade if AI recommends action
@@ -217,8 +246,8 @@ def parse_klines_data(klines: List[List]) -> Dict[str, List]:
     return data
 
 
-def print_scan_summary(results: Dict):
-    """Print final scan summary"""
+def print_scan_summary(results: Dict, um=None):
+    """Print final scan summary with balance info"""
     print("=" * 60)
     print(f"📊 SCAN COMPLETE:")
     print(f"   Total symbols available: {results['total_symbols']}")  
@@ -226,4 +255,17 @@ def print_scan_summary(results: Dict):
     print(f"   Symbols skipped (existing positions): {results.get('symbols_skipped', 0)}")
     print(f"   Signals detected: {results['signals_found']}")
     print(f"   Completion rate: {results['completion_rate']:.1f}%")
+    
+    # Show balance status
+    if um:
+        try:
+            from binance_client import get_available_usdt
+            from config import cfg
+            available_usdt = get_available_usdt(um)
+            print(f"   Current balance: ${available_usdt:.2f} (Min required: ${cfg.min_balance_usdt})")
+            if available_usdt < cfg.min_balance_usdt:
+                print(f"   ⚠️ Balance below minimum - trading suspended")
+        except Exception as e:
+            print(f"   ❌ Could not fetch balance: {e}")
+    
     print("=" * 60)

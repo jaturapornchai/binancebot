@@ -1,6 +1,6 @@
 """
 🤖 DeepSeek AI Client for Trading Analysis
-Handles AI trading decision making using EMA analysis
+Handles AI trading decision making with pure OHLCV data analysis
 """
 
 import json
@@ -10,11 +10,10 @@ from typing import Dict, Optional, Tuple
 from openai import OpenAI
 import openai
 
-from trend_line_analysis import get_trend_line_analysis_text
 from config import cfg
 
-def format_ohlcv_data(data):
-    """Format OHLCV data for AI analysis"""
+def format_ohlcv_data(data, symbol="SYMBOL"):
+    """Format raw OHLCV data for AI - Send all 288 timeframes (no technical analysis)"""
     opens = data.get("opens", [])
     highs = data.get("highs", [])
     lows = data.get("lows", [])
@@ -24,12 +23,15 @@ def format_ohlcv_data(data):
     if not opens or not highs or not lows or not closes or not volumes:
         return "No OHLCV data available"
     
-    # Take last 20 candles for AI analysis
-    recent_data = []
-    for i in range(max(0, len(opens) - 20), len(opens)):
-        recent_data.append(f"{opens[i]:.4f},{highs[i]:.4f},{lows[i]:.4f},{closes[i]:.4f},{volumes[i]:.0f}")
+    # Send all available data (288 timeframes) - Raw data only
+    all_data = []
+    for i in range(len(opens)):
+        all_data.append(f"{opens[i]:.4f},{highs[i]:.4f},{lows[i]:.4f},{closes[i]:.4f},{volumes[i]:.0f}")
     
-    return "\n".join(recent_data)
+    ohlcv_text = "\n".join(all_data)
+    
+    # Return raw OHLCV data only - let AI do its own analysis
+    return ohlcv_text
 
 # Global API config - will be set by main
 api_cfg = None
@@ -64,7 +66,7 @@ def analyze_with_deepseek(symbol: str, data: Dict, current_price: float,
         return None
     
     # Format OHLCV data
-    ohlcv_data = format_ohlcv_data(data)
+    ohlcv_data = format_ohlcv_data(data, symbol)
     
     # เลือก prompt template ตามสถานการณ์
     if abs(current_position) > 1e-12:
@@ -117,9 +119,18 @@ def analyze_with_deepseek(symbol: str, data: Dict, current_price: float,
         client = OpenAI(
             api_key=api_cfg.deepseek_api_key, 
             base_url="https://api.deepseek.com/v1",
-            timeout=30.0  # 30 second timeout
+            timeout=45.0  # 45 second timeout
         )
-        print(f"🔗 Connecting to DeepSeek API (30s timeout)...")
+        
+        # แสดง prompt ก่อนส่ง AI
+        print(f"\n{'='*60}")
+        print(f"🤖 SENDING PROMPT TO AI for {symbol}")
+        print(f"{'='*60}")
+        print(f"📤 PROMPT SENT TO AI (TH):")
+        print(f"{user_prompt}")
+        print(f"{'='*60}")
+        
+        print(f"🔗 Connecting to DeepSeek API (45s timeout)...")
         
         response = client.chat.completions.create(
             model="deepseek-chat",
@@ -138,8 +149,6 @@ def analyze_with_deepseek(symbol: str, data: Dict, current_price: float,
         print(f"\n{'='*60}")
         print(f"🤖 DEEPSEEK DETAILED ANALYSIS for {symbol}")
         print(f"{'='*60}")
-        print(f"📤 PROMPT SENT TO AI (TH):")
-        print(f"{user_prompt}")
         print(f"📥 AI RESPONSE:")
 
         content = ""
@@ -174,7 +183,7 @@ def analyze_with_deepseek(symbol: str, data: Dict, current_price: float,
 
     except openai.APITimeoutError as e:
         print(f"⏰ DeepSeek API timeout for {symbol}: {e}")
-        print(f"🔄 API call took longer than 30 seconds")
+        print(f"🔄 API call took longer than 45 seconds")
         return None
     except openai.APIConnectionError as e:
         print(f"🌐 DeepSeek API connection error for {symbol}: {e}")

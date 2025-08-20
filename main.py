@@ -24,7 +24,7 @@ from binance_client import (close_position, get_available_usdt,
                             setup_trading_mode)
 # Import all modules
 from config import APIConfig, cfg
-from trend_line_analysis import is_trend_line_signal_valid
+from rsi_divergence_analysis import is_rsi_divergence_signal_valid
 from trading_engine import (parse_klines_data,
                             print_scan_summary, scan_symbols_for_signals)
 from utils import countdown_sleep, get_thailand_time
@@ -158,11 +158,11 @@ def main_trading_loop():
             # Scan all symbols for opportunities
             scan_results = scan_symbols_for_signals(
                 um, dynamic_symbols, filters,
-                get_klines, is_trend_line_signal_valid, ai_client.analyze_with_deepseek
+                get_klines, is_rsi_divergence_signal_valid, ai_client.analyze_with_deepseek
             )
             
             # Print scan summary
-            print_scan_summary(scan_results)
+            print_scan_summary(scan_results, um)
             
             # Wait until next hour
             print("=== Cycle complete - waiting until next hour's first minute ===")
