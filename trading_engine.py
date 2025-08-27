@@ -15,7 +15,7 @@ from binance_client import (calculate_quantity, get_mark_price,
                             cleanup_orphaned_orders, check_and_create_position_protection,
                             cancel_all_orders_for_symbol)
 from config import cfg
-from linear_regression_analyzer import LinearRegressionChannelAnalyzer
+from volume_analyzer import VolumeAnalyzer
 from utils import safe_float
 
 
@@ -147,7 +147,7 @@ def execute_trade(um: UMFutures, symbol: str, ai_decision: Dict,
 
 
 def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict, 
-                           get_klines_func, is_signal_func, analyze_func) -> Dict:
+                           get_klines_func) -> Dict:
     """
     Scan symbols for trading signals and execute trades
     Returns summary statistics
@@ -197,45 +197,45 @@ def scan_symbols_for_signals(um: UMFutures, symbols: List[str], filters: Dict,
                 print(f"❌ {symbol}: Failed to parse klines data")
                 continue
             
-            # Analyze Linear Regression Channels
-            channel_analyzer = LinearRegressionChannelAnalyzer(length=100, deviation_multiplier=2.0)
-            detected_channels = channel_analyzer.analyze_channels(data)
-            channel_signals = channel_analyzer.get_trading_signals(detected_channels)
+            # Analyze Volume Spikes  
+            volume_analyzer = VolumeAnalyzer(
+                lookback_periods=cfg.volume_lookback_periods, 
+                spike_threshold=cfg.volume_spike_threshold
+            )
+            volume_signal = volume_analyzer.analyze_volume_spike(klines)
             
-            # Generate channel summary for logging
-            channel_summary = channel_analyzer.generate_summary(detected_channels)
-            print(f"� {symbol}: {channel_summary}")
-            
-            # Check if we have a valid channel signal
-            if channel_signals['signal'] == 'HOLD':
-                print(f"⏸️ {symbol}: No channel breakout detected - HOLD")
+            # Check if we have a significant volume spike (500%+ increase)
+            if volume_signal is None:
+                print(f"⏸️ {symbol}: No volume spike detected (threshold: 500%) - HOLD")
                 continue
                 
-            # Send channel analysis to AI for final decision
+            # Log volume analysis
+            volume_stats = volume_analyzer.get_volume_statistics(klines)
+            print(f"📈 {symbol}: Volume spike {volume_signal.volume_spike_ratio:.1f}x detected! "
+                  f"Current: {volume_signal.current_volume:.0f}, Avg: {volume_signal.average_volume:.0f}")
+                
+            # Send volume analysis to AI for final decision
             ai_analysis_data = {
                 "symbol": symbol,
                 "current_price": data["closes"][-1], 
-                "channels": channel_signals['channels'],
-                "signal": channel_signals['signal'],
-                "reason": channel_signals['reason'],
-                "target_price": channel_signals.get('target_price'),
-                "stop_loss_price": channel_signals.get('stop_loss_price')
+                "volume_spike_ratio": volume_signal.volume_spike_ratio,
+                "signal_strength": volume_signal.signal_strength,
+                "current_volume": volume_signal.current_volume,
+                "average_volume": volume_signal.average_volume,
+                "price": volume_signal.price
             }
             
-            print(f"🎯 CHANNEL SIGNAL: {symbol} - {channel_signals['signal']} (Confidence: {channel_signals['confidence']:.1%})")
+            print(f"🎯 VOLUME SPIKE: {symbol} - {volume_signal.signal_strength} strength "
+                  f"({volume_signal.volume_spike_ratio:.1f}x average volume)")
             
-            # Check confidence threshold before sending to AI
-            confidence_pct = channel_signals['confidence'] * 100  # Convert to percentage
-            if confidence_pct < 25:
-                print(f"⏸️ {symbol}: Confidence {confidence_pct:.1f}% too low (< 25%) - Skipping AI analysis")
-                continue
-            
-            print(f"📊 Sending channel analysis to AI for final decision...")
+            # Always send high volume spikes to AI for analysis
+            spike_ratio_pct = volume_signal.volume_spike_ratio * 100  # Convert to percentage
+            print(f"📊 Sending volume analysis to AI for final decision...")
             symbols_with_signals += 1
             
-            # Get AI decision based on linear regression channel analysis
-            from ai_client import get_ai_decision_channel_pattern
-            ai_decision = get_ai_decision_channel_pattern(symbol, ai_analysis_data)
+            # Get AI decision based on volume spike analysis
+            from ai_client import get_ai_decision_volume_pattern
+            ai_decision = get_ai_decision_volume_pattern(symbol, ai_analysis_data)
             
             if not ai_decision:
                 print(f"❌ {symbol}: AI analysis failed")

@@ -22,7 +22,11 @@ class TradingConfig:
     force_buy: bool = False
     force_sell: bool = False
     deepseek_enabled: bool = True
-    ai_model: str = "deepseek-chat"  # AI model name for triangle analysis
+    ai_model: str = "deepseek-chat"  # AI model name for volume analysis
+    
+    # Volume Analysis Parameters
+    volume_lookback_periods: int = 200  # Periods to calculate average volume
+    volume_spike_threshold: float = 5.0  # 5.0 = 500% increase required
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for JSON serialization"""

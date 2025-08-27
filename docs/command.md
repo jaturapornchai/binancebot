@@ -1,9 +1,9 @@
 # กฏ
-ใช้ time frame 1h ท├── หยุดถ้า Balance < $25้งหมด
+ใช้ time frame 1h ท├── หยุดถ้า Balance < $25
 ดึงข้อมูลย้อนหลัง 500 time frame เพื่อวิเคราะห์ และส่งให้ ai
-ใช้ linear_regression_channel.pine ในการหาสัญญาณ break out
+ใช้ Volume Spike Analysis ในการหาสัญญาณ (เพิ่มขึ้น 500% จากค่าเฉลี่ย)
 
-# 📊 Linear Regression Channel Trading Bot - Step การทำงาน
+# 📊 Volume Spike Trading Bot - Step การทำงาน
 
 ## 🔄 Main Process Flow
 
@@ -35,60 +35,43 @@
 └── เริ่มสแกน Symbol ทีละตัว
 ```
 
-### 4. **Linear Regression Channel Analysis**
+### 4. **Volume Spike Analysis**
 ```
-📊 Channel Analysis per Symbol
+📊 Volume Analysis per Symbol
 ├── ดึง OHLCV data 500 timeframes (1h)
-├── Parse ข้อมูล (Close, High, Low, Volume)
-├── วิเคราะห์ Linear Regression Channel:
-│   └── Channel: 100-period regression (เพียงตัวเดียว)
-├── คำนวณ Channel Components:
-│   ├── Middle Line (Linear Regression)
-│   ├── Upper Channel (Middle + 2×Deviation)
-│   ├── Lower Channel (Middle - 2×Deviation)
-│   ├── Slope (Trend Direction)
-│   └── Confidence (R-squared + Volume)
-├── ตรวจสอบ Breakout (12 timeframes ย้อนหลัง):
-│   ├── UPWARD: Price breakout > Upper Channel + มีการทดสอบเส้นกลับ + hold เหนือ channel สำเร็จ
-│   ├── DOWNWARD: Price breakout < Lower Channel + มีการทดสอบเส้นกลับ + hold ใต้ channel สำเร็จ
-│   └── NONE: ไม่มี breakout หรือไม่มีการทดสอบเส้นกลับ หรือ hold ไม่สำเร็จ
-└── สร้าง Trading Signal
+├── Parse ข้อมูล Volume
+├── คำนวณ Volume Statistics:
+│   ├── Average Volume (200 periods)
+│   ├── Current Volume
+│   └── Volume Spike Ratio (Current/Average)
+├── ตรวจสอบ Volume Spike ≥ 500% (5x):
+│   ├── HIGH Strength: ≥ 1000% (10x)
+│   ├── MEDIUM Strength: ≥ 700% (7x)
+│   └── LOW Strength: 500-699% (5-6.9x)
+└── ถ้าไม่เจอ Spike = HOLD
 ```
 
-### 5. **Signal Generation**
+### 5. **AI Analysis & Decision**
 ```
-🎯 Signal Decision
-├── ใช้ 100-period Channel เพียงตัวเดียว
-├── ตรวจสอบ Breakout Type (12 timeframes):
-│   ├── UPWARD + UP/SIDEWAYS Trend → LONG (ทะลุ upper channel)
-│   ├── DOWNWARD + DOWN/SIDEWAYS Trend → SHORT (ทะลุ lower channel)
-│   └── ไม่มี breakout → HOLD
-├── คำนวณ Target Price (Channel Width projection)
-├── คำนวณ Stop Loss (Middle Line ± 2%)
-└── ส่งข้อมูลไป AI
-```
-
-### 6. **AI Analysis & Decision**
-```
-🤖 AI Decision Making
-├── โหลด prompt_channel_analysis.txt
-├── ส่งข้อมูล Channel Analysis ไป DeepSeek
+🤖 AI Decision Making (เมื่อเจอ Volume Spike)
+├── โหลด prompt_volume_analysis.txt
+├── ส่งข้อมูล Volume Spike ไป DeepSeek
 ├── AI วิเคราะห์:
-│   ├── Channel Quality & Confidence
-│   ├── Breakout Confirmation
-│   ├── Trend Alignment
-│   ├── Risk/Reward Ratio
-│   └── Market Context
+│   ├── Volume Spike Strength (HIGH/MEDIUM/LOW)
+│   ├── Market Context & Timing
+│   ├── Price Action around Volume Spike
+│   ├── Support/Resistance Levels
+│   └── Risk/Reward Ratio
 ├── AI ตอบ JSON:
 │   ├── position: LONG/SHORT/HOLD
 │   ├── confidence: 0-100%
 │   ├── reasoning: เหตุผลภาษาไทย
-│   ├── entry_reason: จุดเข้า
-│   └── risk_management: การจัดการความเสี่ยง
+│   ├── target_price: เป้าหมายกำไร
+│   └── stop_loss_price: จุดตัดขาดทุน
 └── Validate AI Response
 ```
 
-### 7. **Trade Execution**
+### 6. **Trade Execution**
 ```
 ⚡ Trade Execution (ถ้า AI = LONG/SHORT)
 ├── ตรวจสอบ Balance อีกครั้ง ($25 minimum)
@@ -96,7 +79,7 @@
 ├── ตั้งค่า Leverage 10x
 ├── คำนวณ Quantity:
 │   ├── Notional = $25 × 10x = $250
-│   ├── Quantity = $125 ÷ Current Price
+│   ├── Quantity = $250 ÷ Current Price
 │   ├── ปรับตาม LOT_SIZE filter
 │   └── ตรวจสอบ MIN_NOTIONAL
 ├── วาง Market Order (BUY/SELL)

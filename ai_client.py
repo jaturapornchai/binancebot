@@ -532,3 +532,79 @@ def get_ai_decision_channel_pattern(symbol: str, channel_data: Dict) -> Optional
     except Exception as e:
         print(f"❌ Error getting AI channel decision for {symbol}: {e}")
         return None
+
+
+def get_ai_decision_volume_pattern(symbol: str, volume_data: Dict) -> Optional[Dict]:
+    """
+    Get AI trading decision based on Volume Spike analysis
+    Uses Volume Spike methodology (500%+ increase detection)
+    """
+    if not api_cfg or not api_cfg.has_deepseek_credentials:
+        print("! DeepSeek API key not configured")
+        return None
+        
+    try:
+        client = OpenAI(
+            api_key=api_cfg.deepseek_api_key, 
+            base_url="https://api.deepseek.com/v1",
+            timeout=45.0  # 45 second timeout
+        )
+        
+        # Load volume pattern analysis prompt
+        volume_prompt_path = os.path.join(os.path.dirname(__file__), "prompt_volume_analysis.txt")
+        with open(volume_prompt_path, 'r', encoding='utf-8') as f:
+            volume_prompt = f.read()
+        
+        # Format prompt with volume data
+        formatted_prompt = volume_prompt.format(
+            symbol=symbol,
+            volume_spike_ratio=volume_data['volume_spike_ratio'],
+            current_volume=volume_data['current_volume'],
+            average_volume=volume_data['average_volume'],
+            signal_strength=volume_data['signal_strength'],
+            current_price=volume_data['current_price']
+        )
+        
+        # Make API call to DeepSeek
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "You are an expert crypto trading analyst. Respond with valid JSON only."},
+                {"role": "user", "content": formatted_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        
+        if not response.choices or not response.choices[0].message:
+            print(f"❌ Empty response from AI for {symbol}")
+            return None
+            
+        ai_response = response.choices[0].message.content.strip()
+        
+        # Parse JSON response
+        try:
+            decision = json.loads(ai_response)
+            
+            # Validate required fields
+            required_fields = ['position', 'confidence', 'reasoning']
+            for field in required_fields:
+                if field not in decision:
+                    print(f"❌ Missing required field '{field}' in AI response for {symbol}")
+                    return None
+            
+            # Log AI decision
+            print(f"🤖 {symbol}: AI Volume Decision - {decision.get('position', 'HOLD')} "
+                  f"(Confidence: {decision.get('confidence', 0)}%)")
+            print(f"💭 Reasoning: {decision.get('reasoning', 'No reasoning provided')}")
+            
+            return decision
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ Failed to parse AI JSON response for {symbol}: {e}")
+            print(f"Raw response: {ai_response}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error getting AI volume decision for {symbol}: {e}")
+        return None

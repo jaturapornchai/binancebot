@@ -22,7 +22,7 @@ from binance_client import (close_position, get_available_usdt,
                             get_open_orders, setup_trading_mode)
 # Import all modules
 from config import APIConfig, cfg
-from breakout_analysis import is_breakout_signal_valid
+# Removed breakout_analysis - using volume_analyzer now
 from trading_engine import (parse_klines_data,
                             print_scan_summary, scan_symbols_for_signals,
                             cleanup_all_positions)
@@ -133,10 +133,10 @@ def main_trading_loop():
             dynamic_symbols = get_high_volume_symbols(um, cfg.min_volume_usdt)
             print(f"🎲 Shuffled all {len(dynamic_symbols)} symbols for trading")
             
-            # Scan all symbols for opportunities
+            # Scan all symbols for opportunities (now using volume analysis)
             scan_results = scan_symbols_for_signals(
                 um, dynamic_symbols, filters,
-                get_klines, is_breakout_signal_valid, ai_client.analyze_with_deepseek
+                get_klines
             )
             
             # Print scan summary
