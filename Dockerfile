@@ -7,6 +7,11 @@ WORKDIR /app
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV OMP_NUM_THREADS=1
+ENV NUMBA_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMPY_NUM_THREADS=1
 
 # Install system dependencies
 RUN apt-get update \
@@ -23,8 +28,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY *.py .
-COPY prompt_existing_position.txt .
-COPY prompt_new_position.txt .
+COPY prompt_channel_analysis.txt .
+COPY prompt_position_protection.txt .
 
 # Copy environment file (if exists)
 COPY .env* ./

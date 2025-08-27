@@ -14,14 +14,15 @@ load_dotenv()
 class TradingConfig:
     """Trading configuration parameters"""
     timeframe: str = "1h"
-    min_balance_usdt: float = 100.0
-    leverage: int = 5
-    margin_per_trade_usdt: float = 100.0
+    min_balance_usdt: float = 25.0
+    leverage: int = 10
+    margin_per_trade_usdt: float = 25.0
     min_volume_usdt: float = 10_000_000.0  # 10M USDT minimum volume
     dynamic_coin_discovery: bool = True
     force_buy: bool = False
     force_sell: bool = False
     deepseek_enabled: bool = True
+    ai_model: str = "deepseek-chat"  # AI model name for triangle analysis
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for JSON serialization"""
@@ -35,6 +36,7 @@ class TradingConfig:
             "force_buy": self.force_buy,
             "force_sell": self.force_sell,
             "deepseek_enabled": self.deepseek_enabled,
+            "ai_model": self.ai_model,
         }
 
 class APIConfig:

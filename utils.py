@@ -63,11 +63,6 @@ def retry_call(fn, *args, retries=3, backoff=1.5, **kwargs):
         raise last_exc
 
 
-def format_number(num: float, decimals: int = 4) -> str:
-    """Format number with specified decimal places"""
-    return f"{num:.{decimals}f}"
-
-
 def safe_float(value: str, default: float = 0.0) -> float:
     """Safely convert string to float with default value"""
     try:
